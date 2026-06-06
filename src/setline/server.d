@@ -123,7 +123,7 @@ void handleClient(TCPConnection client) {
   auto path = requestPath(target);
 
   if (path.startsWith(adminPrefix)) {
-    handleAdmin(client, method, path, completeHttpRequest(client, request));
+    handleAdmin(client, method, target, completeHttpRequest(client, request));
     return;
   }
 

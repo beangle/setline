@@ -107,6 +107,19 @@ void addBackendHealth(Backend backend) {
   }
 }
 
+void syncBackendHealth(Route[] routes) {
+  synchronized {
+    BackendHealth[ushort] next;
+    foreach (route; routes) {
+      foreach (backend; route.backends) {
+        auto existing = backend.port in gHealth;
+        next[backend.port] = existing is null ? BackendHealth(backend.port, true) : *existing;
+      }
+    }
+    gHealth = next;
+  }
+}
+
 void updateBackendHealth(ushort port, bool ok) {
   synchronized {
     auto health = port in gHealth;

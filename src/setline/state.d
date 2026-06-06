@@ -125,12 +125,56 @@ bool hasRoute(string path) {
 }
 
 void upsertRoute(Route route) {
+  Route[] routes;
   synchronized {
-    setline.router.upsertRoute(gRoutes, gRouteTree, route);
+    routes = gRoutes.dup;
+    RouteTree tree;
+    setline.router.upsertRoute(routes, tree, route);
+    gRoutes = routes;
+    gRouteTree = tree;
   }
-  foreach (backend; route.backends) {
-    addBackendHealth(backend);
+  syncBackendHealth(routes);
+}
+
+bool deleteRoute(string prefix) {
+  Route[] routes;
+  bool removed;
+  synchronized {
+    foreach (route; gRoutes) {
+      if (route.prefix == prefix) {
+        removed = true;
+      } else {
+        routes ~= route;
+      }
+    }
+    if (!removed) {
+      return false;
+    }
+    sortRoutes(routes);
+    auto tree = buildRouteTree(routes);
+    gRoutes = routes;
+    gRouteTree = tree;
   }
+  syncBackendHealth(routes);
+  return true;
+}
+
+void clearRoutes() {
+  synchronized {
+    gRoutes = null;
+    gRouteTree = RouteTree.init;
+  }
+  syncBackendHealth(null);
+}
+
+void replaceRoutes(Route[] routes) {
+  sortRoutes(routes);
+  auto tree = buildRouteTree(routes);
+  synchronized {
+    gRoutes = routes.dup;
+    gRouteTree = tree;
+  }
+  syncBackendHealth(routes);
 }
 
 Route[] routesSnapshot() {

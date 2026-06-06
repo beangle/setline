@@ -12,7 +12,7 @@ predictable.
 - Local HTTP backends only, configured by port number.
 - Longest-prefix route matching.
 - Optional random selection across local backends.
-- Runtime route registration through the local admin API.
+- Runtime route management through the local admin API.
 - Clients explicitly access the `setline` listen address.
 
 ## Transparent Proxy Boundary
@@ -64,6 +64,9 @@ These are intentionally out of scope unless the project goal changes:
   fixed to `127.0.0.1`.
 - Keep route lookup indexed by URI path segment instead of scanning every route
   for each request.
+- Runtime route changes must build the next route set and route tree first,
+  then swap them into state once. Request routing should never observe a
+  partially changed route table.
 - Prefer `vibe-core` TCP streams and fibers for proxy traffic.
 - Keep protocol helpers in the existing `http`, `proxy`, and `server` modules
   unless a real boundary appears.
@@ -75,6 +78,30 @@ These are intentionally out of scope unless the project goal changes:
   deployment model.
 - Do not overwrite existing `Forwarded` or `X-Forwarded-For` values. Their
   presence means upstream proxy identity has already been established.
+- Do not track every active client connection just to silence Ctrl+C shutdown
+  warnings. Avoid adding hot-path global synchronization unless it protects
+  normal proxy correctness.
+
+## Runtime Route Management
+
+The admin API can update only the in-memory route table:
+
+- add or replace a single route
+- delete a single route
+- clear all routes
+- replace all routes
+
+Runtime route changes never rewrite the config file and never change listener,
+token, timeout, health-check, or connection-limit settings.
+
+All route-changing requests must come from localhost and must still pass the
+admin token check. The localhost decision is based on the TCP peer address, not
+on `Forwarded` or `X-Forwarded-*` headers.
+
+Health state is synchronized after route changes. Existing backend ports keep
+their current health counters and online/offline state; newly introduced ports
+start healthy; ports that are no longer referenced by any route are removed
+from the health table.
 
 ## Technology Selection
 

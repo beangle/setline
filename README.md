@@ -69,13 +69,35 @@ Top-level fields:
 Routes are indexed by path segment with longest-prefix priority, so `/api/edu`
 wins over `/api`.
 
-## Runtime Route Registration
+## Runtime Route Management
+
+Runtime route updates only change in-memory routes. They do not rewrite the
+config file, and update requests are accepted only from localhost.
+
+Add or replace one route:
 
 ```bash
 curl -X PUT http://127.0.0.1:8080/__setline/routes \
-  -H 'Content-Type: application/json' \
-  -H 'X-Setline-Token: change-me' \
   -d '{"prefix":"/api/edu","ports":[9002,9003]}'
+```
+
+Delete one route:
+
+```bash
+curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?prefix=/api/edu'
+```
+
+Clear all routes:
+
+```bash
+curl -X DELETE http://127.0.0.1:8080/__setline/routes
+```
+
+Replace all routes:
+
+```bash
+curl -X PUT http://127.0.0.1:8080/__setline/routes/all \
+  -d '{"routes":{"/api":9001,"/m/edu/learning":5173}}'
 ```
 
 List routes:
@@ -110,3 +132,4 @@ See also:
 - `doc/transparent-proxy-design.md`
 - `doc/project-constraints.md`
 - `doc/deployment.md`
+- `doc/runtime-routes-api.md`

@@ -67,8 +67,8 @@ This keeps POST/PUT/upload requests transparent and avoids loading full request
 bodies into memory.
 
 The admin API is the exception: `/__setline` handlers need a JSON body for
-route registration, so the server completes the request body before handing it
-to admin code.
+runtime route management, so the server completes the request body before
+handing it to admin code.
 
 ## Response Flow
 
@@ -105,6 +105,61 @@ This model was chosen after browser refreshes and concurrent Vite resource
 loads exposed limitations in a thread-per-request implementation. The
 transparent proxy path should stay fiber/event-loop based unless there is a
 measured reason to change it.
+
+## Runtime Routes
+
+Runtime route management is deliberately narrow and in-memory only. It supports
+four operations:
+
+- add or replace one route
+- delete one route
+- clear all routes
+- replace all routes
+
+These operations are available under the `__setline` admin namespace and are
+accepted only from localhost. They still require the admin token. The localhost
+check uses the TCP peer address because proxy headers are user-controlled input
+at this security boundary.
+
+Route updates are applied atomically at the state level:
+
+1. Read the current route snapshot.
+2. Build the next `Route[]` and a fresh route tree.
+3. Swap both into runtime state under the state lock.
+4. Synchronize backend health state from the new routes.
+
+The proxy request path always reads from the current route tree. It never sees
+a half-mutated tree.
+
+Health state is preserved by backend port. If a port remains referenced after a
+route change, its current online/offline state and counters are kept. New ports
+start healthy so they can receive traffic before the next health-check cycle.
+Ports no longer referenced by any route are removed from the health table.
+
+## Backend Selection
+
+When a route has multiple healthy backends, selection is random. The route tree
+does not store a round-robin cursor. This avoids mutating routing state for
+each request and keeps the request hot path read-oriented apart from normal
+connection accounting.
+
+If connecting to a selected backend fails before any request bytes are sent,
+the current request may try another healthy backend from the same route. This
+retry uses only request-local state and does not update the shared health
+table; backend health remains owned by the background health-check loop.
+
+## Shutdown
+
+On event-loop shutdown, `setline` stops the TCP listener and stops the
+background health-check task. It intentionally does not keep a global registry
+of every active client connection. Such a registry would add synchronization to
+the normal connection lifecycle and was judged not worth the cost only to
+silence shutdown warnings.
+
+The tradeoff is that pressing Ctrl+C while long-lived or half-open client
+connections are active may still produce an eventcore `streamSocket` leak
+warning during process exit. This is treated as a shutdown diagnostic, not a
+normal proxy-path correctness issue.
 
 ## TPROXY Decision
 

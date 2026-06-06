@@ -72,9 +72,7 @@ Config parseConfigFile(string path) {
     config.healthCheck = parseHealthConfig(root["healthCheck"]);
   }
   if ("routes" in root.object) {
-    foreach (prefix, ports; root["routes"].object) {
-      config.routes ~= parseRoute(prefix, ports);
-    }
+    config.routes = parseRoutes(root["routes"]);
   }
   sortRoutes(config.routes);
   return config;
@@ -117,6 +115,16 @@ Route parseRoute(string prefix, JSONValue ports) {
   route.backends = parseBackends(ports);
   validateRoute(route);
   return route;
+}
+
+Route[] parseRoutes(JSONValue value) {
+  enforce(value.type == JSONType.object, "routes must be object");
+  Route[] routes;
+  foreach (prefix, ports; value.object) {
+    routes ~= parseRoute(prefix, ports);
+  }
+  sortRoutes(routes);
+  return routes;
 }
 
 /** 解析管理接口提交的单条路由。

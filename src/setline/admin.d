@@ -16,15 +16,16 @@
 
 module setline.admin;
 
-import std.array : appender;
+import std.array : appender, split;
 import std.base64 : Base64;
 import std.conv : to;
+import std.exception : enforce;
 import std.json : JSONValue, parseJSON;
-import std.string : startsWith;
+import std.string : indexOf, startsWith;
 
 import vibe.core.net : TCPConnection;
 
-import setline.config : parseRoute;
+import setline.config : parseRoute, parseRoutes;
 import setline.constants;
 import setline.health;
 import setline.http;
@@ -38,7 +39,8 @@ import setline.state;
     JSON body 新增或替换一条路由。普通业务代理请求不会进入这里，因此不会因为管理接口的
     body 解析策略影响透明代理的流式转发。
 */
-void handleAdmin(TCPConnection client, string method, string path, string request) {
+void handleAdmin(TCPConnection client, string method, string target, string request) {
+  auto path = requestPath(target);
   if ((path == adminPrefix ~ "/status" || path == adminPrefix ~ "/status.html") && method == "GET") {
     if (!isBasicAuthorized(request)) {
       sendBasicChallenge(client);
@@ -57,17 +59,17 @@ void handleAdmin(TCPConnection client, string method, string path, string reques
     return;
   }
 
-  if (!isAuthorized(request)) {
-    sendResponse(client, 401, "Unauthorized", "missing or invalid token");
-    return;
-  }
-
   if (path == adminPrefix ~ "/routes" && method == "GET") {
+    if (!isAuthorized(request)) {
+      sendResponse(client, 401, "Unauthorized", "missing or invalid token");
+      return;
+    }
     sendJson(client, routesJson(routesSnapshot()));
     return;
   }
 
   if (path == adminPrefix ~ "/routes" && method == "PUT") {
+    if (!isLocalRouteUpdateAllowed(client)) return;
     try {
       auto route = parseRoute(parseJSON(bodyOf(request)));
       upsertRoute(route);
@@ -79,7 +81,46 @@ void handleAdmin(TCPConnection client, string method, string path, string reques
     return;
   }
 
+  if (path == adminPrefix ~ "/routes" && method == "DELETE") {
+    if (!isLocalRouteUpdateAllowed(client)) return;
+    try {
+      auto prefix = queryValue(target, "prefix");
+      if (prefix.length == 0) {
+        clearRoutes();
+      } else {
+        enforce(deleteRoute(prefix), "route not found: " ~ prefix);
+      }
+      sendJson(client, routesJson(routesSnapshot()));
+    }
+    catch (Exception e) {
+      sendResponse(client, 400, "Bad Request", e.msg);
+    }
+    return;
+  }
+
+  if (path == adminPrefix ~ "/routes/all" && method == "PUT") {
+    if (!isLocalRouteUpdateAllowed(client)) return;
+    try {
+      auto root = parseJSON(bodyOf(request));
+      enforce("routes" in root.object, "routes is required");
+      replaceRoutes(parseRoutes(root["routes"]));
+      sendJson(client, routesJson(routesSnapshot()));
+    }
+    catch (Exception e) {
+      sendResponse(client, 400, "Bad Request", e.msg);
+    }
+    return;
+  }
+
   sendResponse(client, 404, "Not Found", "unknown admin endpoint");
+}
+
+bool isLocalRouteUpdateAllowed(TCPConnection client) {
+  if (isLocalhost(client)) {
+    return true;
+  }
+  sendResponse(client, 403, "Forbidden", "route updates are only allowed from localhost");
+  return false;
 }
 
 /** 校验管理接口 token。
@@ -93,6 +134,35 @@ bool isAuthorized(string request) {
     return true;
   }
   return headerValue(request, "X-Setline-Token") == token;
+}
+
+bool isLocalhost(TCPConnection client) {
+  return isLocalhostAddress(client.remoteAddress.toAddressString());
+}
+
+bool isLocalhostAddress(string address) {
+  return address == "127.0.0.1" || address == "::1" || address == "::ffff:127.0.0.1";
+}
+
+string queryValue(string target, string name) {
+  auto queryStart = target.indexOf("?");
+  if (queryStart < 0) {
+    return "";
+  }
+
+  foreach (part; target[queryStart + 1 .. $].split("&")) {
+    auto equals = part.indexOf("=");
+    if (equals < 0) {
+      if (part == name) {
+        return "";
+      }
+      continue;
+    }
+    if (part[0 .. equals] == name) {
+      return part[equals + 1 .. $];
+    }
+  }
+  return "";
 }
 
 /** 校验 status 页面使用的 Basic Auth。

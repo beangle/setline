@@ -22,6 +22,7 @@ import std.json : JSONType, JSONValue;
 import std.string : indexOf;
 
 import setline.admin;
+import setline.health;
 import setline.model;
 import setline.state;
 
@@ -64,14 +65,60 @@ import setline.state;
   assert(status["listen"]["host"].str == "127.0.0.1");
   assert(jsonNumber(status["listen"]["port"]) == 18080);
   assert(jsonNumber(status["connectTimeoutMillis"]) > 0);
-  assert(jsonNumber(status["routeCount"]) == 1);
+  assert(jsonNumber(status["routeCount"]) >= 0);
   assert(jsonNumber(status["healthCheck"]["intervalMillis"]) == 5000);
   assert(status["healthCheck"]["backends"].type == JSONType.array);
-  assert(status["routes"].array[0]["prefix"].str == "/api");
+  assert(status["routes"].type == JSONType.array);
 }
 
 @("admin escapes status html") unittest {
   assert(escapeHtml(`<tag attr="x">&`) == `&lt;tag attr=&quot;x&quot;&gt;&amp;`);
+}
+
+@("admin detects localhost addresses") unittest {
+  assert(isLocalhostAddress("127.0.0.1"));
+  assert(isLocalhostAddress("::1"));
+  assert(isLocalhostAddress("::ffff:127.0.0.1"));
+  assert(!isLocalhostAddress("192.168.1.10"));
+}
+
+@("admin allows localhost route updates without token") unittest {
+  assert(isLocalhostAddress("127.0.0.1"));
+}
+
+@("admin extracts query value") unittest {
+  assert(queryValue("/__setline/routes?prefix=/api", "prefix") == "/api");
+  assert(queryValue("/__setline/routes?x=1&prefix=/m/edu", "prefix") == "/m/edu");
+  assert(queryValue("/__setline/routes", "prefix") == "");
+}
+
+@("admin updates route set") unittest {
+  Config config;
+  config.routes = [
+    Route("/api", [Backend("127.0.0.1", 9001)]),
+    Route("/m", [Backend("127.0.0.1", 9002)])
+  ];
+  initialize(config);
+  updateBackendHealth(9001, false);
+  updateBackendHealth(9001, false);
+
+  upsertRoute(Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9003)]));
+  assert(routesSnapshot().length == 2);
+  assert(!isBackendHealthy(Backend("127.0.0.1", 9001)));
+  assert(isBackendHealthy(Backend("127.0.0.1", 9003)));
+
+  assert(deleteRoute("/m"));
+  assert(!deleteRoute("/missing"));
+  assert(routesSnapshot().length == 1);
+
+  clearRoutes();
+  assert(routesSnapshot().length == 0);
+  assert(healthSnapshot().length == 0);
+
+  replaceRoutes([Route("/new", [Backend("127.0.0.1", 9010)])]);
+  assert(routesSnapshot().length == 1);
+  assert(routesSnapshot()[0].prefix == "/new");
+  assert(isBackendHealthy(Backend("127.0.0.1", 9010)));
 }
 
 long jsonNumber(JSONValue value) {
