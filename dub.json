@@ -1,0 +1,26 @@
+{
+  "name": "setline",
+  "description": "A local-only high-performance HTTP direct-response router written in D.",
+  "authors": ["chaostone"],
+  "license": "GPL-3.0-or-later",
+  "configurations": [
+    {
+      "name": "application",
+      "targetType": "executable",
+      "targetPath": "target",
+      "sourcePaths": ["src"],
+      "dflags": ["-preview=dip1000"]
+    },
+    {
+      "name": "unittest",
+      "targetPath": "target",
+      "sourcePaths": ["src", "test"],
+      "importPaths": ["src", "test"],
+      "excludedSourceFiles": ["src/main.d"],
+      "dflags": ["-preview=dip1000"],
+      "dependencies": {
+        "silly": "~>1.1.1"
+      }
+    }
+  ]
+}

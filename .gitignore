@@ -1,0 +1,16 @@
+*~
+.*
+
+# Build output directies
+target
+classes
+
+lib
+packages
+
+*.log
+
+#idea
+*.iml
+*.ipr
+*.iws
