@@ -16,6 +16,7 @@
 
 module setline.health;
 
+import core.atomic : atomicLoad, atomicStore;
 import core.time : msecs;
 
 import vibe.core.core : sleep;
@@ -32,6 +33,7 @@ struct BackendHealth {
 
 __gshared private HealthConfig gConfig;
 __gshared private BackendHealth[ushort] gHealth;
+shared private bool gStopping;
 
 void initializeHealth(Config config) {
   synchronized {
@@ -45,6 +47,7 @@ void initializeHealth(Config config) {
       }
     }
   }
+  atomicStore(gStopping, false);
 }
 
 void runHealthChecks() nothrow {
@@ -56,13 +59,21 @@ void runHealthChecks() nothrow {
 }
 
 void startHealthChecks() {
-  while (true) {
+  while (!healthChecksStopped()) {
     auto config = healthConfig();
     foreach (port; healthPorts()) {
       updateBackendHealth(port, probeBackend(port, config.timeoutMillis));
     }
     sleep(config.intervalMillis.msecs);
   }
+}
+
+void stopHealthChecks() nothrow {
+  atomicStore(gStopping, true);
+}
+
+bool healthChecksStopped() nothrow {
+  return atomicLoad(gStopping);
 }
 
 HealthConfig healthConfig() {

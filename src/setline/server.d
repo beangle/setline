@@ -21,7 +21,8 @@ import std.array : split;
 import std.string : indexOf;
 
 import vibe.core.core : runEventLoop, runTask;
-import vibe.core.net : TCPConnection, listenTCP;
+import vibe.core.net : TCPConnection, TCPListener, listenTCP;
+import vibe.core.task : Task;
 
 import setline.admin;
 import setline.constants;
@@ -38,7 +39,7 @@ import setline.state;
     request body、响应体和 WebSocket 升级后的字节透传。
 */
 void serve(ListenAddress listenAddress) {
-  listenTCP(listenAddress.port, (TCPConnection client) @trusted nothrow {
+  auto listener = listenTCP(listenAddress.port, (TCPConnection client) @trusted nothrow {
     try {
       scope (exit) {
         closeQuietly(client);
@@ -54,8 +55,31 @@ void serve(ListenAddress listenAddress) {
     } catch (Throwable) {
     }
   }, listenAddress.host);
-  runTask(&runHealthChecks);
+  auto healthTask = runTask(&runHealthChecks);
+  scope (exit) {
+    shutdownServer(listener, healthTask);
+  }
   runEventLoop();
+}
+
+/** 退出事件循环后释放 eventcore 持有的活动句柄。
+
+    Ctrl+C 会让 vibe-core 的事件循环返回，但 TCP listener、仍在处理的 client 连接以及后台
+    健康检查 task 可能还持有 eventcore handle。这里按固定顺序关闭它们，避免进程退出时
+    输出 active handles leak 警告。
+*/
+void shutdownServer(ref TCPListener listener, ref Task healthTask) nothrow {
+  try {
+    listener.stopListening();
+  } catch (Throwable) {
+  }
+  stopHealthChecks();
+  try {
+    if (healthTask && healthTask.running) {
+      healthTask.interrupt();
+    }
+  } catch (Throwable) {
+  }
 }
 
 /** 关闭客户端连接并忽略关闭过程中的异常。
@@ -63,7 +87,7 @@ void serve(ListenAddress listenAddress) {
     连接可能已经被普通代理、WebSocket 隧道或异常路径提前关闭。入口层统一调用该函数，
     可以简化各分支清理逻辑，并避免关闭失败影响事件循环继续处理新连接。
 */
-void closeQuietly(TCPConnection client) nothrow {
+void closeQuietly(ref TCPConnection client) nothrow {
   try {
     client.close();
   } catch (Throwable) {

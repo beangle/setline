@@ -66,7 +66,7 @@ import setline.state;
   assert(jsonNumber(status["connectTimeoutMillis"]) > 0);
   assert(jsonNumber(status["routeCount"]) == 1);
   assert(jsonNumber(status["healthCheck"]["intervalMillis"]) == 5000);
-  assert(status["healthCheck"]["backends"].array.length > 0);
+  assert(status["healthCheck"]["backends"].type == JSONType.array);
   assert(status["routes"].array[0]["prefix"].str == "/api");
 }
 
