@@ -18,39 +18,67 @@ module setline.http;
 
 import std.array : appender, split;
 import std.conv : to;
-import std.exception : enforce;
 import std.json;
-import std.socket;
 import std.string : indexOf, strip;
+
+import vibe.core.net : TCPConnection;
+import vibe.core.stream : IOMode;
 
 import setline.ascii : toLowerAscii;
 
-string readHttpRequest(Socket socket) {
+struct HttpRequestHead {
+  string head;
+  ubyte[] bufferedBody;
+}
+
+HttpRequestHead readHttpHead(TCPConnection socket) {
   ubyte[8192] buffer;
   auto data = appender!string();
-  ptrdiff_t headerEnd = -1;
-  size_t contentLength = 0;
 
   while (true) {
-    auto received = socket.receive(buffer[]);
+    auto received = socket.read(buffer[], IOMode.once);
     if (received <= 0) {
       break;
     }
     data.put(cast(string) buffer[0 .. received]);
     auto current = data.data;
-
+    auto headerEnd = current.indexOf("\r\n\r\n");
     if (headerEnd < 0) {
-      headerEnd = current.indexOf("\r\n\r\n");
-      if (headerEnd >= 0) {
-        contentLength = parseContentLength(current[0 .. headerEnd]);
-      }
+      continue;
     }
 
-    if (headerEnd >= 0 && current.length >= cast(size_t) headerEnd + 4 + contentLength) {
-      break;
+    auto bodyStart = cast(size_t) headerEnd + 4;
+    return HttpRequestHead(current[0 .. bodyStart], cast(ubyte[]) current[bodyStart .. $].dup);
+  }
+  return HttpRequestHead();
+}
+
+string readHttpRequest(TCPConnection socket) {
+  auto request = readHttpHead(socket);
+  if (request.head.length == 0) {
+    return "";
+  }
+  return completeHttpRequest(socket, request);
+}
+
+string completeHttpRequest(TCPConnection socket, HttpRequestHead request) {
+  auto body = appender!string();
+  body.put(cast(string) request.bufferedBody);
+  auto contentLength = parseContentLength(request.head);
+  if (contentLength > request.bufferedBody.length) {
+    ubyte[8192] buffer;
+    auto remaining = contentLength - request.bufferedBody.length;
+    while (remaining > 0) {
+      auto limit = remaining < buffer.length ? remaining : buffer.length;
+      auto received = socket.read(buffer[0 .. limit], IOMode.once);
+      if (received <= 0) {
+        break;
+      }
+      body.put(cast(string) buffer[0 .. received]);
+      remaining -= received;
     }
   }
-  return data.data;
+  return request.head ~ body.data;
 }
 
 size_t parseContentLength(string headers) {
@@ -109,12 +137,12 @@ bool isSwitchingProtocols(string response) {
   return parts.length >= 2 && parts[1] == "101";
 }
 
-string readHttpResponseHead(Socket socket) {
+string readHttpResponseHead(TCPConnection socket) {
   ubyte[8192] buffer;
   auto data = appender!string();
 
   while (true) {
-    auto received = socket.receive(buffer[]);
+    auto received = socket.read(buffer[], IOMode.once);
     if (received <= 0) {
       break;
     }
@@ -131,35 +159,30 @@ string bodyOf(string request) {
   return pos < 0 ? "" : request[pos + 4 .. $];
 }
 
-void sendJson(Socket socket, JSONValue value) {
+void sendJson(TCPConnection socket, JSONValue value) {
   auto body = value.toString();
   sendRaw(socket, "200 OK", "application/json", body);
 }
 
-void sendResponse(Socket socket, int code, string reason, string body) {
+void sendResponse(TCPConnection socket, int code, string reason, string body) {
   sendRaw(socket, code.to!string ~ " " ~ reason, "text/plain; charset=utf-8", body ~ "\n");
 }
 
-void sendRaw(Socket socket, string status, string contentType, string body) {
+void sendRaw(TCPConnection socket, string status, string contentType, string body) {
   string[string] headers;
   sendRaw(socket, status, contentType, body, headers);
 }
 
-void sendRaw(Socket socket, string status, string contentType, string body, string[string] extraHeaders) {
+void sendRaw(TCPConnection socket, string status, string contentType, string body, string[string] extraHeaders) {
   sendPrepared(socket, buildHttpResponse(status, contentType, body, extraHeaders));
 }
 
-void sendPrepared(Socket socket, string response) {
+void sendPrepared(TCPConnection socket, string response) {
   sendPrepared(socket, cast(const(ubyte)[]) response);
 }
 
-void sendPrepared(Socket socket, const(ubyte)[] response) {
-  size_t sent;
-  while (sent < response.length) {
-    auto count = socket.send(response[sent .. $]);
-    enforce(count > 0, "socket write failed");
-    sent += count;
-  }
+void sendPrepared(TCPConnection socket, const(ubyte)[] response) {
+  socket.write(response);
 }
 
 string buildHttpResponse(string status, string contentType, string body, string[string] extraHeaders) {

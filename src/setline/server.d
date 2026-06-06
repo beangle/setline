@@ -16,11 +16,12 @@
 
 module setline.server;
 
-import core.thread;
 import std.algorithm : startsWith;
 import std.array : split;
-import std.socket;
 import std.string : indexOf;
+
+import vibe.core.core : runEventLoop;
+import vibe.core.net : TCPConnection, listenTCP;
 
 import setline.admin;
 import setline.constants;
@@ -30,37 +31,38 @@ import setline.proxy;
 import setline.state;
 
 void serve(ListenAddress listenAddress) {
-  auto listener = new TcpSocket(AddressFamily.INET);
-  listener.setOption(SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, true);
-  listener.bind(new InternetAddress(listenAddress.host, listenAddress.port));
-  listener.listen(128);
-
-  while (true) {
-    auto client = listener.accept();
-    auto worker = new Thread({
+  listenTCP(listenAddress.port, (TCPConnection client) nothrow {
+    try {
       scope (exit) {
-        client.close();
+        closeQuietly(client);
       }
       handleClient(client);
-    });
-    worker.isDaemon = true;
-    worker.start();
+    } catch (Throwable) {
+    }
+  }, listenAddress.host);
+  runEventLoop();
+}
+
+void closeQuietly(TCPConnection client) nothrow {
+  try {
+    client.close();
+  } catch (Throwable) {
   }
 }
 
-void handleClient(Socket client) {
-  auto request = readHttpRequest(client);
-  if (request.length == 0) {
+void handleClient(TCPConnection client) {
+  auto request = readHttpHead(client);
+  if (request.head.length == 0) {
     return;
   }
 
-  auto firstLineEnd = request.indexOf("\r\n");
+  auto firstLineEnd = request.head.indexOf("\r\n");
   if (firstLineEnd < 0) {
     sendResponse(client, 400, "Bad Request", "malformed request");
     return;
   }
 
-  auto parts = request[0 .. firstLineEnd].split(" ");
+  auto parts = request.head[0 .. firstLineEnd].split(" ");
   if (parts.length < 3) {
     sendResponse(client, 400, "Bad Request", "malformed request line");
     return;
@@ -71,7 +73,7 @@ void handleClient(Socket client) {
   auto path = requestPath(target);
 
   if (path.startsWith(adminPrefix)) {
-    handleAdmin(client, method, path, request);
+    handleAdmin(client, method, path, completeHttpRequest(client, request));
     return;
   }
 
@@ -93,11 +95,11 @@ void handleClient(Socket client) {
       sendResponse(client, 502, "Bad Gateway", "route has no backend");
       return;
     }
-    if (shouldUseWebSocketTunnel(request)) {
-      forwardWebSocket(client, request, backend.get);
+    if (shouldUseWebSocketTunnel(request.head)) {
+      forwardWebSocket(client, request.head, request.bufferedBody, backend.get);
       return;
     }
-    forward(client, request, backend.get);
+    forward(client, request.head, request.bufferedBody, backend.get);
   }
   catch (Exception e) {
     sendResponse(client, 502, "Bad Gateway", e.msg);

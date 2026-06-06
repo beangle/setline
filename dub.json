@@ -1,8 +1,11 @@
 {
   "name": "setline",
-  "description": "A local-only high-performance HTTP direct-response router written in D.",
+  "description": "A local HTTP path router and transparent proxy.",
   "authors": ["chaostone"],
   "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "vibe-core": "~>2.10.1"
+  },
   "configurations": [
     {
       "name": "application",
@@ -17,7 +20,6 @@
       "sourcePaths": ["src", "test"],
       "importPaths": ["src", "test"],
       "excludedSourceFiles": ["src/main.d"],
-      "dflags": ["-preview=dip1000"],
       "dependencies": {
         "silly": "~>1.1.1"
       }

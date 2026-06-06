@@ -17,7 +17,8 @@
 module setline.admin;
 
 import std.json : parseJSON;
-import std.socket;
+
+import vibe.core.net : TCPConnection;
 
 import setline.config : parseRoute;
 import setline.constants;
@@ -25,7 +26,7 @@ import setline.http;
 import setline.jsonview;
 import setline.state;
 
-void handleAdmin(Socket client, string method, string path, string request) {
+void handleAdmin(TCPConnection client, string method, string path, string request) {
   if (!isAuthorized(request)) {
     sendResponse(client, 401, "Unauthorized", "missing or invalid token");
     return;
