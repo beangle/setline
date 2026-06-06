@@ -1,6 +1,6 @@
 {
-  "name": "setline",
-  "version": "0.0.1",
+  "name": "beangle-setline",
+  "version": "0.0.2",
   "description": "A local HTTP path router and transparent proxy.",
   "authors": ["chaostone"],
   "license": "GPL-3.0-or-later",
