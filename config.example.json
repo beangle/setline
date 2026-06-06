@@ -3,18 +3,9 @@
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
   "maxConnections": 65535,
-  "routes": [
-    {
-      "prefix": "/api/edu",
-      "backends": ["http://127.0.0.1:9002", "http://127.0.0.1:9003"]
-    },
-    {
-      "prefix": "/m/edu/learning",
-      "backends": ["http://127.0.0.1:5173"]
-    },
-    {
-      "prefix": "/api",
-      "backend": "http://127.0.0.1:9001"
-    }
-  ]
+  "routes": {
+    "/api/edu": [9002, 9003],
+    "/m/edu/learning": 5173,
+    "/api": 9001
+  }
 }

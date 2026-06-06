@@ -8,7 +8,7 @@ predictable.
 - Linux only.
 - Local only: listeners and backends must be loopback or localhost.
 - HTTP/1.x path-prefix routing.
-- Local HTTP backends only.
+- Local HTTP backends only, configured by port number.
 - Longest-prefix route matching.
 - Optional round-robin selection across local backends.
 - Runtime route registration through the local admin API.
@@ -59,6 +59,8 @@ These are intentionally out of scope unless the project goal changes:
 ## Implementation Constraints
 
 - Keep the route model simple: prefix plus exactly one action.
+- Keep route configuration as `path prefix -> port or ports`; backend host is
+  fixed to `127.0.0.1`.
 - Keep route lookup indexed by URI path segment instead of scanning every route
   for each request.
 - Prefer `vibe-core` TCP streams and fibers for proxy traffic.

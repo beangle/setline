@@ -16,14 +16,12 @@
 
 module setline.config;
 
-import std.algorithm : startsWith;
 import std.array : split;
 import std.conv : to;
 import std.exception : enforce;
 import std.file : exists, readText;
 import std.json;
 import std.stdio : stderr;
-import std.string : indexOf;
 
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
@@ -57,8 +55,8 @@ Config loadConfig(string path) {
     enforce(config.maxConnections > 0, "maxConnections must be positive");
   }
   if ("routes" in root.object) {
-    foreach (item; root["routes"].array) {
-      config.routes ~= parseRoute(item);
+    foreach (prefix, ports; root["routes"].object) {
+      config.routes ~= parseRoute(prefix, ports);
     }
   }
   sortRoutes(config.routes);
@@ -77,54 +75,67 @@ ListenAddress parseListen(string value) {
   return ListenAddress(parts[0], parts[1].to!ushort);
 }
 
-/** 解析单条路由配置。
+/** 解析配置文件中的单条路由。
 
-    路由只能在单后端、多后端两种模式中选择一种。这里显式拒绝 `directResponse` 和
-    `stripPrefix`，是为了保持项目目标清晰：setline 按 URL 决定转发目的，只代理和透传，
-    不生成本地业务响应，也不会改写浏览器发来的 URL。
+    配置文件中的 `routes` 是对象，key 为路径前缀，value 为端口或端口数组。后端固定为
+    `127.0.0.1:<port>`，符合本项目只代理本机服务的约束。
 */
-Route parseRoute(JSONValue value) {
-  auto obj = value.object;
-  enforce("prefix" in obj, "route.prefix is required");
-  enforce(!("directResponse" in obj), "directResponse is not supported");
-  enforce(!("stripPrefix" in obj), "stripPrefix is not supported");
-  auto hasBackend = ("backend" in obj) !is null;
-  auto hasBackends = ("backends" in obj) !is null;
-  enforce(hasBackend || hasBackends, "route.backend or route.backends is required");
-  enforce(cast(int) hasBackend + cast(int) hasBackends == 1,
-    "route must define exactly one of backend or backends");
-
+Route parseRoute(string prefix, JSONValue ports) {
   Route route;
-  route.prefix = obj["prefix"].str;
-  if (hasBackend)  {
-    route.backends = [parseBackend(obj["backend"].str)];
-  } else {
-    foreach (backendValue; obj["backends"].array) {
-      route.backends ~= parseBackend(backendValue.str);
-    }
-    enforce(route.backends.length > 0, "route.backends must not be empty");
-  }
+  route.prefix = prefix;
+  route.backends = parseBackends(ports);
   validateRoute(route);
   return route;
 }
 
-/** 解析后端地址。
+/** 解析管理接口提交的单条路由。
 
-    目前只支持本机明文 HTTP 后端，格式为 `http://host:port`。即使配置里带了 path，也只取
-    authority 部分；请求路径仍然使用浏览器原始请求行中的路径，确保代理不做 URL 改写。
+    管理接口保留 JSON object 形式，但字段收缩为 `prefix` 加 `port` 或 `ports`。这里显式
+    拒绝旧的 `backend`、`backends`、`directResponse` 和 `stripPrefix`，避免配置语义回退到
+    通用反向代理。
 */
-Backend parseBackend(string raw) {
-  enforce(raw.startsWith("http://"), "only http:// backends are supported");
-  auto authority = raw["http://".length .. $];
-  auto slashIndex = authority.indexOf("/");
-  if (slashIndex >= 0) {
-    authority = authority[0 .. slashIndex];
+Route parseRoute(JSONValue value) {
+  auto obj = value.object;
+  enforce("prefix" in obj, "route.prefix is required");
+  enforce(!("backend" in obj), "route.backend is not supported; use port");
+  enforce(!("backends" in obj), "route.backends is not supported; use ports");
+  enforce(!("directResponse" in obj), "directResponse is not supported");
+  enforce(!("stripPrefix" in obj), "stripPrefix is not supported");
+  auto hasPort = ("port" in obj) !is null;
+  auto hasPorts = ("ports" in obj) !is null;
+  enforce(hasPort || hasPorts, "route.port or route.ports is required");
+  enforce(cast(int) hasPort + cast(int) hasPorts == 1, "route must define exactly one of port or ports");
+
+  Route route;
+  route.prefix = obj["prefix"].str;
+  route.backends = parseBackends(hasPort ? obj["port"] : obj["ports"]);
+  validateRoute(route);
+  return route;
+}
+
+/** 解析端口或端口数组为本机后端列表。
+
+    简化配置后，不再接受完整 backend URL。所有端口都映射到 `127.0.0.1:<port>`，请求路径
+    仍然使用浏览器原始请求行中的路径，确保代理不做 URL 改写。
+*/
+Backend[] parseBackends(JSONValue value) {
+  if (value.type == JSONType.integer) {
+    return [parseBackend(value.integer)];
   }
 
-  auto parts = authority.split(":");
-  enforce(parts.length == 2, "backend must be http://host:port");
-  enforce(isLocalHost(parts[0]), "backend host must be local");
-  return Backend(parts[0], parts[1].to!ushort);
+  enforce(value.type == JSONType.array, "route value must be port or ports");
+  Backend[] backends;
+  foreach (portValue; value.array) {
+    enforce(portValue.type == JSONType.integer, "route ports must be integers");
+    backends ~= parseBackend(portValue.integer);
+  }
+  enforce(backends.length > 0, "route ports must not be empty");
+  return backends;
+}
+
+Backend parseBackend(long port) {
+  enforce(port > 0 && port <= ushort.max, "backend port must be 1..65535");
+  return Backend("127.0.0.1", cast(ushort) port);
 }
 
 /** 判断主机名是否属于当前允许的本机范围。

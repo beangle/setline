@@ -25,19 +25,15 @@ JSONValue routeJson(Route route) {
   JSONValue[string] item;
   item["prefix"] = JSONValue(route.prefix);
   if (route.backends.length == 1)  {
-    item["backend"] = backendJson(route.backends[0]);
+    item["port"] = JSONValue(route.backends[0].port);
   } else {
-    JSONValue[] backends;
+    JSONValue[] ports;
     foreach (backend; route.backends) {
-      backends ~= backendJson(backend);
+      ports ~= JSONValue(backend.port);
     }
-    item["backends"] = JSONValue(backends);
+    item["ports"] = JSONValue(ports);
   }
   return JSONValue(item);
-}
-
-JSONValue backendJson(Backend backend) {
-  return JSONValue("http://" ~ backend.host ~ ":" ~ backend.port.to!string);
 }
 
 JSONValue routesJson(Route[] routes) {

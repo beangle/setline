@@ -23,7 +23,7 @@ import setline.config;
 
 @("config keeps large default connection limit") unittest {
   auto path = "/tmp/setline-config-defaults-test.json";
-  write(path, `{"listen":"127.0.0.1:8080","routes":[]}`);
+  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
@@ -33,7 +33,7 @@ import setline.config;
 
 @("config parses connection protection settings") unittest {
   auto path = "/tmp/setline-config-protection-test.json";
-  write(path, `{"connectTimeoutMillis":1500,"maxConnections":128,"routes":[]}`);
+  write(path, `{"connectTimeoutMillis":1500,"maxConnections":128,"routes":{}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
@@ -43,7 +43,29 @@ import setline.config;
 
 @("config rejects direct response routes") unittest {
   auto path = "/tmp/setline-config-direct-response-test.json";
-  write(path, `{"routes":[{"prefix":"/healthz","directResponse":{"body":"ok"}}]}`);
+  write(path, `{"routes":{"/healthz":{"directResponse":{"body":"ok"}}}}`);
+  scope (exit) remove(path);
+
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config parses route ports") unittest {
+  auto path = "/tmp/setline-config-routes-test.json";
+  write(path, `{"routes":{"/api":9001,"/api/edu":[9002,9003]}}`);
+  scope (exit) remove(path);
+
+  auto config = loadConfig(path);
+  assert(config.routes.length == 2);
+  assert(config.routes[0].prefix == "/api/edu");
+  assert(config.routes[0].backends[0].port == 9002);
+  assert(config.routes[0].backends[1].port == 9003);
+  assert(config.routes[1].prefix == "/api");
+  assert(config.routes[1].backends[0].port == 9001);
+}
+
+@("config rejects backend urls") unittest {
+  auto path = "/tmp/setline-config-backend-url-test.json";
+  write(path, `{"routes":[{"prefix":"/api","backend":"http://127.0.0.1:9001"}]}`);
   scope (exit) remove(path);
 
   assertThrown!Exception(loadConfig(path));

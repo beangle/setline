@@ -35,19 +35,11 @@ dub run -- --config config.example.json
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
   "maxConnections": 65535,
-  "routes": [
-    {
-      "prefix": "/api/edu",
-      "backends": [
-        "http://127.0.0.1:9002",
-        "http://127.0.0.1:9003"
-      ]
-    },
-    {
-      "prefix": "/api",
-      "backend": "http://127.0.0.1:9001"
-    }
-  ]
+  "routes": {
+    "/api/edu": [9002, 9003],
+    "/m/edu/learning": 5173,
+    "/api": 9001
+  }
 }
 ```
 
@@ -57,11 +49,8 @@ Top-level fields:
 - `adminToken`: optional token for `__setline` management APIs.
 - `connectTimeoutMillis`: backend TCP connect timeout, default `3000`.
 - `maxConnections`: active client connection limit, default `65535`.
-
-Every route must define exactly one action:
-
-- `backend`: forward to one local backend.
-- `backends`: forward to multiple local backends with round-robin selection.
+- `routes`: object mapping URL path prefixes to a local backend port or a list
+  of local backend ports.
 
 Routes are indexed by path segment with longest-prefix priority, so `/api/edu`
 wins over `/api`.
@@ -72,7 +61,7 @@ wins over `/api`.
 curl -X PUT http://127.0.0.1:8080/__setline/routes \
   -H 'Content-Type: application/json' \
   -H 'X-Setline-Token: change-me' \
-  -d '{"prefix":"/api/edu","backends":["http://127.0.0.1:9002","http://127.0.0.1:9003"]}'
+  -d '{"prefix":"/api/edu","ports":[9002,9003]}'
 ```
 
 List routes:
