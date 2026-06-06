@@ -33,13 +33,26 @@ import setline.router : sortRoutes, validateRoute;
     加载到的路由会立即按前缀长度排序，运行期查找时可以直接从最长前缀开始匹配。
 */
 Config loadConfig(string path) {
-  Config config;
-
   if (!exists(path)) {
     stderr.writefln("Config %s not found, using empty route table", path);
-    return config;
+    return Config.init;
   }
 
+  return parseConfigFile(path);
+}
+
+/** 检查 JSON 配置文件并返回解析后的配置。
+
+    该入口用于命令行 `-c` / `--check`。和运行时加载不同，检查模式要求配置文件必须存在；
+    缺失、JSON 格式错误、字段类型错误或路由非法都会通过异常报告给命令行入口。
+*/
+Config checkConfig(string path) {
+  enforce(exists(path), "config file not found: " ~ path);
+  return parseConfigFile(path);
+}
+
+Config parseConfigFile(string path) {
+  Config config;
   auto root = parseJSON(readText(path));
   if ("listen" in root.object) {
     config.listen = parseListen(root["listen"]);

@@ -50,6 +50,20 @@ import setline.config;
   assert(config.maxConnections == 65535);
 }
 
+@("config check requires existing file") unittest {
+  assertThrown!Exception(checkConfig("/tmp/setline-config-missing-test.json"));
+}
+
+@("config check accepts valid file") unittest {
+  auto path = "/tmp/setline-config-check-test.json";
+  write(path, `{"listen":"127.0.0.1:8080","routes":{"/api":9001}}`);
+  scope (exit) remove(path);
+
+  auto config = checkConfig(path);
+  assert(config.listen.port == 8080);
+  assert(config.routes.length == 1);
+}
+
 @("config parses connection protection settings") unittest {
   auto path = "/tmp/setline-config-protection-test.json";
   write(path,

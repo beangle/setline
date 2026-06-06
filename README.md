@@ -24,7 +24,13 @@ dub build
 ## Run
 
 ```bash
-dub run -- --config config.example.json
+dub run -- -f config.example.json
+```
+
+Check a config file without starting the listener:
+
+```bash
+dub run -- -c -f config.example.json
 ```
 
 ## Config

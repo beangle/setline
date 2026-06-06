@@ -17,7 +17,7 @@
 module main;
 
 import std.getopt : defaultGetoptPrinter, getopt;
-import std.stdio : stdout;
+import std.stdio : stderr, stdout;
 
 import setline.config;
 import setline.constants;
@@ -26,27 +26,41 @@ import setline.state;
 
 version (unittest) {
 } else {
-void main(string[] args) {
+int main(string[] args) {
   version (linux) {
   } else {
     static assert(false, "setline is Linux-only");
   }
 
   string configPath = defaultConfigPath;
+  bool check;
   bool help;
   auto helpInfo = getopt(args,
-    "config|c", "Path to setline JSON config", &configPath,
+    "file|f", "Path to setline JSON config", &configPath,
+    "check|c", "Check config and exit", &check,
     "help|h", "Show this help", &help);
 
   if (help) {
-    defaultGetoptPrinter("Usage: setline --config setline.json", helpInfo.options);
-    return;
+    defaultGetoptPrinter("Usage: setline [-f setline.json] [-c]", helpInfo.options);
+    return 0;
   }
 
-  auto config = loadConfig(configPath);
-  initialize(config);
+  try {
+    if (check) {
+      checkConfig(configPath);
+      stdout.writefln("Config %s is valid", configPath);
+      return 0;
+    }
 
-  stdout.writefln("setline listening on http://%s:%s", config.listen.host, config.listen.port);
-  serve(config.listen);
+    auto config = loadConfig(configPath);
+    initialize(config);
+
+    stdout.writefln("setline listening on http://%s:%s", config.listen.host, config.listen.port);
+    serve(config.listen);
+    return 0;
+  } catch (Exception e) {
+    stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
+    return 1;
+  }
 }
 }
