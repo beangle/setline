@@ -26,8 +26,37 @@ import setline.router;
     Route("/m/edu")
   ];
   sortRoutes(routes);
+  auto tree = buildRouteTree(routes);
 
-  auto matched = findRoute(routes, "/m/edu/learning/src/App.vue");
+  auto matched = findRoute(routes, tree, "/m/edu/learning/src/App.vue");
   assert(!matched.isNull);
   assert(matched.get.prefix == "/m/edu/learning");
+}
+
+@("router tree matches path segments") unittest {
+  Route[] routes = [
+    Route("/api", DirectResponse(), "", [Backend("127.0.0.1", 9001)]),
+    Route("/api/a", DirectResponse(), "", [Backend("127.0.0.1", 9002)])
+  ];
+  sortRoutes(routes);
+  auto tree = buildRouteTree(routes);
+
+  assert(findRoute(routes, tree, "/api").get.backends[0].port == 9001);
+  assert(findRoute(routes, tree, "/api/users").get.backends[0].port == 9001);
+  assert(findRoute(routes, tree, "/api/a").get.backends[0].port == 9002);
+  assert(findRoute(routes, tree, "/api/a/users").get.backends[0].port == 9002);
+  assert(findRoute(routes, tree, "/api/abc").get.backends[0].port == 9001);
+  assert(findRoute(routes, tree, "/apiology").isNull);
+}
+
+@("router tree selects backend round robin") unittest {
+  Route[] routes = [
+    Route("/api", DirectResponse(), "", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9002)])
+  ];
+  sortRoutes(routes);
+  auto tree = buildRouteTree(routes);
+
+  assert(selectBackend(routes, tree, "/api/users").get.port == 9001);
+  assert(selectBackend(routes, tree, "/api/users").get.port == 9002);
+  assert(selectBackend(routes, tree, "/api/users").get.port == 9001);
 }

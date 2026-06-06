@@ -26,6 +26,12 @@ import setline.http;
 import setline.jsonview;
 import setline.state;
 
+/** 处理 `__setline` 管理接口请求。
+
+    管理接口是当前少数需要完整读取 request body 的路径：GET 返回内存路由表快照，PUT 用
+    JSON body 新增或替换一条路由。普通业务代理请求不会进入这里，因此不会因为管理接口的
+    body 解析策略影响透明代理的流式转发。
+*/
 void handleAdmin(TCPConnection client, string method, string path, string request) {
   if (!isAuthorized(request)) {
     sendResponse(client, 401, "Unauthorized", "missing or invalid token");
@@ -52,6 +58,11 @@ void handleAdmin(TCPConnection client, string method, string path, string reques
   sendResponse(client, 404, "Not Found", "unknown admin endpoint");
 }
 
+/** 校验管理接口 token。
+
+    未配置 token 时默认允许本机管理，方便开发场景；一旦配置 `adminToken`，请求必须携带
+    `X-Setline-Token`。该校验只保护管理 API，不参与普通代理请求。
+*/
 bool isAuthorized(string request) {
   auto token = adminToken();
   if (token.length == 0) {

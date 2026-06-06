@@ -13,6 +13,8 @@ port from proxy identity headers.
 ## Goals
 
 - Route by URL path prefix with longest-prefix priority.
+- Build a path-segment route tree after loading or updating routes, so request
+  matching depends on URI depth rather than total route count.
 - Keep proxying fast under browser-style concurrent resource loading.
 - Preserve request headers and body semantics as much as possible.
 - Avoid buffering large request bodies in memory.

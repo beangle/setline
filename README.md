@@ -35,6 +35,8 @@ dub run -- --config config.example.json
 {
   "listen": "127.0.0.1:8080",
   "adminToken": "change-me",
+  "connectTimeoutMillis": 3000,
+  "maxConnections": 65535,
   "routes": [
     {
       "prefix": "/healthz",
@@ -59,13 +61,21 @@ dub run -- --config config.example.json
 }
 ```
 
+Top-level fields:
+
+- `listen`: local listen address, default `127.0.0.1:8080`.
+- `adminToken`: optional token for `__setline` management APIs.
+- `connectTimeoutMillis`: backend TCP connect timeout, default `3000`.
+- `maxConnections`: active client connection limit, default `65535`.
+
 Every route must define exactly one action:
 
 - `backend`: forward to one local backend.
 - `backends`: forward to multiple local backends with round-robin selection.
 - `directResponse`: return a prepared local response.
 
-Because routes are sorted by longest prefix first, `/api/edu` wins over `/api`.
+Routes are indexed by path segment with longest-prefix priority, so `/api/edu`
+wins over `/api`.
 
 Direct response fields:
 
@@ -101,3 +111,4 @@ See also:
 
 - `doc/transparent-proxy-design.md`
 - `doc/project-constraints.md`
+- `doc/deployment.md`

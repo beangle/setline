@@ -11,6 +11,7 @@
     {
       "name": "application",
       "targetType": "executable",
+      "targetName": "setline",
       "targetPath": "target",
       "sourcePaths": ["src"],
       "dflags": ["-preview=dip1000"]

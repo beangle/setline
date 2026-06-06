@@ -16,20 +16,30 @@
 
 module setline.state;
 
+import core.atomic : atomicLoad, atomicStore, cas;
+
 import std.typecons : Nullable;
 
 import setline.model;
 import setline.router;
 
 __gshared private Route[] gRoutes;
+__gshared private RouteTree gRouteTree;
 __gshared private string gAdminToken;
+__gshared private int gConnectTimeoutMillis = 3000;
+shared private size_t gMaxConnections = 65535;
+shared private size_t gActiveConnections;
 
 void initialize(Config config) {
   synchronized {
     gRoutes = config.routes.dup;
     sortRoutes(gRoutes);
+    gRouteTree = buildRouteTree(gRoutes);
     gAdminToken = config.adminToken;
+    gConnectTimeoutMillis = config.connectTimeoutMillis;
   }
+  atomicStore(gMaxConnections, config.maxConnections);
+  atomicStore(gActiveConnections, 0);
 }
 
 string adminToken() {
@@ -38,21 +48,59 @@ string adminToken() {
   }
 }
 
+int connectTimeoutMillis() {
+  synchronized {
+    return gConnectTimeoutMillis;
+  }
+}
+
+size_t maxConnections() {
+  return atomicLoad(gMaxConnections);
+}
+
+size_t activeConnections() {
+  return atomicLoad(gActiveConnections);
+}
+
+bool tryAcquireConnection() {
+  while (true) {
+    auto current = atomicLoad(gActiveConnections);
+    if (current >= atomicLoad(gMaxConnections)) {
+      return false;
+    }
+    if (cas(&gActiveConnections, current, current + 1)) {
+      return true;
+    }
+  }
+}
+
+void releaseConnection() {
+  while (true) {
+    auto current = atomicLoad(gActiveConnections);
+    if (current == 0) {
+      return;
+    }
+    if (cas(&gActiveConnections, current, current - 1)) {
+      return;
+    }
+  }
+}
+
 Nullable!Route findRoute(string path) {
   synchronized {
-    return setline.router.findRoute(gRoutes, path);
+    return setline.router.findRoute(gRoutes, gRouteTree, path);
   }
 }
 
 Nullable!Backend selectBackend(string path) {
   synchronized {
-    return setline.router.selectBackend(gRoutes, path);
+    return setline.router.selectBackend(gRoutes, gRouteTree, path);
   }
 }
 
 void upsertRoute(Route route) {
   synchronized {
-    setline.router.upsertRoute(gRoutes, route);
+    setline.router.upsertRoute(gRoutes, gRouteTree, route);
   }
 }
 

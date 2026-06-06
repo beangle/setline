@@ -29,6 +29,11 @@ import setline.http : buildHttpResponse, statusReason;
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
 
+/** 从 JSON 文件加载 setline 配置。
+
+    配置文件不存在时返回空路由表，便于本地开发先启动代理再通过管理接口动态增加路由。
+    加载到的路由会立即按前缀长度排序，运行期查找时可以直接从最长前缀开始匹配。
+*/
 Config loadConfig(string path) {
   Config config;
 
@@ -44,6 +49,14 @@ Config loadConfig(string path) {
   if ("adminToken" in root.object) {
     config.adminToken = root["adminToken"].str;
   }
+  if ("connectTimeoutMillis" in root.object) {
+    config.connectTimeoutMillis = cast(int) root["connectTimeoutMillis"].integer;
+    enforce(config.connectTimeoutMillis > 0, "connectTimeoutMillis must be positive");
+  }
+  if ("maxConnections" in root.object) {
+    config.maxConnections = cast(size_t) root["maxConnections"].integer;
+    enforce(config.maxConnections > 0, "maxConnections must be positive");
+  }
   if ("routes" in root.object) {
     foreach (item; root["routes"].array) {
       config.routes ~= parseRoute(item);
@@ -53,6 +66,11 @@ Config loadConfig(string path) {
   return config;
 }
 
+/** 解析监听地址。
+
+    setline 当前不是公网反向代理，也不承担内核透明代理职责，所以监听地址被限制为本机。
+    格式固定为 `host:port`，这样可以让后续代理身份头里的端口推导保持明确。
+*/
 ListenAddress parseListen(string value) {
   auto parts = value.split(":");
   enforce(parts.length == 2, "listen must be host:port");
@@ -60,6 +78,11 @@ ListenAddress parseListen(string value) {
   return ListenAddress(parts[0], parts[1].to!ushort);
 }
 
+/** 解析单条路由配置。
+
+    路由只能在直接响应、单后端、多后端三种模式中选择一种。这里显式拒绝 `stripPrefix`，
+    是为了保持项目目标清晰：setline 按 URL 决定转发目的，但不会改写浏览器发来的 URL。
+*/
 Route parseRoute(JSONValue value) {
   auto obj = value.object;
   enforce("prefix" in obj, "route.prefix is required");
@@ -93,6 +116,11 @@ Route parseRoute(JSONValue value) {
   return route;
 }
 
+/** 解析直接响应配置。
+
+    直接响应允许配置状态码、Content-Type、body 和少量附加头。`Content-Length`、
+    `Connection`、`Content-Type` 这类由响应构造函数统一控制，避免配置覆盖基础协议头。
+*/
 DirectResponse parseDirectResponse(JSONValue value) {
   auto obj = value.object;
 
@@ -111,6 +139,11 @@ DirectResponse parseDirectResponse(JSONValue value) {
   return response;
 }
 
+/** 解析后端地址。
+
+    目前只支持本机明文 HTTP 后端，格式为 `http://host:port`。即使配置里带了 path，也只取
+    authority 部分；请求路径仍然使用浏览器原始请求行中的路径，确保代理不做 URL 改写。
+*/
 Backend parseBackend(string raw) {
   enforce(raw.startsWith("http://"), "only http:// backends are supported");
   auto authority = raw["http://".length .. $];
@@ -125,6 +158,10 @@ Backend parseBackend(string raw) {
   return Backend(parts[0], parts[1].to!ushort);
 }
 
+/** 判断主机名是否属于当前允许的本机范围。
+
+    这是项目约束的一部分：setline 服务本地前端开发和本机后端聚合，不开放到任意远端主机。
+*/
 bool isLocalHost(string host) {
   return host == "127.0.0.1" || host == "localhost";
 }

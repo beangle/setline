@@ -1,0 +1,28 @@
+{
+  "listen": "127.0.0.1:8080",
+  "adminToken": "change-me",
+  "connectTimeoutMillis": 3000,
+  "maxConnections": 65535,
+  "routes": [
+    {
+      "prefix": "/healthz",
+      "directResponse": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": "{\"status\":\"ok\"}"
+      }
+    },
+    {
+      "prefix": "/api/edu",
+      "backends": ["http://127.0.0.1:9002", "http://127.0.0.1:9003"]
+    },
+    {
+      "prefix": "/m/edu/learning",
+      "backends": ["http://127.0.0.1:5173"]
+    },
+    {
+      "prefix": "/api",
+      "backend": "http://127.0.0.1:9001"
+    }
+  ]
+}

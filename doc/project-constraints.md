@@ -59,6 +59,8 @@ These are intentionally out of scope unless the project goal changes:
 ## Implementation Constraints
 
 - Keep the route model simple: prefix plus exactly one action.
+- Keep route lookup indexed by URI path segment instead of scanning every route
+  for each request.
 - Prefer `vibe-core` TCP streams and fibers for proxy traffic.
 - Keep protocol helpers in the existing `http`, `proxy`, and `server` modules
   unless a real boundary appears.
