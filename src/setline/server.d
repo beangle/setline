@@ -20,11 +20,12 @@ import std.algorithm : startsWith;
 import std.array : split;
 import std.string : indexOf;
 
-import vibe.core.core : runEventLoop;
+import vibe.core.core : runEventLoop, runTask;
 import vibe.core.net : TCPConnection, listenTCP;
 
 import setline.admin;
 import setline.constants;
+import setline.health;
 import setline.http;
 import setline.model;
 import setline.proxy;
@@ -53,6 +54,7 @@ void serve(ListenAddress listenAddress) {
     } catch (Throwable) {
     }
   }, listenAddress.host);
+  runTask(&runHealthChecks);
   runEventLoop();
 }
 
@@ -102,18 +104,38 @@ void handleClient(TCPConnection client) {
   }
 
   try {
-    auto backend = selectBackend(path);
-    if (backend.isNull) {
-      sendResponse(client, 404, "Not Found", "no route for " ~ path);
-      return;
+    Backend[] tried;
+    Exception lastConnectFailure;
+    while (true) {
+      auto backend = selectBackendExcept(path, tried);
+      if (backend.isNull) {
+        if (tried.length > 0 && lastConnectFailure !is null) {
+          sendResponse(client, 502, "Bad Gateway", lastConnectFailure.msg);
+        } else if (hasRoute(path)) {
+          sendResponse(client, 503, "Service Unavailable", "no healthy backend for " ~ path);
+        } else {
+          sendResponse(client, 404, "Not Found", "no route for " ~ path);
+        }
+        return;
+      }
+      try {
+        if (shouldUseWebSocketTunnel(request.head)) {
+          forwardWebSocket(client, request.head, request.bufferedBody, backend.get);
+          return;
+        }
+        forward(client, request.head, request.bufferedBody, backend.get);
+        return;
+      } catch (BackendConnectException e) {
+        tried ~= backend.get;
+        lastConnectFailure = e;
+      }
     }
-    if (shouldUseWebSocketTunnel(request.head)) {
-      forwardWebSocket(client, request.head, request.bufferedBody, backend.get);
-      return;
-    }
-    forward(client, request.head, request.bufferedBody, backend.get);
   }
   catch (Exception e) {
-    sendResponse(client, 502, "Bad Gateway", e.msg);
+    if (hasRoute(path)) {
+      sendResponse(client, 502, "Bad Gateway", e.msg);
+    } else {
+      sendResponse(client, 404, "Not Found", "no route for " ~ path);
+    }
   }
 }

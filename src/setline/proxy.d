@@ -30,6 +30,37 @@ import setline.http : headerContains, headerValue, isSwitchingProtocols, isWebSo
 import setline.model;
 import setline.state : connectTimeoutMillis;
 
+/** backend TCP 连接失败。
+
+    这个异常只表示代理尚未和 backend 建立连接，请求头和请求体都还没有发送给上游。调用方
+    可以在同一路由下尝试其他 backend，而不会造成非幂等请求被重复提交。
+*/
+class BackendConnectException : Exception {
+  this(Backend backend, string message) {
+    super("connect " ~ backend.host ~ ":" ~ backend.port.to!string ~ " failed: " ~ message);
+    this.info = EmptyTraceInfo.instance;
+  }
+}
+
+private class EmptyTraceInfo : Throwable.TraceInfo {
+  override int opApply(scope int delegate(ref const(char[])) dg) const {
+    return 0;
+  }
+
+  override int opApply(scope int delegate(ref size_t, ref const(char[])) dg) const {
+    return 0;
+  }
+
+  override string toString() const {
+    return null;
+  }
+
+  static EmptyTraceInfo instance() @trusted {
+    static immutable EmptyTraceInfo value = new EmptyTraceInfo;
+    return cast(EmptyTraceInfo) value;
+  }
+}
+
 /** 将一个普通 HTTP 请求转发到匹配到的后端。
 
     这个函数是 setline 的核心透明代理路径：请求头按原始字节顺序发送给上游，只在没有
@@ -41,7 +72,7 @@ import setline.state : connectTimeoutMillis;
     chunk 边界转发，没有明确长度时一直转发到上游关闭连接。
 */
 void forward(TCPConnection client, string request, const(ubyte)[] bufferedBody, Backend backend) {
-  auto upstream = connectTCP(backend.host, backend.port, null, 0, connectTimeoutMillis().msecs);
+  auto upstream = connectBackend(backend);
   scope (exit) {
     upstream.close();
   }
@@ -89,7 +120,7 @@ void forward(TCPConnection client, string request, const(ubyte)[] bufferedBody, 
     如果后端没有返回 101，则该响应被当作普通握手失败响应发回浏览器并关闭上游连接。
 */
 void forwardWebSocket(TCPConnection client, string request, const(ubyte)[] bufferedBody, Backend backend) {
-  auto upstream = connectTCP(backend.host, backend.port, null, 0, connectTimeoutMillis().msecs);
+  auto upstream = connectBackend(backend);
 
   auto forwarded = withProxyHeaders(client, request);
   sendPrepared(upstream, forwarded);
@@ -119,6 +150,19 @@ void forwardWebSocket(TCPConnection client, string request, const(ubyte)[] buffe
 */
 bool shouldUseWebSocketTunnel(string request) {
   return isWebSocketUpgrade(request);
+}
+
+/** 建立到 backend 的 TCP 连接。
+
+    连接失败被包装为 `BackendConnectException`，让 server 层可以精确地区分“尚未接触
+    backend，可以换一个端口重试”和“已经开始代理字节，不应该自动重放请求”这两种情况。
+*/
+TCPConnection connectBackend(Backend backend) {
+  try {
+    return connectTCP(backend.host, backend.port, null, 0, connectTimeoutMillis().msecs);
+  } catch (Exception e) {
+    throw new BackendConnectException(backend, e.msg);
+  }
 }
 
 /** 在两个 TCP 连接之间建立双向字节转发。
@@ -382,4 +426,10 @@ bool responseHasNoBody(string response) {
   assert(hasProxyHeaders("GET / HTTP/1.1\r\nForwarded: for=127.0.0.1\r\n\r\n"));
   assert(hasProxyHeaders("GET / HTTP/1.1\r\nX-Forwarded-For: 127.0.0.1\r\n\r\n"));
   assert(!hasProxyHeaders("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+}
+
+@("proxy suppresses backend connect exception trace") unittest {
+  auto e = new BackendConnectException(Backend("127.0.0.1", 9001), "refused");
+  assert(e.info !is null);
+  assert(e.info.toString.length == 0);
 }

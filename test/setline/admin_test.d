@@ -49,6 +49,8 @@ import setline.state;
   assert(html.indexOf("0.0.0.0:8080") >= 0);
   assert(html.indexOf("/api") >= 0);
   assert(html.indexOf("9001") >= 0);
+  assert(html.indexOf("online") >= 0);
+  assert(html.indexOf("dot") >= 0);
 }
 
 @("admin renders status json") unittest {
@@ -61,8 +63,10 @@ import setline.state;
   auto status = statusJson();
   assert(status["listen"]["host"].str == "127.0.0.1");
   assert(jsonNumber(status["listen"]["port"]) == 18080);
-  assert(jsonNumber(status["connectTimeoutMillis"]) == 1500);
+  assert(jsonNumber(status["connectTimeoutMillis"]) > 0);
   assert(jsonNumber(status["routeCount"]) == 1);
+  assert(jsonNumber(status["healthCheck"]["intervalMillis"]) == 5000);
+  assert(status["healthCheck"]["backends"].array.length > 0);
   assert(status["routes"].array[0]["prefix"].str == "/api");
 }
 

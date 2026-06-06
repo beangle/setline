@@ -12,7 +12,7 @@ them to local backend services.
 - HTTP/1.x only in this first version.
 - Path-prefix routing with longest-prefix priority.
 - Local HTTP backends only.
-- Multiple backends use simple round-robin selection. No weight support.
+- Multiple backends use random selection. No weight support.
 - `stripPrefix` is intentionally unsupported.
 
 ## Build
@@ -34,6 +34,12 @@ dub run -- --config config.example.json
   "listen": 8080,
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
+  "healthCheck": {
+    "intervalMillis": 5000,
+    "timeoutMillis": 1000,
+    "unhealthyThreshold": 2,
+    "healthyThreshold": 1
+  },
   "routes": {
     "/api/edu": [9002, 9003],
     "/m/edu/learning": 5173,
@@ -49,6 +55,8 @@ Top-level fields:
 - `adminToken`: optional token for `__setline` management APIs.
 - `connectTimeoutMillis`: backend TCP connect timeout, default `3000`.
 - `maxConnections`: active client connection limit, default `65535`.
+- `healthCheck`: TCP connect health check tuning; health checks are always
+  enabled and run on a fixed background interval.
 - `routes`: object mapping URL path prefixes to a local backend port or a list
   of local backend ports.
 

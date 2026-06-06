@@ -39,12 +39,24 @@ struct Backend {
 
 /** 一条基于路径前缀的路由规则。
 
-    `prefix` 只参与最长前缀匹配；命中后在 `backends` 之间做简单轮转。运行期轮转状态保存在
-    路由树节点中，不暴露在配置文件或管理接口返回值里。
+    `prefix` 只参与最长前缀匹配；命中后在 `backends` 之间做随机选择。选择过程不改写路由
+    配置，也不在路由树节点中保存每次请求都会变化的运行状态。
 */
 struct Route {
   string prefix;
   Backend[] backends;
+}
+
+/** 后端健康检查配置。
+
+    健康检查总是开启，只允许调整固定后台循环的间隔和阈值。检查方式为 TCP connect 到
+    `127.0.0.1:<port>`，请求路径只读取已有健康状态，不即时探测后端。
+*/
+struct HealthConfig {
+  int intervalMillis = 5000;
+  int timeoutMillis = 1000;
+  int unhealthyThreshold = 2;
+  int healthyThreshold = 1;
 }
 
 /** 完整运行配置。
@@ -57,5 +69,6 @@ struct Config {
   string adminToken;
   int connectTimeoutMillis = 3000;
   size_t maxConnections = 65535;
+  HealthConfig healthCheck;
   Route[] routes;
 }

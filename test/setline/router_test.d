@@ -49,14 +49,25 @@ import setline.router;
   assert(findRoute(tree, "/apiology").isNull);
 }
 
-@("router tree selects backend round robin") unittest {
+@("router tree selects random backend from route") unittest {
   Route[] routes = [
     Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9002)])
   ];
   sortRoutes(routes);
   auto tree = buildRouteTree(routes);
 
-  assert(selectBackend(tree, "/api/users").get.port == 9001);
-  assert(selectBackend(tree, "/api/users").get.port == 9002);
-  assert(selectBackend(tree, "/api/users").get.port == 9001);
+  foreach (_; 0 .. 8) {
+    auto port = selectBackend(tree, "/api/users").get.port;
+    assert(port == 9001 || port == 9002);
+  }
+}
+
+@("router tree skips unavailable backends") unittest {
+  Route[] routes = [
+    Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9002)])
+  ];
+  auto tree = buildRouteTree(routes);
+
+  assert(selectBackend(tree, "/api/users", backend => backend.port == 9002).get.port == 9002);
+  assert(selectBackend(tree, "/api/users", backend => false).isNull);
 }

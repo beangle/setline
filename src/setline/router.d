@@ -19,6 +19,7 @@ module setline.router;
 import std.algorithm : sort, startsWith;
 import std.array : split;
 import std.exception : enforce;
+import std.random : uniform;
 import std.typecons : Nullable, nullable;
 
 import setline.constants;
@@ -27,13 +28,12 @@ import setline.model;
 /** 路由树中的一个路径段节点。
 
     `name` 是不带 `/` 的单个 URI path segment；根节点名字为空。节点自己承载后端列表和
-    round-robin 状态，`children` 以子 segment 为键。这样运行时查找命中节点后可以直接
-    选择 backend，不需要再通过下标回查另一个数组。
+    `children` 以子 segment 为键。这样运行时查找命中节点后可以直接选择 backend，不需要
+    再通过下标回查另一个数组，也不需要为每次请求改写路由节点状态。
 */
 struct RouteNode {
   string name;
   Backend[] backends;
-  size_t nextBackend;
   RouteNode[string] children;
 }
 
@@ -87,12 +87,18 @@ Nullable!Route findRoute(RouteTree tree, string path) {
   return findRoute(path, tree.root, "");
 }
 
-/** 为 path 选择后端，并推进该路由的轮转下标。
+/** 为 path 随机选择一个可用后端。
 
-    多后端场景只做最简单的 round-robin，不做健康检查、权重或粘性会话。这个选择符合
-    setline 的轻量定位：它负责快速路由和透传，不承担完整负载均衡器职责。
+    多后端场景只做随机选择，不维护 round-robin 游标、权重或粘性会话。这样请求热路径只
+    读取路由配置和健康状态，不会因为每次选择 backend 而改写路由树节点。
 */
+alias BackendPredicate = bool delegate(Backend backend);
+
 Nullable!Backend selectBackend(ref RouteTree tree, string path) {
+  return selectBackend(tree, path, null);
+}
+
+Nullable!Backend selectBackend(ref RouteTree tree, string path, BackendPredicate available) {
   auto node = &tree.root;
   RouteNode* best = node.backends.length > 0 ? node : null;
   size_t pos;
@@ -122,9 +128,13 @@ Nullable!Backend selectBackend(ref RouteTree tree, string path) {
     return Nullable!Backend.init;
   }
 
-  auto backend = best.backends[best.nextBackend % best.backends.length];
-  best.nextBackend = (best.nextBackend + 1) % best.backends.length;
-  return nullable(backend);
+  Backend[] candidates;
+  foreach (backend; best.backends) {
+    if (available is null || available(backend)) {
+      candidates ~= backend;
+    }
+  }
+  return candidates.length == 0 ? Nullable!Backend.init : nullable(candidates[uniform(0, candidates.length)]);
 }
 
 /** 新增或替换一条运行时路由。
@@ -163,7 +173,6 @@ void insertRoute(ref RouteTree tree, Route route) {
   auto node = &tree.root;
   if (route.prefix == "/") {
     node.backends = route.backends.dup;
-    node.nextBackend = 0;
     return;
   }
 
@@ -177,7 +186,6 @@ void insertRoute(ref RouteTree tree, Route route) {
     }
   }
   node.backends = route.backends.dup;
-  node.nextBackend = 0;
 }
 
 Nullable!Route findRoute(string path, RouteNode node, string prefix) {

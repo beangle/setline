@@ -2,9 +2,15 @@
   "listen": 8080,
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
+  "healthCheck": {
+    "intervalMillis": 5000,
+    "timeoutMillis": 1000,
+    "unhealthyThreshold": 2,
+    "healthyThreshold": 1
+  },
   "routes": {
     "/api/edu": [9002, 9003],
-    "/m/edu/learning": 5173,
+    "/m/edu/learning": [5173, 4545],
     "/api": 9001
   }
 }

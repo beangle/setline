@@ -26,8 +26,10 @@ import vibe.core.net : TCPConnection;
 
 import setline.config : parseRoute;
 import setline.constants;
+import setline.health;
 import setline.http;
 import setline.jsonview;
+import setline.model : Backend;
 import setline.state;
 
 /** 处理 `__setline` 管理接口请求。
@@ -145,6 +147,10 @@ string statusHtml() {
     "table{border-collapse:collapse;width:100%;font-size:14px}" ~
     "th,td{text-align:left;border-bottom:1px solid #e6e9ed;padding:8px}" ~
     "th{color:#5b6670;font-weight:600}" ~
+    ".state{display:inline-flex;align-items:center;gap:6px;margin-right:12px}" ~
+    ".dot{width:8px;height:8px;border-radius:50%;display:inline-block}" ~
+    ".online{color:#147d3f}.online .dot{background:#1f9d55}" ~
+    ".offline{color:#b42318}.offline .dot{background:#d92d20}" ~
     "</style></head><body><main>");
   html.put("<h1>setline status</h1>");
   html.put("<section><dl>");
@@ -158,8 +164,7 @@ string statusHtml() {
   foreach (route; routes) {
     html.put("<tr><td>" ~ escapeHtml(route.prefix) ~ "</td><td>");
     foreach (i, backend; route.backends) {
-      if (i > 0) html.put(", ");
-      html.put(backend.port.to!string);
+      html.put(backendHealthHtml(backend));
     }
     html.put("</td></tr>");
   }
@@ -179,9 +184,38 @@ JSONValue statusJson() {
   root["activeConnections"] = JSONValue(activeConnections());
   root["maxConnections"] = JSONValue(maxConnections());
   root["connectTimeoutMillis"] = JSONValue(connectTimeoutMillis());
+  root["healthCheck"] = healthJson();
   root["routeCount"] = JSONValue(routes.length);
   root["routes"] = routesJson(routes);
   return JSONValue(root);
+}
+
+JSONValue healthJson() {
+  auto config = healthConfig();
+  JSONValue[string] item;
+  item["intervalMillis"] = JSONValue(config.intervalMillis);
+  item["timeoutMillis"] = JSONValue(config.timeoutMillis);
+  item["unhealthyThreshold"] = JSONValue(config.unhealthyThreshold);
+  item["healthyThreshold"] = JSONValue(config.healthyThreshold);
+
+  JSONValue[] backends;
+  foreach (health; healthSnapshot()) {
+    JSONValue[string] backend;
+    backend["port"] = JSONValue(health.port);
+    backend["healthy"] = JSONValue(health.healthy);
+    backend["successCount"] = JSONValue(health.successCount);
+    backend["failureCount"] = JSONValue(health.failureCount);
+    backends ~= JSONValue(backend);
+  }
+  item["backends"] = JSONValue(backends);
+  return JSONValue(item);
+}
+
+string backendHealthHtml(Backend backend) {
+  auto online = isBackendHealthy(backend);
+  auto state = online ? "online" : "offline";
+  return "<span class=\"state " ~ state ~ "\"><span class=\"dot\"></span>" ~
+    backend.port.to!string ~ " " ~ state ~ "</span>";
 }
 
 string escapeHtml(string value) {

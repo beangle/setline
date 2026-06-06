@@ -20,6 +20,7 @@ import core.atomic : atomicLoad, atomicStore, cas;
 
 import std.typecons : Nullable;
 
+import setline.health;
 import setline.model;
 import setline.router;
 
@@ -40,6 +41,7 @@ void initialize(Config config) {
     gListenAddress = config.listen;
     gConnectTimeoutMillis = config.connectTimeoutMillis;
   }
+  initializeHealth(config);
   atomicStore(gMaxConnections, config.maxConnections);
   atomicStore(gActiveConnections, 0);
 }
@@ -96,13 +98,38 @@ void releaseConnection() {
 
 Nullable!Backend selectBackend(string path) {
   synchronized {
-    return setline.router.selectBackend(gRouteTree, path);
+    return setline.router.selectBackend(gRouteTree, path, backend => isBackendHealthy(backend));
+  }
+}
+
+Nullable!Backend selectBackendExcept(string path, Backend[] skipped) {
+  synchronized {
+    return setline.router.selectBackend(gRouteTree, path, delegate bool(Backend backend) {
+      if (!isBackendHealthy(backend)) {
+        return false;
+      }
+      foreach (item; skipped) {
+        if (item == backend) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+}
+
+bool hasRoute(string path) {
+  synchronized {
+    return !setline.router.findRoute(gRouteTree, path).isNull;
   }
 }
 
 void upsertRoute(Route route) {
   synchronized {
     setline.router.upsertRoute(gRoutes, gRouteTree, route);
+  }
+  foreach (backend; route.backends) {
+    addBackendHealth(backend);
   }
 }
 

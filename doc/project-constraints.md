@@ -11,7 +11,7 @@ predictable.
 - HTTP/1.x path-prefix routing.
 - Local HTTP backends only, configured by port number.
 - Longest-prefix route matching.
-- Optional round-robin selection across local backends.
+- Optional random selection across local backends.
 - Runtime route registration through the local admin API.
 - Clients explicitly access the `setline` listen address.
 

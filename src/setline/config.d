@@ -55,6 +55,9 @@ Config loadConfig(string path) {
     config.maxConnections = cast(size_t) root["maxConnections"].integer;
     enforce(config.maxConnections > 0, "maxConnections must be positive");
   }
+  if ("healthCheck" in root.object) {
+    config.healthCheck = parseHealthConfig(root["healthCheck"]);
+  }
   if ("routes" in root.object) {
     foreach (prefix, ports; root["routes"].object) {
       config.routes ~= parseRoute(prefix, ports);
@@ -150,6 +153,28 @@ Backend[] parseBackends(JSONValue value) {
 
 Backend parseBackend(long port) {
   return Backend("127.0.0.1", parsePort(port, "backend port"));
+}
+
+HealthConfig parseHealthConfig(JSONValue value) {
+  auto obj = value.object;
+  HealthConfig config;
+  if ("intervalMillis" in obj) {
+    config.intervalMillis = cast(int) obj["intervalMillis"].integer;
+  }
+  if ("timeoutMillis" in obj) {
+    config.timeoutMillis = cast(int) obj["timeoutMillis"].integer;
+  }
+  if ("unhealthyThreshold" in obj) {
+    config.unhealthyThreshold = cast(int) obj["unhealthyThreshold"].integer;
+  }
+  if ("healthyThreshold" in obj) {
+    config.healthyThreshold = cast(int) obj["healthyThreshold"].integer;
+  }
+  enforce(config.intervalMillis > 0, "healthCheck.intervalMillis must be positive");
+  enforce(config.timeoutMillis > 0, "healthCheck.timeoutMillis must be positive");
+  enforce(config.unhealthyThreshold > 0, "healthCheck.unhealthyThreshold must be positive");
+  enforce(config.healthyThreshold > 0, "healthCheck.healthyThreshold must be positive");
+  return config;
 }
 
 ushort parsePort(string value, string name) {
