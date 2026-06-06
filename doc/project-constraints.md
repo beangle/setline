@@ -11,7 +11,6 @@ predictable.
 - Local HTTP backends only.
 - Longest-prefix route matching.
 - Optional round-robin selection across local backends.
-- Optional direct responses for fast local endpoints.
 - Runtime route registration through the local admin API.
 - Clients explicitly access the `setline` listen address.
 
@@ -48,6 +47,7 @@ These are intentionally out of scope unless the project goal changes:
 - URL rewrite rules
 - reverse-proxy header rewriting
 - response caching
+- direct local responses
 - compression/decompression
 - TLS termination
 - non-local backends
@@ -66,7 +66,6 @@ These are intentionally out of scope unless the project goal changes:
   unless a real boundary appears.
 - Add abstractions only when they remove real duplication or isolate a real
   protocol rule.
-- Preserve direct responses as a fast short-circuit path.
 - Preserve admin API behavior, but do not let admin needs force normal proxy
   traffic to buffer request bodies.
 - Do not add kernel-level transparent proxying for the current explicit-proxy

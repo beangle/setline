@@ -25,7 +25,6 @@ import std.json;
 import std.stdio : stderr;
 import std.string : indexOf;
 
-import setline.http : buildHttpResponse, statusReason;
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
 
@@ -80,31 +79,24 @@ ListenAddress parseListen(string value) {
 
 /** 解析单条路由配置。
 
-    路由只能在直接响应、单后端、多后端三种模式中选择一种。这里显式拒绝 `stripPrefix`，
-    是为了保持项目目标清晰：setline 按 URL 决定转发目的，但不会改写浏览器发来的 URL。
+    路由只能在单后端、多后端两种模式中选择一种。这里显式拒绝 `directResponse` 和
+    `stripPrefix`，是为了保持项目目标清晰：setline 按 URL 决定转发目的，只代理和透传，
+    不生成本地业务响应，也不会改写浏览器发来的 URL。
 */
 Route parseRoute(JSONValue value) {
   auto obj = value.object;
   enforce("prefix" in obj, "route.prefix is required");
+  enforce(!("directResponse" in obj), "directResponse is not supported");
   enforce(!("stripPrefix" in obj), "stripPrefix is not supported");
-  auto hasDirectResponse = ("directResponse" in obj) !is null;
   auto hasBackend = ("backend" in obj) !is null;
   auto hasBackends = ("backends" in obj) !is null;
-  enforce(hasDirectResponse || hasBackend || hasBackends,
-    "route.directResponse, route.backend, or route.backends is required");
-  enforce(cast(int) hasDirectResponse + cast(int) hasBackend + cast(int) hasBackends == 1,
-    "route must define exactly one of directResponse, backend, or backends");
+  enforce(hasBackend || hasBackends, "route.backend or route.backends is required");
+  enforce(cast(int) hasBackend + cast(int) hasBackends == 1,
+    "route must define exactly one of backend or backends");
 
   Route route;
   route.prefix = obj["prefix"].str;
-  if (hasDirectResponse) {
-    route.response = parseDirectResponse(obj["directResponse"]);
-    route.wireResponse = buildHttpResponse(
-      route.response.status.to!string ~ " " ~ statusReason(route.response.status),
-      route.response.contentType,
-      route.response.body,
-      route.response.headers);
-  } else if (hasBackend)  {
+  if (hasBackend)  {
     route.backends = [parseBackend(obj["backend"].str)];
   } else {
     foreach (backendValue; obj["backends"].array) {
@@ -114,29 +106,6 @@ Route parseRoute(JSONValue value) {
   }
   validateRoute(route);
   return route;
-}
-
-/** 解析直接响应配置。
-
-    直接响应允许配置状态码、Content-Type、body 和少量附加头。`Content-Length`、
-    `Connection`、`Content-Type` 这类由响应构造函数统一控制，避免配置覆盖基础协议头。
-*/
-DirectResponse parseDirectResponse(JSONValue value) {
-  auto obj = value.object;
-
-  DirectResponse response;
-  response.status = ("status" in obj) ? cast(int) obj["status"].integer : 200;
-  response.contentType = ("contentType" in obj) ? obj["contentType"].str : response.contentType;
-  response.body = ("body" in obj) ? obj["body"].str : "";
-
-  if ("headers" in obj) {
-    foreach (name, headerValueJson; obj["headers"].object) {
-      response.headers[name] = headerValueJson.str;
-    }
-  }
-
-  enforce(response.status >= 100 && response.status <= 599, "directResponse.status must be 100..599");
-  return response;
 }
 
 /** 解析后端地址。
@@ -160,7 +129,7 @@ Backend parseBackend(string raw) {
 
 /** 判断主机名是否属于当前允许的本机范围。
 
-    这是项目约束的一部分：setline 服务本地前端开发和本机后端聚合，不开放到任意远端主机。
+    这是项目约束的一部分：setline 服务本地前端开发和本机后端聚合，不开放到任意远端监听。
 */
 bool isLocalHost(string host) {
   return host == "127.0.0.1" || host == "localhost";

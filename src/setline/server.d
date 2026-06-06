@@ -101,22 +101,10 @@ void handleClient(TCPConnection client) {
     return;
   }
 
-  auto route = findRoute(path);
-  if (route.isNull) {
-    sendResponse(client, 404, "Not Found", "no route for " ~ path);
-    return;
-  }
-
   try {
-    auto matched = route.get;
-    if (matched.wireResponse.length > 0) {
-      sendPrepared(client, matched.wireResponse);
-      return;
-    }
-
     auto backend = selectBackend(path);
     if (backend.isNull) {
-      sendResponse(client, 502, "Bad Gateway", "route has no backend");
+      sendResponse(client, 404, "Not Found", "no route for " ~ path);
       return;
     }
     if (shouldUseWebSocketTunnel(request.head)) {

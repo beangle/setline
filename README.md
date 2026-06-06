@@ -3,8 +3,7 @@
 `setline` is a small Linux-only local HTTP path router written in D.
 
 It listens on a local address, matches requests by path prefix, and forwards
-them to local backend services. A route can also return a prebuilt direct
-response for fast local endpoints such as health checks.
+them to local backend services.
 
 ## Scope
 
@@ -14,7 +13,6 @@ response for fast local endpoints such as health checks.
 - Path-prefix routing with longest-prefix priority.
 - Local HTTP backends only.
 - Multiple backends use simple round-robin selection. No weight support.
-- Direct responses are supported for fast local short-circuit paths.
 - `stripPrefix` is intentionally unsupported.
 
 ## Build
@@ -38,14 +36,6 @@ dub run -- --config config.example.json
   "connectTimeoutMillis": 3000,
   "maxConnections": 65535,
   "routes": [
-    {
-      "prefix": "/healthz",
-      "directResponse": {
-        "status": 200,
-        "contentType": "application/json",
-        "body": "{\"status\":\"ok\"}"
-      }
-    },
     {
       "prefix": "/api/edu",
       "backends": [
@@ -72,20 +62,9 @@ Every route must define exactly one action:
 
 - `backend`: forward to one local backend.
 - `backends`: forward to multiple local backends with round-robin selection.
-- `directResponse`: return a prepared local response.
 
 Routes are indexed by path segment with longest-prefix priority, so `/api/edu`
 wins over `/api`.
-
-Direct response fields:
-
-- `status`: HTTP status code, default `200`.
-- `contentType`: response content type, default `text/plain; charset=utf-8`.
-- `body`: response body, default empty.
-- `headers`: optional extra response headers.
-
-For direct responses, the complete HTTP response is built when the config is
-loaded or when a route is registered.
 
 ## Runtime Route Registration
 
@@ -105,7 +84,7 @@ curl -H 'X-Setline-Token: change-me' http://127.0.0.1:8080/__setline/routes
 ## Notes
 
 This project is deliberately narrow: local-only HTTP path routing, local backend
-selection, transparent proxying, and optional direct responses.
+selection, and transparent proxying.
 
 See also:
 

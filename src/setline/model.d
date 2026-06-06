@@ -27,18 +27,6 @@ struct ListenAddress {
   ushort port = 8080;
 }
 
-/** 配置文件中定义的直接响应。
-
-    直接响应用于少量健康检查、占位或本地固定内容。启动解析配置时会提前编译成
-    `wireResponse`，运行期命中后直接写回浏览器，不再重复拼接 HTTP 响应头。
-*/
-struct DirectResponse {
-  int status = 200;
-  string contentType = "text/plain; charset=utf-8";
-  string body;
-  string[string] headers;
-}
-
 /** 一个可连接的本机 HTTP 后端。
 
     当前只支持 `http://host:port`，不在这里保存 path，也不支持上游 HTTPS。URL 路径由
@@ -51,15 +39,12 @@ struct Backend {
 
 /** 一条基于路径前缀的路由规则。
 
-    `prefix` 只参与最长前缀匹配；命中后要么返回预构造的 `wireResponse`，要么在 `backends`
-    之间做简单轮转。`nextBackend` 是运行期状态，不来自配置文件。
+    `prefix` 只参与最长前缀匹配；命中后在 `backends` 之间做简单轮转。运行期轮转状态保存在
+    路由树节点中，不暴露在配置文件或管理接口返回值里。
 */
 struct Route {
   string prefix;
-  DirectResponse response;
-  string wireResponse;
   Backend[] backends;
-  size_t nextBackend;
 }
 
 /** 完整运行配置。

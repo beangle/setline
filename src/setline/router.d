@@ -24,25 +24,26 @@ import std.typecons : Nullable, nullable;
 import setline.constants;
 import setline.model;
 
-enum noRouteIndex = size_t.max;
-
 /** 路由树中的一个路径段节点。
 
-    `children` 以单个 URI path segment 为键，例如 `/api/a` 会形成 `api -> a` 两级。
-    `routeIndex` 指向外部 `Route[]` 中的路由下标，节点没有路由时使用 `noRouteIndex`。
+    `name` 是不带 `/` 的单个 URI path segment；根节点名字为空。节点自己承载后端列表和
+    round-robin 状态，`children` 以子 segment 为键。这样运行时查找命中节点后可以直接
+    选择 backend，不需要再通过下标回查另一个数组。
 */
 struct RouteNode {
-  size_t routeIndex = noRouteIndex;
-  size_t[string] children;
+  string name;
+  Backend[] backends;
+  size_t nextBackend;
+  RouteNode[string] children;
 }
 
 /** 基于 URI 路径段构造的路由索引。
 
-    路由数据仍保存在 `Route[]` 中，树只保存下标。这样管理接口可以继续返回原路由表，
-    round-robin 的 `nextBackend` 也只需要更新数组中的 route，不需要在树节点中复制状态。
+    路由数据直接落在树节点上。`Route[]` 仅保留为管理接口快照和配置视图；请求热路径只走
+    树，不再扫描路由数组，也不再通过树节点保存数组下标。
 */
 struct RouteTree {
-  RouteNode[] nodes;
+  RouteNode root;
 }
 
 /** 校验路由前缀是否符合项目约束。
@@ -71,9 +72,8 @@ void sortRoutes(ref Route[] routes) {
 */
 RouteTree buildRouteTree(Route[] routes) {
   RouteTree tree;
-  tree.nodes ~= RouteNode();
   foreach (i, route; routes) {
-    insertRoute(tree, route.prefix, i);
+    insertRoute(tree, route);
   }
   return tree;
 }
@@ -83,12 +83,8 @@ RouteTree buildRouteTree(Route[] routes) {
     返回值使用 `Nullable`，让没有匹配路由和命中空配置这两种情况在类型上保持明确。匹配
     规则仍是最长路径前缀优先，并且按 segment 匹配，`/api` 不会误匹配 `/apiology`。
 */
-Nullable!Route findRoute(Route[] routes, RouteTree tree, string path) {
-  auto index = findRouteIndex(tree, path);
-  if (index == noRouteIndex || index >= routes.length) {
-    return Nullable!Route.init;
-  }
-  return nullable(routes[index]);
+Nullable!Route findRoute(RouteTree tree, string path) {
+  return findRoute(path, tree.root, "");
 }
 
 /** 为 path 选择后端，并推进该路由的轮转下标。
@@ -96,15 +92,38 @@ Nullable!Route findRoute(Route[] routes, RouteTree tree, string path) {
     多后端场景只做最简单的 round-robin，不做健康检查、权重或粘性会话。这个选择符合
     setline 的轻量定位：它负责快速路由和透传，不承担完整负载均衡器职责。
 */
-Nullable!Backend selectBackend(ref Route[] routes, RouteTree tree, string path) {
-  auto index = findRouteIndex(tree, path);
-  if (index == noRouteIndex || index >= routes.length || routes[index].backends.length == 0) {
+Nullable!Backend selectBackend(ref RouteTree tree, string path) {
+  auto node = &tree.root;
+  RouteNode* best = node.backends.length > 0 ? node : null;
+  size_t pos;
+  while (pos < path.length) {
+    while (pos < path.length && path[pos] == '/') {
+      ++pos;
+    }
+    if (pos >= path.length) {
+      break;
+    }
+
+    auto start = pos;
+    while (pos < path.length && path[pos] != '/') {
+      ++pos;
+    }
+    auto child = path[start .. pos] in node.children;
+    if (child is null) {
+      break;
+    }
+
+    node = child;
+    if (node.backends.length > 0) {
+      best = node;
+    }
+  }
+  if (best is null) {
     return Nullable!Backend.init;
   }
 
-  auto route = routes[index];
-  auto backend = route.backends[route.nextBackend % route.backends.length];
-  routes[index].nextBackend = (route.nextBackend + 1) % route.backends.length;
+  auto backend = best.backends[best.nextBackend % best.backends.length];
+  best.nextBackend = (best.nextBackend + 1) % best.backends.length;
   return nullable(backend);
 }
 
@@ -140,34 +159,34 @@ bool matchesRoute(string path, string prefix) {
   return path == prefix || path.startsWith(prefix ~ "/");
 }
 
-void insertRoute(ref RouteTree tree, string prefix, size_t routeIndex) {
-  auto nodeIndex = cast(size_t) 0;
-  if (prefix == "/") {
-    tree.nodes[nodeIndex].routeIndex = routeIndex;
+void insertRoute(ref RouteTree tree, Route route) {
+  auto node = &tree.root;
+  if (route.prefix == "/") {
+    node.backends = route.backends.dup;
+    node.nextBackend = 0;
     return;
   }
 
-  foreach (segment; prefix[1 .. $].split("/")) {
-    auto existing = segment in tree.nodes[nodeIndex].children;
+  foreach (segment; route.prefix[1 .. $].split("/")) {
+    auto existing = segment in node.children;
     if (existing is null) {
-      auto nextIndex = tree.nodes.length;
-      tree.nodes ~= RouteNode();
-      tree.nodes[nodeIndex].children[segment] = nextIndex;
-      nodeIndex = nextIndex;
+      node.children[segment] = RouteNode(segment);
+      node = segment in node.children;
     } else {
-      nodeIndex = *existing;
+      node = existing;
     }
   }
-  tree.nodes[nodeIndex].routeIndex = routeIndex;
+  node.backends = route.backends.dup;
+  node.nextBackend = 0;
 }
 
-size_t findRouteIndex(RouteTree tree, string path) {
-  if (tree.nodes.length == 0) {
-    return noRouteIndex;
+Nullable!Route findRoute(string path, RouteNode node, string prefix) {
+  Backend[] bestBackends;
+  auto bestPrefix = prefix.length == 0 ? "/" : prefix;
+  if (node.backends.length > 0) {
+    bestBackends = node.backends.dup;
   }
 
-  auto nodeIndex = cast(size_t) 0;
-  auto bestIndex = tree.nodes[nodeIndex].routeIndex;
   size_t pos;
   while (pos < path.length) {
     while (pos < path.length && path[pos] == '/') {
@@ -182,15 +201,17 @@ size_t findRouteIndex(RouteTree tree, string path) {
       ++pos;
     }
     auto segment = path[start .. pos];
-    auto child = segment in tree.nodes[nodeIndex].children;
+    auto child = segment in node.children;
     if (child is null) {
       break;
     }
 
-    nodeIndex = *child;
-    if (tree.nodes[nodeIndex].routeIndex != noRouteIndex) {
-      bestIndex = tree.nodes[nodeIndex].routeIndex;
+    prefix = prefix == "" || prefix == "/" ? "/" ~ segment : prefix ~ "/" ~ segment;
+    node = *child;
+    if (node.backends.length > 0) {
+      bestPrefix = prefix;
+      bestBackends = node.backends.dup;
     }
   }
-  return bestIndex;
+  return bestBackends.length == 0 ? Nullable!Route.init : nullable(Route(bestPrefix, bestBackends));
 }

@@ -17,6 +17,7 @@
 module setline.config_test;
 
 import std.file : remove, write;
+import std.exception : assertThrown;
 
 import setline.config;
 
@@ -38,4 +39,12 @@ import setline.config;
   auto config = loadConfig(path);
   assert(config.connectTimeoutMillis == 1500);
   assert(config.maxConnections == 128);
+}
+
+@("config rejects direct response routes") unittest {
+  auto path = "/tmp/setline-config-direct-response-test.json";
+  write(path, `{"routes":[{"prefix":"/healthz","directResponse":{"body":"ok"}}]}`);
+  scope (exit) remove(path);
+
+  assertThrown!Exception(loadConfig(path));
 }

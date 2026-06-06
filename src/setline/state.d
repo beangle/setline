@@ -86,15 +86,9 @@ void releaseConnection() {
   }
 }
 
-Nullable!Route findRoute(string path) {
-  synchronized {
-    return setline.router.findRoute(gRoutes, gRouteTree, path);
-  }
-}
-
 Nullable!Backend selectBackend(string path) {
   synchronized {
-    return setline.router.selectBackend(gRoutes, gRouteTree, path);
+    return setline.router.selectBackend(gRouteTree, path);
   }
 }
 

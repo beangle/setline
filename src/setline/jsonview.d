@@ -24,9 +24,7 @@ import setline.model;
 JSONValue routeJson(Route route) {
   JSONValue[string] item;
   item["prefix"] = JSONValue(route.prefix);
-  if (route.wireResponse.length > 0) {
-    item["directResponse"] = directResponseJson(route.response);
-  } else if (route.backends.length == 1)  {
+  if (route.backends.length == 1)  {
     item["backend"] = backendJson(route.backends[0]);
   } else {
     JSONValue[] backends;
@@ -35,23 +33,6 @@ JSONValue routeJson(Route route) {
     }
     item["backends"] = JSONValue(backends);
   }
-  return JSONValue(item);
-}
-
-JSONValue directResponseJson(DirectResponse response) {
-  JSONValue[string] item;
-  item["status"] = JSONValue(response.status);
-  item["contentType"] = JSONValue(response.contentType);
-  item["body"] = JSONValue(response.body);
-
-  if (response.headers.length > 0) {
-    JSONValue[string] headers;
-    foreach (name, value; response.headers) {
-      headers[name] = JSONValue(value);
-    }
-    item["headers"] = JSONValue(headers);
-  }
-
   return JSONValue(item);
 }
 
