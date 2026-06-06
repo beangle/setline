@@ -70,6 +70,22 @@ List routes:
 curl -H 'X-Setline-Token: change-me' http://127.0.0.1:8080/__setline/routes
 ```
 
+## Status
+
+Status endpoints use HTTP Basic authentication. The username is `setline`; the
+password is `adminToken`. If `adminToken` is empty, status access is open for
+local development.
+
+```bash
+curl -u setline:change-me http://127.0.0.1:8080/__setline/status.json
+```
+
+Open the HTML view in a browser:
+
+```text
+http://127.0.0.1:8080/__setline/status.html
+```
+
 ## Notes
 
 This project is deliberately narrow: local-only HTTP path routing, local backend

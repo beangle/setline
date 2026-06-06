@@ -26,6 +26,7 @@ import setline.router;
 __gshared private Route[] gRoutes;
 __gshared private RouteTree gRouteTree;
 __gshared private string gAdminToken;
+__gshared private ListenAddress gListenAddress;
 __gshared private int gConnectTimeoutMillis = 3000;
 shared private size_t gMaxConnections = 65535;
 shared private size_t gActiveConnections;
@@ -36,6 +37,7 @@ void initialize(Config config) {
     sortRoutes(gRoutes);
     gRouteTree = buildRouteTree(gRoutes);
     gAdminToken = config.adminToken;
+    gListenAddress = config.listen;
     gConnectTimeoutMillis = config.connectTimeoutMillis;
   }
   atomicStore(gMaxConnections, config.maxConnections);
@@ -51,6 +53,12 @@ string adminToken() {
 int connectTimeoutMillis() {
   synchronized {
     return gConnectTimeoutMillis;
+  }
+}
+
+ListenAddress listenAddress() {
+  synchronized {
+    return gListenAddress;
   }
 }
 
