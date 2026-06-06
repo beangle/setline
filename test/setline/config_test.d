@@ -18,8 +18,27 @@ module setline.config_test;
 
 import std.file : remove, write;
 import std.exception : assertThrown;
+import std.json : JSONValue;
 
 import setline.config;
+
+@("config parses listen shorthand") unittest {
+  auto byNumber = parseListen(JSONValue(8080));
+  assert(byNumber.host == "127.0.0.1");
+  assert(byNumber.port == 8080);
+
+  auto byString = parseListen("9090");
+  assert(byString.host == "127.0.0.1");
+  assert(byString.port == 9090);
+
+  auto wildcard = parseListen("*:8080");
+  assert(wildcard.host == "0.0.0.0");
+  assert(wildcard.port == 8080);
+
+  auto explicit = parseListen("127.0.0.1:7070");
+  assert(explicit.host == "127.0.0.1");
+  assert(explicit.port == 7070);
+}
 
 @("config keeps large default connection limit") unittest {
   auto path = "/tmp/setline-config-defaults-test.json";

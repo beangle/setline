@@ -31,10 +31,9 @@ dub run -- --config config.example.json
 
 ```json
 {
-  "listen": "127.0.0.1:8080",
+  "listen": 8080,
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
-  "maxConnections": 65535,
   "routes": {
     "/api/edu": [9002, 9003],
     "/m/edu/learning": 5173,
@@ -45,7 +44,8 @@ dub run -- --config config.example.json
 
 Top-level fields:
 
-- `listen`: local listen address, default `127.0.0.1:8080`.
+- `listen`: listen port or address, default `127.0.0.1:8080`; accepts `8080`,
+  `"8080"`, `"*:8080"`, or `"127.0.0.1:8080"`.
 - `adminToken`: optional token for `__setline` management APIs.
 - `connectTimeoutMillis`: backend TCP connect timeout, default `3000`.
 - `maxConnections`: active client connection limit, default `65535`.

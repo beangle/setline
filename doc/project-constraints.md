@@ -6,7 +6,8 @@ predictable.
 ## Product Scope
 
 - Linux only.
-- Local only: listeners and backends must be loopback or localhost.
+- Backends are local only; listeners default to loopback but may explicitly bind
+  all IPv4 addresses with `*:port`.
 - HTTP/1.x path-prefix routing.
 - Local HTTP backends only, configured by port number.
 - Longest-prefix route matching.

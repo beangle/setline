@@ -22,6 +22,7 @@ import std.exception : enforce;
 import std.file : exists, readText;
 import std.json;
 import std.stdio : stderr;
+import std.string : indexOf;
 
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
@@ -41,7 +42,7 @@ Config loadConfig(string path) {
 
   auto root = parseJSON(readText(path));
   if ("listen" in root.object) {
-    config.listen = parseListen(root["listen"].str);
+    config.listen = parseListen(root["listen"]);
   }
   if ("adminToken" in root.object) {
     config.adminToken = root["adminToken"].str;
@@ -65,14 +66,28 @@ Config loadConfig(string path) {
 
 /** 解析监听地址。
 
-    setline 当前不是公网反向代理，也不承担内核透明代理职责，所以监听地址被限制为本机。
-    格式固定为 `host:port`，这样可以让后续代理身份头里的端口推导保持明确。
+    支持三种形式：`8080`、`*:8080`、`host:port`。裸端口默认绑定 `127.0.0.1`；
+    `*` 映射为 `0.0.0.0`，用于显式监听所有 IPv4 地址。后端仍固定为本机端口。
 */
+ListenAddress parseListen(JSONValue value) {
+  if (value.type == JSONType.integer) {
+    return ListenAddress("127.0.0.1", parsePort(value.integer, "listen port"));
+  }
+
+  enforce(value.type == JSONType.string, "listen must be port or host:port");
+  return parseListen(value.str);
+}
+
 ListenAddress parseListen(string value) {
+  auto colon = value.indexOf(":");
+  if (colon < 0) {
+    return ListenAddress("127.0.0.1", parsePort(value, "listen port"));
+  }
+
   auto parts = value.split(":");
   enforce(parts.length == 2, "listen must be host:port");
-  enforce(isLocalHost(parts[0]), "listen host must be local");
-  return ListenAddress(parts[0], parts[1].to!ushort);
+  auto host = parts[0] == "*" ? "0.0.0.0" : parts[0];
+  return ListenAddress(host, parsePort(parts[1], "listen port"));
 }
 
 /** 解析配置文件中的单条路由。
@@ -134,14 +149,14 @@ Backend[] parseBackends(JSONValue value) {
 }
 
 Backend parseBackend(long port) {
-  enforce(port > 0 && port <= ushort.max, "backend port must be 1..65535");
-  return Backend("127.0.0.1", cast(ushort) port);
+  return Backend("127.0.0.1", parsePort(port, "backend port"));
 }
 
-/** 判断主机名是否属于当前允许的本机范围。
+ushort parsePort(string value, string name) {
+  return parsePort(value.to!long, name);
+}
 
-    这是项目约束的一部分：setline 服务本地前端开发和本机后端聚合，不开放到任意远端监听。
-*/
-bool isLocalHost(string host) {
-  return host == "127.0.0.1" || host == "localhost";
+ushort parsePort(long value, string name) {
+  enforce(value > 0 && value <= ushort.max, name ~ " must be 1..65535");
+  return cast(ushort) value;
 }

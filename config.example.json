@@ -1,8 +1,7 @@
 {
-  "listen": "127.0.0.1:8080",
+  "listen": 8080,
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
-  "maxConnections": 65535,
   "routes": {
     "/api/edu": [9002, 9003],
     "/m/edu/learning": 5173,
