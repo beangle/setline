@@ -68,7 +68,7 @@ private class EmptyTraceInfo : Throwable.TraceInfo {
     响应体的转发策略由响应头决定：有 `Content-Length` 时按长度补齐，chunked 响应按
     chunk 边界转发，没有明确长度时一直转发到上游关闭连接。
 */
-void forward(TCPConnection client, HttpHead request, ushort port) {
+bool forward(TCPConnection client, HttpHead request, ushort port) {
   auto upstream = connectPort(port);
   scope (exit) {
     upstream.close();
@@ -82,7 +82,7 @@ void forward(TCPConnection client, HttpHead request, ushort port) {
 
   auto response = readHttpHead(upstream);
   if (response.head.length == 0) {
-    return;
+    return false;
   }
 
   sendPrepared(client, response.head);
@@ -91,18 +91,53 @@ void forward(TCPConnection client, HttpHead request, ushort port) {
   }
 
   if (request.method == "HEAD" || responseHasNoBody(response)) {
-    return;
+    return clientConnectionReusable(request, response);
   }
 
   if (response.hasContentLength) {
     auto contentLength = cast(size_t) response.contentLength;
     auto bodySize = response.bufferedBody.length;
     relayBytes(upstream, client, contentLength > bodySize ? contentLength - bodySize : 0);
+    return clientConnectionReusable(request, response);
   } else if (response.transferChunked) {
     relayChunked(upstream, client, response.bufferedBody);
+    return clientConnectionReusable(request, response);
   } else {
     relayUntilClose(upstream, client);
+    return false;
   }
+}
+
+/** 判断本轮代理完成后，proxy 到 setline 的 client 连接是否可继续复用。
+
+    setline 不支持 HTTP pipelining，只支持前置 proxy 在收到完整响应后复用同一 TCP 连接
+    顺序发送下一次请求。这里要求请求和响应都允许 keep-alive，并且响应体边界明确。
+*/
+bool clientConnectionReusable(HttpHead request, HttpHead response) {
+  if (response.statusCode == 101 || !requestWantsKeepAlive(request) || response.connectionClose
+      || !responseBodyDelimited(request, response)) {
+    return false;
+  }
+  if (response.httpVersion == "HTTP/1.1") {
+    return true;
+  }
+  return response.httpVersion == "HTTP/1.0" && response.connectionKeepAlive;
+}
+
+/** 判断 client 请求是否希望复用到 setline 的连接。 */
+bool requestWantsKeepAlive(HttpHead request) {
+  if (request.connectionClose) {
+    return false;
+  }
+  if (request.httpVersion == "HTTP/1.1") {
+    return true;
+  }
+  return request.httpVersion == "HTTP/1.0" && request.connectionKeepAlive;
+}
+
+/** 判断响应体是否有明确边界，避免复用 client 连接时把下一轮请求混入上一轮响应。 */
+bool responseBodyDelimited(HttpHead request, HttpHead response) {
+  return request.method == "HEAD" || responseHasNoBody(response) || response.hasContentLength || response.transferChunked;
 }
 
 /** 将 WebSocket 握手转发给后端，并在 101 后切换为双向隧道。

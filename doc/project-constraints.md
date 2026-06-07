@@ -9,6 +9,7 @@ predictable.
 - Backends are local only; listeners default to loopback but may explicitly bind
   all IPv4 addresses with `*:port`.
 - HTTP/1.x host-scoped path-prefix routing.
+- Sequential keep-alive from an upstream proxy or browser to `setline`.
 - Local HTTP backends only, configured by port number.
 - Longest-prefix route matching.
 - Optional random selection across local backends.
@@ -55,6 +56,8 @@ These are intentionally out of scope unless the project goal changes:
 - generic middleware chains
 - full HTTP framework behavior
 - Linux TPROXY or other kernel traffic interception
+- HTTP pipelining
+- setline-to-backend keep-alive or backend connection pooling
 
 ## Implementation Constraints
 
@@ -73,6 +76,11 @@ These are intentionally out of scope unless the project goal changes:
   WebSocket, or response status decisions.
 - Keep request and response bodies streaming. For chunked bodies, track only
   chunk boundaries and do not accumulate full body content.
+- Support keep-alive only on the client side of the proxy:
+  upstream proxy/browser to `setline`. Backend connections remain one request
+  per local TCP connection and are closed after the response is relayed.
+- Do not support HTTP pipelining. A reused client connection must send the next
+  request only after the previous response has completed.
 - Runtime route changes must build the next route set and route tree first,
   then swap them into state once. Request routing should never observe a
   partially changed route table.

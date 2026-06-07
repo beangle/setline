@@ -32,9 +32,27 @@ import setline.http;
   auto head = parseHttpHead(request);
   assert(head.method == "GET");
   assert(head.target == "/m/edu/learning/@vite/client");
+  assert(head.httpVersion == "HTTP/1.1");
   assert(head.path == "/m/edu/learning/@vite/client");
   assert(head.host == "127.0.0.1:8080");
+  assert(head.connectionKeepAlive);
   assert(head.upgradeWebSocket);
+}
+
+@("http parses connection persistence fields") unittest {
+  auto closeRequest =
+    "GET /api HTTP/1.1\r\n" ~
+    "Connection: close\r\n\r\n";
+  auto closeHead = parseHttpHead(closeRequest);
+  assert(closeHead.httpVersion == "HTTP/1.1");
+  assert(closeHead.connectionClose);
+
+  auto keepAliveRequest =
+    "GET /api HTTP/1.0\r\n" ~
+    "Connection: keep-alive\r\n\r\n";
+  auto keepAliveHead = parseHttpHead(keepAliveRequest);
+  assert(keepAliveHead.httpVersion == "HTTP/1.0");
+  assert(keepAliveHead.connectionKeepAlive);
 }
 
 @("http scans header values without body interference") unittest {
@@ -88,5 +106,6 @@ import setline.http;
     "Connection: Upgrade\r\n" ~
     "Upgrade: websocket\r\n\r\n";
   auto head = parseHttpHead(response);
+  assert(head.httpVersion == "HTTP/1.1");
   assert(head.statusCode == 101);
 }

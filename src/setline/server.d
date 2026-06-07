@@ -94,28 +94,34 @@ void closeQuietly(ref TCPConnection client) nothrow {
   }
 }
 
-/** 处理一个浏览器连接上的单个 HTTP 请求。
+/** 处理一个 client 连接上的 HTTP 请求。
 
-    setline 当前按短连接模型处理请求：读取请求头后先用 URL path 做管理接口或代理路由判断，
-    普通代理路径不提前读取完整 request body，而是把已经读到的 body 前缀交给代理函数继续
-    流式透传。这个入口也负责在 WebSocket Upgrade 请求命中后切换到专门的隧道转发路径。
+    前置 proxy 到 setline 的连接可以顺序复用：每次完整代理一个请求和响应后，如果两端
+    HTTP 头都允许 keep-alive 且响应体边界明确，则继续读取同一连接上的下一次请求。这里
+    不支持 HTTP pipelining；前置 proxy 应等待上一轮响应完成后再发送下一轮请求。
 */
 void handleClient(TCPConnection client) {
+  while (handleRequest(client)) {
+  }
+}
+
+/** 处理一个 HTTP 请求，并返回当前 client 连接是否继续复用。 */
+bool handleRequest(TCPConnection client) {
   auto request = readHttpHead(client);
   if (request.head.length == 0) {
-    return;
+    return false;
   }
 
   if (request.method.length == 0 || request.target.length == 0) {
     sendResponse(client, 400, "Bad Request", "malformed request line");
-    return;
+    return false;
   }
 
   auto path = request.path;
 
   if (path.startsWith(adminPrefix)) {
     handleAdmin(client, request.method, request.target, completeHttpRequest(client, request));
-    return;
+    return false;
   }
 
   string routeHost;
@@ -123,7 +129,7 @@ void handleClient(TCPConnection client) {
     routeHost = normalizeRequestHost(request.host);
   } catch (Exception e) {
     sendResponse(client, 400, "Bad Request", e.msg);
-    return;
+    return false;
   }
 
   try {
@@ -140,15 +146,14 @@ void handleClient(TCPConnection client) {
         } else {
           sendResponse(client, 404, "Not Found", "no route for " ~ routeHost ~ path);
         }
-        return;
+        return false;
       }
       try {
         if (request.upgradeWebSocket) {
           forwardWebSocket(client, request, port);
-          return;
+          return false;
         }
-        forward(client, request, port);
-        return;
+        return forward(client, request, port);
       } catch (PortConnectException e) {
         tried ~= port;
         lastConnectFailure = e;
@@ -161,5 +166,6 @@ void handleClient(TCPConnection client) {
     } else {
       sendResponse(client, 404, "Not Found", "no route for " ~ routeHost ~ path);
     }
+    return false;
   }
 }

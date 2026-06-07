@@ -39,6 +39,28 @@ import setline.proxy;
   assert(!responseHasNoBody(parseHttpHead("HTTP/1.1 200 OK\r\n\r\n")));
 }
 
+@("proxy decides client keep alive") unittest {
+  auto request = parseHttpHead("GET /api HTTP/1.1\r\nHost: local\r\n\r\n");
+  auto response = parseHttpHead("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n");
+  assert(requestWantsKeepAlive(request));
+  assert(clientConnectionReusable(request, response));
+
+  auto closeRequest = parseHttpHead("GET /api HTTP/1.1\r\nConnection: close\r\n\r\n");
+  assert(!requestWantsKeepAlive(closeRequest));
+  assert(!clientConnectionReusable(closeRequest, response));
+
+  auto closeResponse = parseHttpHead("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n");
+  assert(!clientConnectionReusable(request, closeResponse));
+
+  auto unboundedResponse = parseHttpHead("HTTP/1.1 200 OK\r\n\r\n");
+  assert(!clientConnectionReusable(request, unboundedResponse));
+
+  auto http10Request = parseHttpHead("GET /api HTTP/1.0\r\nConnection: keep-alive\r\n\r\n");
+  auto http10Response = parseHttpHead("HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nContent-Length: 2\r\n\r\n");
+  assert(requestWantsKeepAlive(http10Request));
+  assert(clientConnectionReusable(http10Request, http10Response));
+}
+
 @("proxy suppresses port connect exception trace") unittest {
   auto e = new PortConnectException(9001, "refused");
   assert(e.info !is null);

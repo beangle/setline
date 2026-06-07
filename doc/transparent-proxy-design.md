@@ -90,6 +90,29 @@ These response-boundary checks are required because local development servers
 often keep connections alive. Waiting for backend close on a `Content-Length`,
 chunked, or `304` response can leave browser resources pending.
 
+## Connection Lifetime
+
+`setline` supports sequential keep-alive on the client side of the proxy: an
+upstream proxy or browser may reuse one TCP connection to `setline` for
+multiple HTTP/1.x requests when the previous response has fully completed.
+
+The connection is not reused when the request or response declares
+`Connection: close`, when the response body has no explicit boundary, when a
+WebSocket upgrade takes over the connection, or when `setline` generates an
+admin/error response itself.
+
+HTTP pipelining is intentionally not supported. `setline` processes one request
+and its response at a time on each client connection; the next request must wait
+until the previous response is complete. This matches common upstream
+keep-alive behavior while avoiding cross-request buffering and response-order
+complexity.
+
+Backend connections are intentionally not pooled or kept alive. Each proxied
+request opens a fresh local TCP connection to the selected backend port and
+closes it after the response is relayed. This keeps routing, health retry, and
+failure handling simple, and avoids adding shared backend connection state to
+the hot path.
+
 ## WebSocket
 
 WebSocket requests are detected from the request head. The proxy forwards the

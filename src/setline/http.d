@@ -44,6 +44,9 @@ struct HttpHead {
   /// 请求行中的 request target，例如 `/api/users?x=1`；响应头中为空。
   string target;
 
+  /// HTTP 版本，例如 `HTTP/1.1`。
+  string httpVersion;
+
   /// 从 `target` 中去掉 query string 后的路径，用于路由匹配；响应头中为空。
   string path;
 
@@ -63,6 +66,12 @@ struct HttpHead {
 
   /// `Transfer-Encoding` 是否包含 `chunked`。
   bool transferChunked;
+
+  /// `Connection` 是否包含 `close`。
+  bool connectionClose;
+
+  /// `Connection` 是否包含 `keep-alive`。
+  bool connectionKeepAlive;
 
   /// 是否同时满足 `Connection: upgrade` 和 `Upgrade: websocket`。
   bool upgradeWebSocket;
@@ -229,6 +238,10 @@ private bool foreachHeaderLine(string headers, scope bool delegate(string line) 
 
 private void parseFirstLine(ref HttpHead result, string line) {
   if (line.length >= 5 && line[0 .. 5] == "HTTP/") {
+    auto versionEnd = line.indexOf(" ");
+    if (versionEnd > 0) {
+      result.httpVersion = line[0 .. versionEnd];
+    }
     result.statusCode = parseStatusCode(line);
     return;
   }
@@ -245,6 +258,7 @@ private void parseFirstLine(ref HttpHead result, string line) {
   auto targetEnd = targetStart + cast(size_t) secondSpace;
   result.method = line[0 .. firstSpace];
   result.target = line[targetStart .. targetEnd];
+  result.httpVersion = line[targetEnd + 1 .. $];
   result.path = requestPath(result.target);
 }
 
@@ -283,6 +297,8 @@ private void parseHeaderFields(ref HttpHead result) {
         break;
       case "connection":
         connectionUpgrade = connectionUpgrade || headerValueContains(value, "upgrade");
+        result.connectionClose = result.connectionClose || headerValueContains(value, "close");
+        result.connectionKeepAlive = result.connectionKeepAlive || headerValueContains(value, "keep-alive");
         break;
       case "upgrade":
         websocketUpgrade = websocketUpgrade || value.toLowerAscii == "websocket";
