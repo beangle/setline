@@ -71,8 +71,8 @@ wins over `/api`.
 
 ## Runtime Route Management
 
-Runtime route updates only change in-memory routes. They do not rewrite the
-config file, and update requests are accepted only from localhost.
+Runtime route updates are accepted only from localhost. They update the current
+in-memory routes and write the `routes` field back to the JSON config file.
 
 Add or replace one route:
 

@@ -51,9 +51,9 @@ required open files >= maxConnections * 2 + backend/process overhead
 
 ## Runtime Route Updates
 
-Route updates through the admin API affect only memory. They do not rewrite the
-config file. On restart, setline loads routes from the configured JSON file
-again.
+Route updates through the admin API update memory and rewrite the top-level
+`routes` field in the configured JSON file. On restart, setline keeps the last
+runtime route changes because they have already been written to that file.
 
 Supported runtime operations are:
 
@@ -66,9 +66,10 @@ All route-changing calls must come from localhost and must pass the admin token
 check. Keep these endpoints bound to trusted local automation such as service
 startup scripts or deployment hooks.
 
-When routes change, setline rebuilds the next route tree first and then swaps
-it into runtime state. Backend health information is preserved for ports that
-remain referenced by the new route set.
+When routes change, setline rebuilds the next route tree, writes the new
+`routes` field to disk, and then swaps it into runtime state. Backend health
+information is preserved for ports that remain referenced by the new route set.
+If writing the config file fails, runtime routes are not changed.
 
 ## File Descriptors
 

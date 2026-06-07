@@ -108,8 +108,7 @@ measured reason to change it.
 
 ## Runtime Routes
 
-Runtime route management is deliberately narrow and in-memory only. It supports
-four operations:
+Runtime route management is deliberately narrow. It supports four operations:
 
 - add or replace one route
 - delete one route
@@ -121,15 +120,17 @@ accepted only from localhost. They still require the admin token. The localhost
 check uses the TCP peer address because proxy headers are user-controlled input
 at this security boundary.
 
-Route updates are applied atomically at the state level:
+Route updates are persisted and applied atomically at the state level:
 
 1. Read the current route snapshot.
 2. Build the next `Route[]` and a fresh route tree.
-3. Swap both into runtime state under the state lock.
-4. Synchronize backend health state from the new routes.
+3. Rewrite only the top-level `routes` field in the startup config file.
+4. Swap the routes and route tree into runtime state under the state lock.
+5. Synchronize backend health state from the new routes.
 
 The proxy request path always reads from the current route tree. It never sees
-a half-mutated tree.
+a half-mutated tree. If config-file persistence fails, the current in-memory
+routes remain active.
 
 Health state is preserved by backend port. If a port remains referenced after a
 route change, its current online/offline state and counters are kept. New ports

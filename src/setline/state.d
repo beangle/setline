@@ -20,6 +20,7 @@ import core.atomic : atomicLoad, atomicStore, cas;
 
 import std.typecons : Nullable;
 
+import setline.config : saveRoutes;
 import setline.health;
 import setline.model;
 import setline.router;
@@ -27,17 +28,19 @@ import setline.router;
 __gshared private Route[] gRoutes;
 __gshared private RouteTree gRouteTree;
 __gshared private string gAdminToken;
+__gshared private string gConfigPath;
 __gshared private ListenAddress gListenAddress;
 __gshared private int gConnectTimeoutMillis = 3000;
 shared private size_t gMaxConnections = 65535;
 shared private size_t gActiveConnections;
 
-void initialize(Config config) {
+void initialize(Config config, string configPath = "") {
   synchronized {
     gRoutes = config.routes.dup;
     sortRoutes(gRoutes);
     gRouteTree = buildRouteTree(gRoutes);
     gAdminToken = config.adminToken;
+    gConfigPath = configPath;
     gListenAddress = config.listen;
     gConnectTimeoutMillis = config.connectTimeoutMillis;
   }
@@ -126,10 +129,11 @@ bool hasRoute(string path) {
 
 void upsertRoute(Route route) {
   Route[] routes;
+  RouteTree tree;
   synchronized {
     routes = gRoutes.dup;
-    RouteTree tree;
     setline.router.upsertRoute(routes, tree, route);
+    persistRoutes(routes);
     gRoutes = routes;
     gRouteTree = tree;
   }
@@ -138,6 +142,7 @@ void upsertRoute(Route route) {
 
 bool deleteRoute(string prefix) {
   Route[] routes;
+  RouteTree tree;
   bool removed;
   synchronized {
     foreach (route; gRoutes) {
@@ -151,7 +156,8 @@ bool deleteRoute(string prefix) {
       return false;
     }
     sortRoutes(routes);
-    auto tree = buildRouteTree(routes);
+    tree = buildRouteTree(routes);
+    persistRoutes(routes);
     gRoutes = routes;
     gRouteTree = tree;
   }
@@ -161,6 +167,7 @@ bool deleteRoute(string prefix) {
 
 void clearRoutes() {
   synchronized {
+    persistRoutes(null);
     gRoutes = null;
     gRouteTree = RouteTree.init;
   }
@@ -171,6 +178,7 @@ void replaceRoutes(Route[] routes) {
   sortRoutes(routes);
   auto tree = buildRouteTree(routes);
   synchronized {
+    persistRoutes(routes);
     gRoutes = routes.dup;
     gRouteTree = tree;
   }
@@ -180,5 +188,18 @@ void replaceRoutes(Route[] routes) {
 Route[] routesSnapshot() {
   synchronized {
     return gRoutes.dup;
+  }
+}
+
+void persistRoutes(Route[] routes) {
+  auto path = configPath();
+  if (path.length > 0) {
+    saveRoutes(path, routes);
+  }
+}
+
+string configPath() {
+  synchronized {
+    return gConfigPath;
   }
 }

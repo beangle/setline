@@ -21,6 +21,7 @@ import std.exception : assertThrown;
 import std.json : JSONValue;
 
 import setline.config;
+import setline.model;
 
 @("config parses listen shorthand") unittest {
   auto byNumber = parseListen(JSONValue(8080));
@@ -38,6 +39,15 @@ import setline.config;
   auto explicit = parseListen("127.0.0.1:7070");
   assert(explicit.host == "127.0.0.1");
   assert(explicit.port == 7070);
+}
+
+@("config normalizes route prefixes") unittest {
+  assert(normalizeRoutePrefix("/") == "/");
+  assert(normalizeRoutePrefix("/m/edu/learning/") == "/m/edu/learning");
+  assert(normalizeRoutePrefix("/m/edu/learning///") == "/m/edu/learning");
+
+  auto route = parseRoute("/api/", JSONValue(9001));
+  assert(route.prefix == "/api");
 }
 
 @("config keeps large default connection limit") unittest {
@@ -101,6 +111,36 @@ import setline.config;
   assert(config.routes[0].backends[1].port == 9003);
   assert(config.routes[1].prefix == "/api");
   assert(config.routes[1].backends[0].port == 9001);
+}
+
+@("config normalizes route prefixes from file") unittest {
+  auto path = "/tmp/setline-config-normalized-routes-test.json";
+  write(path, `{"routes":{"/api/":9001,"/api/edu/":[9002,9003]}}`);
+  scope (exit) remove(path);
+
+  auto config = loadConfig(path);
+  assert(config.routes[0].prefix == "/api/edu");
+  assert(config.routes[1].prefix == "/api");
+}
+
+@("config saves routes while preserving other fields") unittest {
+  auto path = "/tmp/setline-config-save-routes-test.json";
+  write(path, `{"listen":"127.0.0.1:8080","adminToken":"secret","routes":{"/old":9000}}`);
+  scope (exit) remove(path);
+
+  saveRoutes(path, [
+    Route("/api", [Backend("127.0.0.1", 9001)]),
+    Route("/api/edu", [
+      Backend("127.0.0.1", 9002),
+      Backend("127.0.0.1", 9003)
+    ])
+  ]);
+
+  auto config = loadConfig(path);
+  assert(config.adminToken == "secret");
+  assert(config.routes.length == 2);
+  assert(config.routes[0].prefix == "/api/edu");
+  assert(config.routes[1].prefix == "/api");
 }
 
 @("config rejects backend urls") unittest {

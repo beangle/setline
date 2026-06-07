@@ -25,7 +25,7 @@ import std.string : indexOf, startsWith;
 
 import vibe.core.net : TCPConnection;
 
-import setline.config : parseRoute, parseRoutes;
+import setline.config : normalizeRoutePrefix, parseRoute, parseRoutes;
 import setline.constants;
 import setline.health;
 import setline.http;
@@ -88,7 +88,8 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
       if (prefix.length == 0) {
         clearRoutes();
       } else {
-        enforce(deleteRoute(prefix), "route not found: " ~ prefix);
+        auto normalized = normalizeRoutePrefix(prefix);
+        enforce(deleteRoute(normalized), "route not found: " ~ normalized);
       }
       sendJson(client, routesJson(routesSnapshot()));
     }

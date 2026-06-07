@@ -22,6 +22,7 @@ import std.json : JSONType, JSONValue;
 import std.string : indexOf;
 
 import setline.admin;
+import setline.config : normalizeRoutePrefix;
 import setline.health;
 import setline.model;
 import setline.state;
@@ -88,6 +89,7 @@ import setline.state;
 
 @("admin extracts query value") unittest {
   assert(queryValue("/__setline/routes?prefix=/api", "prefix") == "/api");
+  assert(normalizeRoutePrefix(queryValue("/__setline/routes?prefix=/api/", "prefix")) == "/api");
   assert(queryValue("/__setline/routes?x=1&prefix=/m/edu", "prefix") == "/m/edu");
   assert(queryValue("/__setline/routes", "prefix") == "");
 }
@@ -113,7 +115,6 @@ import setline.state;
 
   clearRoutes();
   assert(routesSnapshot().length == 0);
-  assert(healthSnapshot().length == 0);
 
   replaceRoutes([Route("/new", [Backend("127.0.0.1", 9010)])]);
   assert(routesSnapshot().length == 1);

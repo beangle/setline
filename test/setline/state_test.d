@@ -16,6 +16,9 @@
 
 module setline.state_test;
 
+import std.file : remove, write;
+
+import setline.config;
 import setline.model;
 import setline.state;
 
@@ -34,4 +37,21 @@ import setline.state;
   assert(activeConnections() == 0);
   assert(tryAcquireConnection());
   releaseConnection();
+}
+
+@("state persists runtime route changes") unittest {
+  auto path = "/tmp/setline-state-persist-routes-test.json";
+  write(path, `{"listen":"127.0.0.1:8080","routes":{"/old":9000}}`);
+  scope (exit) remove(path);
+
+  Config config;
+  config.routes = [Route("/old", [Backend("127.0.0.1", 9000)])];
+  initialize(config, path);
+
+  replaceRoutes([Route("/new", [Backend("127.0.0.1", 9001)])]);
+
+  auto saved = loadConfig(path);
+  assert(saved.routes.length == 1);
+  assert(saved.routes[0].prefix == "/new");
+  assert(saved.routes[0].backends[0].port == 9001);
 }

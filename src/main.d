@@ -53,7 +53,7 @@ int main(string[] args) {
     }
 
     auto config = loadConfig(configPath);
-    initialize(config);
+    initialize(config, configPath);
 
     stdout.writefln("setline listening on http://%s:%s", config.listen.host, config.listen.port);
     serve(config.listen);

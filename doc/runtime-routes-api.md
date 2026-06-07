@@ -1,8 +1,8 @@
 # Runtime Routes API
 
 This document describes the HTTP API for updating `setline` routes at runtime.
-These APIs update only in-memory routes. They do not rewrite the JSON config
-file, so routes are loaded from the config file again after restart.
+These APIs update the in-memory route table and write the `routes` field back
+to the JSON config file. Other config fields are preserved.
 
 All write APIs require:
 
@@ -143,6 +143,8 @@ Response is the new route list:
 ## Validation Rules
 
 - `prefix` must start with `/`.
+- trailing slashes are ignored except for root `/`; `/m/edu/learning/` is
+  normalized to `/m/edu/learning`.
 - `prefix` must not start with `/__setline`.
 - backend ports must be integers in `1..65535`.
 - backend host is always `127.0.0.1`.
@@ -167,3 +169,13 @@ After a route update, backend health state is synchronized by port:
 - ports still referenced keep their current online/offline state and counters
 - new ports start healthy
 - ports no longer referenced by any route are removed from the health table
+
+## Persistence
+
+Runtime route updates are persisted by default. `setline` rewrites only the
+top-level `routes` field in the config file that was used at startup. Listener,
+token, timeout, health-check, and connection-limit settings are preserved.
+
+The write happens before the in-memory route table is swapped. If the config
+file cannot be written, the API returns an error and the current in-memory
+routes remain unchanged.

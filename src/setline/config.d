@@ -19,10 +19,10 @@ module setline.config;
 import std.array : split;
 import std.conv : to;
 import std.exception : enforce;
-import std.file : exists, readText;
+import std.file : exists, readText, rename, write;
 import std.json;
 import std.stdio : stderr;
-import std.string : indexOf;
+import std.string : indexOf, stripRight;
 
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
@@ -49,6 +49,42 @@ Config loadConfig(string path) {
 Config checkConfig(string path) {
   enforce(exists(path), "config file not found: " ~ path);
   return parseConfigFile(path);
+}
+
+void saveRoutes(string path, Route[] routes) {
+  JSONValue root;
+  if (exists(path)) {
+    root = parseJSON(readText(path));
+    enforce(root.type == JSONType.object, "config root must be object");
+  } else {
+    JSONValue[string] rootObject;
+    root = JSONValue(rootObject);
+  }
+
+  root["routes"] = routesConfigJson(routes);
+  auto tmpPath = path ~ ".tmp";
+  write(tmpPath, root.toString() ~ "\n");
+  rename(tmpPath, path);
+}
+
+JSONValue routesConfigJson(Route[] routes) {
+  JSONValue[string] routesObject;
+  foreach (route; routes) {
+    routesObject[route.prefix] = routeBackendsConfigJson(route);
+  }
+  return JSONValue(routesObject);
+}
+
+JSONValue routeBackendsConfigJson(Route route) {
+  if (route.backends.length == 1) {
+    return JSONValue(route.backends[0].port);
+  }
+
+  JSONValue[] ports;
+  foreach (backend; route.backends) {
+    ports ~= JSONValue(backend.port);
+  }
+  return JSONValue(ports);
 }
 
 Config parseConfigFile(string path) {
@@ -111,10 +147,15 @@ ListenAddress parseListen(string value) {
 */
 Route parseRoute(string prefix, JSONValue ports) {
   Route route;
-  route.prefix = prefix;
+  route.prefix = normalizeRoutePrefix(prefix);
   route.backends = parseBackends(ports);
   validateRoute(route);
   return route;
+}
+
+string normalizeRoutePrefix(string prefix) {
+  auto normalized = prefix.stripRight("/");
+  return normalized.length == 0 ? "/" : normalized;
 }
 
 Route[] parseRoutes(JSONValue value) {
@@ -146,7 +187,7 @@ Route parseRoute(JSONValue value) {
   enforce(cast(int) hasPort + cast(int) hasPorts == 1, "route must define exactly one of port or ports");
 
   Route route;
-  route.prefix = obj["prefix"].str;
+  route.prefix = normalizeRoutePrefix(obj["prefix"].str);
   route.backends = parseBackends(hasPort ? obj["port"] : obj["ports"]);
   validateRoute(route);
   return route;

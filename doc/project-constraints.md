@@ -62,6 +62,9 @@ These are intentionally out of scope unless the project goal changes:
 - Keep the route model simple: prefix plus exactly one action.
 - Keep route configuration as `path prefix -> port or ports`; backend host is
   fixed to `127.0.0.1`.
+- Normalize route prefixes at input boundaries. Except for root `/`, trailing
+  slashes are removed so `/m/edu/learning/` and `/m/edu/learning` identify the
+  same route.
 - Keep route lookup indexed by URI path segment instead of scanning every route
   for each request.
 - Runtime route changes must build the next route set and route tree first,
@@ -84,24 +87,28 @@ These are intentionally out of scope unless the project goal changes:
 
 ## Runtime Route Management
 
-The admin API can update only the in-memory route table:
+The admin API can update the runtime route table:
 
 - add or replace a single route
 - delete a single route
 - clear all routes
 - replace all routes
 
-Runtime route changes never rewrite the config file and never change listener,
-token, timeout, health-check, or connection-limit settings.
+Runtime route changes write the top-level `routes` field back to the startup
+config file by default. They never change listener, token, timeout,
+health-check, or connection-limit settings.
 
 All route-changing requests must come from localhost and must still pass the
 admin token check. The localhost decision is based on the TCP peer address, not
 on `Forwarded` or `X-Forwarded-*` headers.
 
-Health state is synchronized after route changes. Existing backend ports keep
-their current health counters and online/offline state; newly introduced ports
-start healthy; ports that are no longer referenced by any route are removed
-from the health table.
+The new routes are written to disk before the in-memory route table is swapped.
+If persistence fails, the existing runtime routes remain active.
+
+Health state is synchronized after successful route changes. Existing backend
+ports keep their current health counters and online/offline state; newly
+introduced ports start healthy; ports that are no longer referenced by any
+route are removed from the health table.
 
 ## Technology Selection
 
