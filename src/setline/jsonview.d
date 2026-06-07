@@ -20,6 +20,7 @@ import std.json;
 
 import setline.model;
 
+/** 将单条路由转换为管理接口返回的 JSON 对象。 */
 JSONValue routeJson(Route route) {
   JSONValue[string] item;
   item["prefix"] = JSONValue(route.prefix);
@@ -35,6 +36,7 @@ JSONValue routeJson(Route route) {
   return JSONValue(item);
 }
 
+/** 将同一 host 下的路由列表转换为 JSON 数组。 */
 JSONValue routesJson(Route[] routes) {
   JSONValue[] items;
   foreach (route; routes) {
@@ -43,6 +45,7 @@ JSONValue routesJson(Route[] routes) {
   return JSONValue(items);
 }
 
+/** 将 host 分组路由转换为管理接口返回的 JSON 对象。 */
 JSONValue hostRoutesJson(HostRoutes[] groups) {
   JSONValue[string] items;
   foreach (group; groups) {

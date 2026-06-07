@@ -24,6 +24,7 @@ import vibe.core.net : connectTCP;
 
 import setline.model;
 
+/** 本机端口的健康检查运行时状态。 */
 struct PortHealth {
   ushort port;
   bool healthy = true;
@@ -55,6 +56,7 @@ void initializeHealth(Config config) {
   atomicStore(gStopping, false);
 }
 
+/** 以 nothrow 入口运行健康检查循环，供 vibe-core task 调用。 */
 void runHealthChecks() nothrow {
   try {
     startHealthChecks();
@@ -63,6 +65,7 @@ void runHealthChecks() nothrow {
   }
 }
 
+/** 按配置间隔循环探测所有已配置端口。 */
 void startHealthChecks() {
   while (!healthChecksStopped()) {
     auto config = healthConfig();
@@ -73,23 +76,28 @@ void startHealthChecks() {
   }
 }
 
+/** 请求后台健康检查循环停止。 */
 void stopHealthChecks() nothrow {
   atomicStore(gStopping, true);
 }
 
+/** 返回健康检查循环是否已收到停止信号。 */
 bool healthChecksStopped() nothrow {
   return atomicLoad(gStopping);
 }
 
+/** 返回当前健康检查配置。 */
 HealthConfig healthConfig() {
   return gConfig;
 }
 
+/** 判断端口当前是否可用于路由选择。 */
 bool isPortHealthy(ushort port) {
   auto health = port in gHealth;
   return health is null || health.healthy;
 }
 
+/** 按新的路由集合刷新健康表，并保留仍被引用端口的状态。 */
 void syncPortHealth(HostRoutes[] groups) {
   PortHealth[ushort] next;
   foreach (group; groups) {
@@ -103,6 +111,7 @@ void syncPortHealth(HostRoutes[] groups) {
   gHealth = next;
 }
 
+/** 写入一次端口探测结果并更新连续成功/失败计数。 */
 void updatePortHealth(ushort port, bool ok) {
   auto health = port in gHealth;
   if (health is null) {
@@ -125,6 +134,7 @@ void updatePortHealth(ushort port, bool ok) {
   }
 }
 
+/** 返回当前需要健康检查的端口列表快照。 */
 ushort[] healthPorts() {
   ushort[] ports;
   foreach (port; gHealth.byKey) {
@@ -133,6 +143,7 @@ ushort[] healthPorts() {
   return ports;
 }
 
+/** 尝试建立到本机端口的 TCP 连接以判断端口是否在线。 */
 bool probePort(ushort port, int timeoutMillis) {
   try {
     auto connection = connectTCP("127.0.0.1", port, null, 0, timeoutMillis.msecs);

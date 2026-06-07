@@ -142,11 +142,6 @@ void forwardWebSocket(TCPConnection client, HttpHead request, ushort port) {
   tunnel(client, upstream);
 }
 
-/** 判断请求是否需要走 WebSocket 隧道路径。
-
-    这个小函数保留为路由层的语义入口，使 `server.d` 不需要知道 WebSocket 的具体头部
-    判断规则；真正的规则仍集中在 HTTP 头工具函数中。
-*/
 /** 建立到本机上游端口的 TCP 连接。
 
     连接失败被包装为 `PortConnectException`，让 server 层可以精确地区分“尚未接触
@@ -292,6 +287,7 @@ bool chunkedBodyComplete(string body) {
   return tracker.feed(cast(const(ubyte)[]) body);
 }
 
+/** 解析 chunk size 行中的十六进制长度。 */
 size_t parseChunkSize(string line) {
   size_t size;
   foreach (ch; line) {

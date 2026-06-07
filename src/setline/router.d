@@ -46,6 +46,7 @@ struct RouteTree {
   RouteNode root;
 }
 
+/** 一次路由匹配的结果。 */
 struct RouteMatch {
   string prefix;
   ushort[] ports;
@@ -153,10 +154,12 @@ Nullable!Route findRoute(RouteTree tree, string path) {
 */
 alias PortPredicate = bool delegate(ushort port);
 
+/** 为 path 随机选择一个路由端口。 */
 ushort selectPort(ref RouteTree tree, string path) {
   return selectPort(tree, path, null);
 }
 
+/** 为 path 随机选择一个满足过滤条件的路由端口。 */
 ushort selectPort(ref RouteTree tree, string path, PortPredicate available) {
   auto matched = matchRoute(tree, path);
   if (matched.ports.length == 0) {
@@ -193,6 +196,7 @@ void upsertRoute(ref Route[] routes, ref RouteTree tree, Route route) {
   tree = buildRouteTree(routes);
 }
 
+/** 将路由插入路径段树。 */
 void insertRoute(ref RouteTree tree, Route route) {
   auto node = &tree.root;
   if (route.prefix == "/") {

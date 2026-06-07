@@ -24,8 +24,7 @@ import setline.server;
 import setline.state;
 import setline.util : defaultConfigPath;
 
-version (unittest) {
-} else {
+/** 解析命令行参数，检查或启动 setline 服务。 */
 int main(string[] args) {
   version (linux) {
   } else {
@@ -62,5 +61,4 @@ int main(string[] args) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
     return 1;
   }
-}
 }

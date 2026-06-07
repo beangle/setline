@@ -21,6 +21,7 @@ import std.array : appender;
 enum defaultConfigPath = "setline.json";
 enum adminPrefix = "/__setline";
 
+/** 将 ASCII 大写字母转换为小写，非 ASCII 字符保持不变。 */
 string toLowerAscii(string value) {
   auto outp = appender!string();
   foreach (ch; value) {
@@ -33,6 +34,7 @@ string toLowerAscii(string value) {
   return outp.data;
 }
 
+/** 转义 HTML 文本节点和属性值中的特殊字符。 */
 string escapeHtml(string value) {
   auto outp = appender!string();
   foreach (ch; value) {

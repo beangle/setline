@@ -52,6 +52,7 @@ Config checkConfig(string path) {
   return parseConfigFile(path);
 }
 
+/** 将运行时路由写回配置文件的顶层 `routes` 字段。 */
 void saveRoutes(string path, HostRoutes[] routes) {
   JSONValue root;
   if (exists(path)) {
@@ -68,6 +69,7 @@ void saveRoutes(string path, HostRoutes[] routes) {
   rename(tmpPath, path);
 }
 
+/** 将 host 分组路由转换为配置文件中的 `routes` JSON 对象。 */
 JSONValue hostRoutesConfigJson(HostRoutes[] routes) {
   JSONValue[string] routesObject;
   foreach (group; routes) {
@@ -76,6 +78,7 @@ JSONValue hostRoutesConfigJson(HostRoutes[] routes) {
   return JSONValue(routesObject);
 }
 
+/** 将单个 host 下的路由列表转换为 `prefix -> port(s)` JSON 对象。 */
 JSONValue routesConfigJson(Route[] routes) {
   JSONValue[string] routesObject;
   foreach (route; routes) {
@@ -84,6 +87,7 @@ JSONValue routesConfigJson(Route[] routes) {
   return JSONValue(routesObject);
 }
 
+/** 将路由端口列表转换为单个端口或端口数组。 */
 JSONValue routePortsConfigJson(Route route) {
   if (route.ports.length == 1) {
     return JSONValue(route.ports[0]);
@@ -96,6 +100,7 @@ JSONValue routePortsConfigJson(Route route) {
   return JSONValue(ports);
 }
 
+/** 解析已经存在的 JSON 配置文件。 */
 Config parseConfigFile(string path) {
   Config config;
   auto root = parseJSON(readText(path));
@@ -136,6 +141,7 @@ ListenAddress parseListen(JSONValue value) {
   return parseListen(value.str);
 }
 
+/** 解析字符串形式的监听地址。 */
 ListenAddress parseListen(string value) {
   auto colon = value.indexOf(":");
   if (colon < 0) {
@@ -161,11 +167,13 @@ Route parseRoute(string prefix, JSONValue ports) {
   return route;
 }
 
+/** 规范化路由前缀，除根路径外移除尾部 `/`。 */
 string normalizeRoutePrefix(string prefix) {
   auto normalized = prefix.stripRight("/");
   return normalized.length == 0 ? "/" : normalized;
 }
 
+/** 解析一个 host 下的 `prefix -> port(s)` 路由对象。 */
 Route[] parseRoutes(JSONValue value) {
   enforce(value.type == JSONType.object, "routes must be object");
   Route[] routes;
@@ -176,6 +184,7 @@ Route[] parseRoutes(JSONValue value) {
   return routes;
 }
 
+/** 解析按 host 分组的路由配置。 */
 HostRoutes[] parseHostRoutes(JSONValue value) {
   enforce(value.type == JSONType.object, "routes must be host object");
   HostRoutes[] groups;
@@ -189,6 +198,7 @@ HostRoutes[] parseHostRoutes(JSONValue value) {
   return groups;
 }
 
+/** 规范化配置中的路由 host，禁止携带端口。 */
 string normalizeRouteHost(string host) {
   auto normalized = host.toLowerAscii;
   enforce(normalized.length > 0, "route host must not be empty");
@@ -196,6 +206,7 @@ string normalizeRouteHost(string host) {
   return normalized;
 }
 
+/** 规范化请求中的 Host 头，去掉端口并支持缺省 fallback。 */
 string normalizeRequestHost(string host) {
   if (host.length == 0) {
     return "*";
@@ -204,12 +215,14 @@ string normalizeRequestHost(string host) {
   return normalizeRouteHost(colon < 0 ? host : host[0 .. colon]);
 }
 
+/** 按 host 名称排序路由分组。 */
 void sortHostRoutes(ref HostRoutes[] groups) {
   import std.algorithm : sort;
   // 精确 host 优先展示，fallback 放在最后，便于人工阅读保存后的配置。
   sort!((a, b) => a.host == "*" ? false : b.host == "*" ? true : a.host < b.host)(groups);
 }
 
+/** 解析管理接口提交的单条路由对象。 */
 Route parseSingleRoute(JSONValue value) {
   auto routes = parseRoutes(value);
   enforce(routes.length == 1, "route object must contain exactly one route");
@@ -236,6 +249,7 @@ ushort[] parsePorts(JSONValue value) {
   return ports;
 }
 
+/** 解析健康检查配置并校验阈值。 */
 HealthConfig parseHealthConfig(JSONValue value) {
   auto obj = value.object;
   HealthConfig config;
@@ -258,10 +272,12 @@ HealthConfig parseHealthConfig(JSONValue value) {
   return config;
 }
 
+/** 解析字符串端口并校验范围。 */
 ushort parsePort(string value, string name) {
   return parsePort(value.to!long, name);
 }
 
+/** 校验并转换端口号。 */
 ushort parsePort(long value, string name) {
   enforce(value > 0 && value <= ushort.max, name ~ " must be 1..65535");
   return cast(ushort) value;

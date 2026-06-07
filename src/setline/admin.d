@@ -119,6 +119,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   sendResponse(client, 404, "Not Found", "unknown admin endpoint");
 }
 
+/** 判断当前连接是否允许执行本地路由更新。 */
 bool isLocalRouteUpdateAllowed(TCPConnection client) {
   if (isLocalhost(client)) {
     return true;
@@ -127,6 +128,7 @@ bool isLocalRouteUpdateAllowed(TCPConnection client) {
   return false;
 }
 
+/** 从管理接口 target 中读取并规范化 host 参数。 */
 string routeHostFromTarget(string target) {
   auto host = queryValue(target, "host");
   enforce(host.length > 0, "host is required");
@@ -146,14 +148,17 @@ bool isAuthorized(string request) {
   return headerValue(request, "X-Setline-Token") == token;
 }
 
+/** 判断连接对端是否为 localhost。 */
 bool isLocalhost(TCPConnection client) {
   return isLocalhostAddress(client.remoteAddress.toAddressString());
 }
 
+/** 判断地址字符串是否表示本机回环地址。 */
 bool isLocalhostAddress(string address) {
   return address == "127.0.0.1" || address == "::1" || address == "::ffff:127.0.0.1";
 }
 
+/** 从 request target 的 query string 中读取指定参数。 */
 string queryValue(string target, string name) {
   auto queryStart = target.indexOf("?");
   if (queryStart < 0) {
@@ -184,6 +189,7 @@ bool isBasicAuthorized(string request) {
   return isBasicAuthorized(request, adminToken());
 }
 
+/** 校验指定 token 下的 Basic Auth 请求。 */
 bool isBasicAuthorized(string request, string token) {
   if (token.length == 0) {
     return true;
@@ -203,12 +209,14 @@ bool isBasicAuthorized(string request, string token) {
   }
 }
 
+/** 返回 Basic Auth 挑战响应。 */
 void sendBasicChallenge(TCPConnection client) {
   string[string] headers;
   headers["WWW-Authenticate"] = `Basic realm="setline status"`;
   sendRaw(client, "401 Unauthorized", "text/plain; charset=utf-8", "authentication required\n", headers);
 }
 
+/** 渲染状态页面 HTML。 */
 string statusHtml() {
   auto listen = listenAddress();
   auto routes = routesSnapshot();
@@ -257,6 +265,7 @@ string statusHtml() {
   return html.data;
 }
 
+/** 返回状态接口 JSON。 */
 JSONValue statusJson() {
   auto listen = listenAddress();
   auto routes = routesSnapshot();
@@ -276,6 +285,7 @@ JSONValue statusJson() {
   return JSONValue(root);
 }
 
+/** 返回健康检查配置 JSON。 */
 JSONValue healthJson() {
   auto config = healthConfig();
   JSONValue[string] item;
@@ -287,6 +297,7 @@ JSONValue healthJson() {
   return JSONValue(item);
 }
 
+/** 返回按 host 分组的状态路由 JSON。 */
 JSONValue statusRoutesJson(HostRoutes[] groups) {
   JSONValue[string] items;
   foreach (group; groups) {
@@ -299,6 +310,7 @@ JSONValue statusRoutesJson(HostRoutes[] groups) {
   return JSONValue(items);
 }
 
+/** 返回单条状态路由 JSON。 */
 JSONValue statusRouteJson(Route route) {
   JSONValue[string] item;
   item["prefix"] = JSONValue(route.prefix);
@@ -314,6 +326,7 @@ JSONValue statusRouteJson(Route route) {
   return JSONValue(item);
 }
 
+/** 统计 host 分组下的路由总数。 */
 size_t routeCount(HostRoutes[] groups) {
   size_t count;
   foreach (group; groups) {
@@ -322,6 +335,7 @@ size_t routeCount(HostRoutes[] groups) {
   return count;
 }
 
+/** 渲染单个端口的健康状态标签。 */
 string portHealthHtml(ushort port) {
   auto online = isPortHealthy(port);
   auto state = online ? "online" : "offline";

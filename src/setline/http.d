@@ -104,6 +104,7 @@ HttpHead readHttpHead(TCPConnection socket) {
   return HttpHead();
 }
 
+/** 解析已有 HTTP 头字符串，并填充 `HttpHead` 的热路径字段。 */
 HttpHead parseHttpHead(string head, ubyte[] bufferedBody = null) {
   HttpHead result;
   result.head = head;
@@ -208,10 +209,12 @@ string headerValue(string request, string name) {
   return found;
 }
 
+/** 判断指定 HTTP 头字段是否包含逗号分隔 token。 */
 bool headerContains(string request, string name, string token) {
   return headerValueContains(headerValue(request, name), token);
 }
 
+/** 判断逗号分隔的头字段值中是否包含指定 token。 */
 bool headerValueContains(string value, string token) {
   auto wanted = token.toLowerAscii;
   size_t start;
@@ -326,32 +329,39 @@ string bodyOf(string request) {
   return pos < 0 ? "" : request[pos + 4 .. $];
 }
 
+/** 发送 JSON 响应。 */
 void sendJson(TCPConnection socket, JSONValue value) {
   auto body = value.toString();
   sendRaw(socket, "200 OK", "application/json", body);
 }
 
+/** 发送纯文本错误或提示响应。 */
 void sendResponse(TCPConnection socket, int code, string reason, string body) {
   sendRaw(socket, code.to!string ~ " " ~ reason, "text/plain; charset=utf-8", body ~ "\n");
 }
 
+/** 发送带默认头字段的 HTTP 响应。 */
 void sendRaw(TCPConnection socket, string status, string contentType, string body) {
   string[string] headers;
   sendRaw(socket, status, contentType, body, headers);
 }
 
+/** 发送带额外头字段的 HTTP 响应。 */
 void sendRaw(TCPConnection socket, string status, string contentType, string body, string[string] extraHeaders) {
   sendPrepared(socket, buildHttpResponse(status, contentType, body, extraHeaders));
 }
 
+/** 写出已经构造好的字符串响应。 */
 void sendPrepared(TCPConnection socket, string response) {
   sendPrepared(socket, cast(const(ubyte)[]) response);
 }
 
+/** 写出已经构造好的字节响应。 */
 void sendPrepared(TCPConnection socket, const(ubyte)[] response) {
   socket.write(response);
 }
 
+/** 构造完整 HTTP 响应文本。 */
 string buildHttpResponse(string status, string contentType, string body, string[string] extraHeaders) {
   auto response =
     "HTTP/1.1 " ~ status ~ "\r\n" ~
@@ -370,6 +380,7 @@ string buildHttpResponse(string status, string contentType, string body, string[
   return response;
 }
 
+/** 返回常见 HTTP 状态码的 reason phrase。 */
 string statusReason(int status) {
   switch (status) {
     case 200: return "OK";

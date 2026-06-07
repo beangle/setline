@@ -50,26 +50,32 @@ void initialize(Config config, string configPath = "") {
   atomicStore(gActiveConnections, 0);
 }
 
+/** 返回管理接口使用的 token。 */
 string adminToken() {
   return gAdminToken;
 }
 
+/** 返回当前上游端口连接超时时间。 */
 int connectTimeoutMillis() {
   return gConnectTimeoutMillis;
 }
 
+/** 返回当前监听地址配置。 */
 ListenAddress listenAddress() {
   return gListenAddress;
 }
 
+/** 返回允许的最大活跃连接数。 */
 size_t maxConnections() {
   return atomicLoad(gMaxConnections);
 }
 
+/** 返回当前活跃连接数。 */
 size_t activeConnections() {
   return atomicLoad(gActiveConnections);
 }
 
+/** 尝试占用一个活跃连接名额。 */
 bool tryAcquireConnection() {
   while (true) {
     auto current = atomicLoad(gActiveConnections);
@@ -82,6 +88,7 @@ bool tryAcquireConnection() {
   }
 }
 
+/** 释放一个已占用的活跃连接名额。 */
 void releaseConnection() {
   while (true) {
     auto current = atomicLoad(gActiveConnections);
@@ -94,10 +101,12 @@ void releaseConnection() {
   }
 }
 
+/** 按 host 和 path 选择一个健康端口。 */
 ushort selectPort(string host, string path) {
   return selectPortForHost(host, path, port => isPortHealthy(port));
 }
 
+/** 按 host 和 path 选择一个未被本次请求尝试过的健康端口。 */
 ushort selectPortExcept(string host, string path, ushort[] skipped) {
   return selectPortForHost(host, path, delegate bool(ushort port) {
     if (!isPortHealthy(port)) {
@@ -112,6 +121,7 @@ ushort selectPortExcept(string host, string path, ushort[] skipped) {
   });
 }
 
+/** 判断 host 和 path 是否有匹配路由。 */
 bool hasRoute(string host, string path) {
   return hasRouteForHost(host, path);
 }
@@ -150,6 +160,7 @@ private bool routeExists(RouteTree* tree, string path) {
   return tree !is null && !setline.router.findRoute(*tree, path).isNull;
 }
 
+/** 新增或替换指定 host 下的一条路由。 */
 void upsertRoute(string host, Route route) {
   auto groups = cloneHostRoutes(gRoutes);
   upsertHostRoute(groups, host, route);
@@ -160,6 +171,7 @@ void upsertRoute(string host, Route route) {
   syncPortHealth(groups);
 }
 
+/** 删除指定 host 下的一条路由。 */
 bool deleteRoute(string host, string prefix) {
   auto groups = cloneHostRoutes(gRoutes);
   if (!deleteHostRoute(groups, host, prefix)) {
@@ -173,6 +185,7 @@ bool deleteRoute(string host, string prefix) {
   return true;
 }
 
+/** 清空指定 host 的所有路由。 */
 void clearRoutes(string host) {
   auto groups = cloneHostRoutes(gRoutes);
   clearHostRoutes(groups, host);
@@ -183,6 +196,7 @@ void clearRoutes(string host) {
   syncPortHealth(groups);
 }
 
+/** 替换指定 host 的完整路由集合。 */
 void replaceRoutes(string host, Route[] routes) {
   sortRoutes(routes);
   auto groups = cloneHostRoutes(gRoutes);
@@ -194,6 +208,7 @@ void replaceRoutes(string host, Route[] routes) {
   syncPortHealth(groups);
 }
 
+/** 返回当前运行时路由表的深拷贝快照。 */
 HostRoutes[] routesSnapshot() {
   return cloneHostRoutes(gRoutes);
 }
@@ -304,6 +319,7 @@ private void replaceHostRoutes(ref HostRoutes[] groups, string host, Route[] rou
   }
 }
 
+/** 返回启动时使用的配置文件路径。 */
 string configPath() {
   return gConfigPath;
 }
