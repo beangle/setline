@@ -66,7 +66,7 @@ import setline.model;
 
 @("config check accepts valid file") unittest {
   auto path = "/tmp/setline-config-check-test.json";
-  write(path, `{"listen":"127.0.0.1:8080","routes":{"/api":9001}}`);
+  write(path, `{"listen":"127.0.0.1:8080","routes":{"local.example.com":{"/api":9001}}}`);
   scope (exit) remove(path);
 
   auto config = checkConfig(path);
@@ -93,7 +93,7 @@ import setline.model;
 
 @("config rejects direct response routes") unittest {
   auto path = "/tmp/setline-config-direct-response-test.json";
-  write(path, `{"routes":{"/healthz":{"directResponse":{"body":"ok"}}}}`);
+  write(path, `{"routes":{"local.example.com":{"/healthz":{"directResponse":{"body":"ok"}}}}}`);
   scope (exit) remove(path);
 
   assertThrown!Exception(loadConfig(path));
@@ -101,52 +101,65 @@ import setline.model;
 
 @("config parses route ports") unittest {
   auto path = "/tmp/setline-config-routes-test.json";
-  write(path, `{"routes":{"/api":9001,"/api/edu":[9002,9003]}}`);
+  write(path, `{"routes":{"local.example.com":{"/api":9001,"/api/edu":[9002,9003]}}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
-  assert(config.routes.length == 2);
-  assert(config.routes[0].prefix == "/api/edu");
-  assert(config.routes[0].backends[0].port == 9002);
-  assert(config.routes[0].backends[1].port == 9003);
-  assert(config.routes[1].prefix == "/api");
-  assert(config.routes[1].backends[0].port == 9001);
+  assert(config.routes.length == 1);
+  assert(config.routes[0].host == "local.example.com");
+  assert(config.routes[0].routes[0].prefix == "/api/edu");
+  assert(config.routes[0].routes[0].backends[0].port == 9002);
+  assert(config.routes[0].routes[0].backends[1].port == 9003);
+  assert(config.routes[0].routes[1].prefix == "/api");
+  assert(config.routes[0].routes[1].backends[0].port == 9001);
 }
 
 @("config normalizes route prefixes from file") unittest {
   auto path = "/tmp/setline-config-normalized-routes-test.json";
-  write(path, `{"routes":{"/api/":9001,"/api/edu/":[9002,9003]}}`);
+  write(path, `{"routes":{"local.example.com":{"/api/":9001,"/api/edu/":[9002,9003]}}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
-  assert(config.routes[0].prefix == "/api/edu");
-  assert(config.routes[1].prefix == "/api");
+  assert(config.routes[0].routes[0].prefix == "/api/edu");
+  assert(config.routes[0].routes[1].prefix == "/api");
 }
 
 @("config saves routes while preserving other fields") unittest {
   auto path = "/tmp/setline-config-save-routes-test.json";
-  write(path, `{"listen":"127.0.0.1:8080","adminToken":"secret","routes":{"/old":9000}}`);
+  write(path,
+    `{"listen":"127.0.0.1:8080","adminToken":"secret","routes":{"local.example.com":{"/old":9000}}}`);
   scope (exit) remove(path);
 
   saveRoutes(path, [
-    Route("/api", [Backend("127.0.0.1", 9001)]),
-    Route("/api/edu", [
-      Backend("127.0.0.1", 9002),
-      Backend("127.0.0.1", 9003)
+    HostRoutes("local.example.com", [
+      Route("/api", [Backend("127.0.0.1", 9001)]),
+      Route("/api/edu", [
+        Backend("127.0.0.1", 9002),
+        Backend("127.0.0.1", 9003)
+      ])
     ])
   ]);
 
   auto config = loadConfig(path);
   assert(config.adminToken == "secret");
-  assert(config.routes.length == 2);
-  assert(config.routes[0].prefix == "/api/edu");
-  assert(config.routes[1].prefix == "/api");
+  assert(config.routes.length == 1);
+  assert(config.routes[0].host == "local.example.com");
+  assert(config.routes[0].routes[0].prefix == "/api/edu");
+  assert(config.routes[0].routes[1].prefix == "/api");
 }
 
 @("config rejects backend urls") unittest {
   auto path = "/tmp/setline-config-backend-url-test.json";
-  write(path, `{"routes":[{"prefix":"/api","backend":"http://127.0.0.1:9001"}]}`);
+  write(path, `{"routes":{"local.example.com":{"/api":{"backend":"http://127.0.0.1:9001"}}}}`);
   scope (exit) remove(path);
 
   assertThrown!Exception(loadConfig(path));
+}
+
+@("config normalizes route hosts") unittest {
+  assert(normalizeRouteHost("LOCAL1.EXAMPLE.COM") == "local1.example.com");
+  assert(normalizeRouteHost("*") == "*");
+  assert(normalizeRequestHost("LOCAL1.EXAMPLE.COM:8080") == "local1.example.com");
+  assert(normalizeRequestHost("") == "*");
+  assertThrown!Exception(normalizeRouteHost("local1.example.com:8080"));
 }

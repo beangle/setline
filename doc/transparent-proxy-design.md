@@ -12,7 +12,7 @@ port from proxy identity headers.
 
 ## Goals
 
-- Route by URL path prefix with longest-prefix priority.
+- Route by request host and URL path prefix with longest-prefix priority.
 - Build a path-segment route tree after loading or updating routes, so request
   matching depends on URI depth rather than total route count.
 - Keep proxying fast under browser-style concurrent resource loading.
@@ -28,11 +28,16 @@ For proxied routes, the server reads only the HTTP request head up to
 
 - request method
 - request target URL
+- request host
 - path used for route matching
 - WebSocket upgrade headers
 - request body framing headers
 
-The proxy forwards the request head to the backend without URL rewriting,
+The request `Host` header is normalized by removing the port and lowercasing
+the host name. That value selects a host-specific route tree; if that tree has
+no matching path route, the `*` fallback tree is tried. If the exact host has a
+matching route but no healthy backend, fallback is not used. The proxy then
+forwards the request head to the backend without URL rewriting,
 `Host` rewriting, `Connection` rewriting, or cache handling.
 
 Proxy identity headers are conditional:
@@ -112,18 +117,19 @@ Runtime route management is deliberately narrow. It supports four operations:
 
 - add or replace one route
 - delete one route
-- clear all routes
-- replace all routes
+- clear routes for one host
+- replace routes for one host
 
 These operations are available under the `__setline` admin namespace and are
-accepted only from localhost. They still require the admin token. The localhost
-check uses the TCP peer address because proxy headers are user-controlled input
-at this security boundary.
+accepted only from localhost. Write operations do not require the admin token,
+but they must specify the route host. The localhost check uses the TCP peer
+address because proxy headers are user-controlled input at this security
+boundary.
 
 Route updates are persisted and applied atomically at the state level:
 
 1. Read the current route snapshot.
-2. Build the next `Route[]` and a fresh route tree.
+2. Build the next host route set and fresh route trees.
 3. Rewrite only the top-level `routes` field in the startup config file.
 4. Swap the routes and route tree into runtime state under the state lock.
 5. Synchronize backend health state from the new routes.

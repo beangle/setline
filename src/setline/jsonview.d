@@ -16,7 +16,6 @@
 
 module setline.jsonview;
 
-import std.conv : to;
 import std.json;
 
 import setline.model;
@@ -24,7 +23,7 @@ import setline.model;
 JSONValue routeJson(Route route) {
   JSONValue[string] item;
   item["prefix"] = JSONValue(route.prefix);
-  if (route.backends.length == 1)  {
+  if (route.backends.length == 1) {
     item["port"] = JSONValue(route.backends[0].port);
   } else {
     JSONValue[] ports;
@@ -40,6 +39,14 @@ JSONValue routesJson(Route[] routes) {
   JSONValue[] items;
   foreach (route; routes) {
     items ~= routeJson(route);
+  }
+  return JSONValue(items);
+}
+
+JSONValue hostRoutesJson(HostRoutes[] groups) {
+  JSONValue[string] items;
+  foreach (group; groups) {
+    items[group.host] = routesJson(group.routes);
   }
   return JSONValue(items);
 }

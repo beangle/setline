@@ -24,6 +24,7 @@ import std.json;
 import std.stdio : stderr;
 import std.string : indexOf, stripRight;
 
+import setline.ascii : toLowerAscii;
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
 
@@ -51,7 +52,7 @@ Config checkConfig(string path) {
   return parseConfigFile(path);
 }
 
-void saveRoutes(string path, Route[] routes) {
+void saveRoutes(string path, HostRoutes[] routes) {
   JSONValue root;
   if (exists(path)) {
     root = parseJSON(readText(path));
@@ -61,10 +62,18 @@ void saveRoutes(string path, Route[] routes) {
     root = JSONValue(rootObject);
   }
 
-  root["routes"] = routesConfigJson(routes);
+  root["routes"] = hostRoutesConfigJson(routes);
   auto tmpPath = path ~ ".tmp";
   write(tmpPath, root.toString() ~ "\n");
   rename(tmpPath, path);
+}
+
+JSONValue hostRoutesConfigJson(HostRoutes[] routes) {
+  JSONValue[string] routesObject;
+  foreach (group; routes) {
+    routesObject[group.host] = routesConfigJson(group.routes);
+  }
+  return JSONValue(routesObject);
 }
 
 JSONValue routesConfigJson(Route[] routes) {
@@ -108,9 +117,8 @@ Config parseConfigFile(string path) {
     config.healthCheck = parseHealthConfig(root["healthCheck"]);
   }
   if ("routes" in root.object) {
-    config.routes = parseRoutes(root["routes"]);
+    config.routes = parseHostRoutes(root["routes"]);
   }
-  sortRoutes(config.routes);
   return config;
 }
 
@@ -166,6 +174,40 @@ Route[] parseRoutes(JSONValue value) {
   }
   sortRoutes(routes);
   return routes;
+}
+
+HostRoutes[] parseHostRoutes(JSONValue value) {
+  enforce(value.type == JSONType.object, "routes must be host object");
+  HostRoutes[] groups;
+  foreach (host, routes; value.object) {
+    HostRoutes group;
+    group.host = normalizeRouteHost(host);
+    group.routes = parseRoutes(routes);
+    groups ~= group;
+  }
+  sortHostRoutes(groups);
+  return groups;
+}
+
+string normalizeRouteHost(string host) {
+  auto normalized = host.toLowerAscii;
+  enforce(normalized.length > 0, "route host must not be empty");
+  enforce(normalized == "*" || normalized.indexOf(":") < 0, "route host must not include port");
+  return normalized;
+}
+
+string normalizeRequestHost(string host) {
+  if (host.length == 0) {
+    return "*";
+  }
+  auto colon = host.indexOf(":");
+  return normalizeRouteHost(colon < 0 ? host : host[0 .. colon]);
+}
+
+void sortHostRoutes(ref HostRoutes[] groups) {
+  import std.algorithm : sort;
+  // 精确 host 优先展示，fallback 放在最后，便于人工阅读保存后的配置。
+  sort!((a, b) => a.host == "*" ? false : b.host == "*" ? true : a.host < b.host)(groups);
 }
 
 /** 解析管理接口提交的单条路由。

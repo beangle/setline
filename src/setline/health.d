@@ -39,10 +39,12 @@ void initializeHealth(Config config) {
   synchronized {
     gConfig = config.healthCheck;
     gHealth = null;
-    foreach (route; config.routes) {
-      foreach (backend; route.backends) {
-        if ((backend.port in gHealth) is null) {
-          gHealth[backend.port] = BackendHealth(backend.port, true);
+    foreach (group; config.routes) {
+      foreach (route; group.routes) {
+        foreach (backend; route.backends) {
+          if ((backend.port in gHealth) is null) {
+            gHealth[backend.port] = BackendHealth(backend.port, true);
+          }
         }
       }
     }
@@ -82,16 +84,6 @@ HealthConfig healthConfig() {
   }
 }
 
-BackendHealth[] healthSnapshot() {
-  synchronized {
-    BackendHealth[] values;
-    foreach (health; gHealth) {
-      values ~= health;
-    }
-    return values;
-  }
-}
-
 bool isBackendHealthy(Backend backend) {
   synchronized {
     auto health = backend.port in gHealth;
@@ -99,21 +91,15 @@ bool isBackendHealthy(Backend backend) {
   }
 }
 
-void addBackendHealth(Backend backend) {
-  synchronized {
-    if ((backend.port in gHealth) is null) {
-      gHealth[backend.port] = BackendHealth(backend.port, true);
-    }
-  }
-}
-
-void syncBackendHealth(Route[] routes) {
+void syncBackendHealth(HostRoutes[] groups) {
   synchronized {
     BackendHealth[ushort] next;
-    foreach (route; routes) {
-      foreach (backend; route.backends) {
-        auto existing = backend.port in gHealth;
-        next[backend.port] = existing is null ? BackendHealth(backend.port, true) : *existing;
+    foreach (group; groups) {
+      foreach (route; group.routes) {
+        foreach (backend; route.backends) {
+          auto existing = backend.port in gHealth;
+          next[backend.port] = existing is null ? BackendHealth(backend.port, true) : *existing;
+        }
       }
     }
     gHealth = next;

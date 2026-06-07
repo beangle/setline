@@ -32,16 +32,24 @@ curl -H 'X-Setline-Token: change-me' \
 Response:
 
 ```json
-[
-  {"prefix":"/m/edu/learning","port":5173},
-  {"prefix":"/api/edu","ports":[9002,9003]}
-]
+{
+  "local1.example.com": [
+    {"prefix":"/m/edu/learning","port":5173},
+    {"prefix":"/api/edu","ports":[9002,9003]}
+  ],
+  "local2.example.com": [
+    {"prefix":"/api","port":9081}
+  ],
+  "*": [
+    {"prefix":"/","port":9090}
+  ]
+}
 ```
 
 ## Add Or Replace One Route
 
 ```http
-PUT /__setline/routes
+PUT /__setline/routes?host=local1.example.com
 ```
 
 Single port:
@@ -59,7 +67,7 @@ Multiple ports:
 Example:
 
 ```bash
-curl -X PUT http://127.0.0.1:8080/__setline/routes \
+curl -X PUT 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com' \
   -d '{"prefix":"/api/edu","ports":[9002,9003]}'
 ```
 
@@ -72,45 +80,47 @@ Response:
 ## Delete One Route
 
 ```http
-DELETE /__setline/routes?prefix=/api/edu
+DELETE /__setline/routes?host=local1.example.com&prefix=/api/edu
 ```
 
 Example:
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?prefix=/api/edu'
+curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com&prefix=/api/edu'
 ```
 
 Response is the remaining route list:
 
 ```json
-[
-  {"prefix":"/m/edu/learning","port":5173}
-]
+{
+  "local1.example.com": [
+    {"prefix":"/m/edu/learning","port":5173}
+  ]
+}
 ```
 
-## Clear All Routes
+## Clear Routes For One Host
 
 ```http
-DELETE /__setline/routes
+DELETE /__setline/routes?host=local1.example.com
 ```
 
 Example:
 
 ```bash
-curl -X DELETE http://127.0.0.1:8080/__setline/routes
+curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com'
 ```
 
 Response:
 
 ```json
-[]
+{}
 ```
 
-## Replace All Routes
+## Replace Routes For One Host
 
 ```http
-PUT /__setline/routes/all
+PUT /__setline/routes/all?host=local1.example.com
 ```
 
 Body:
@@ -127,22 +137,27 @@ Body:
 Example:
 
 ```bash
-curl -X PUT http://127.0.0.1:8080/__setline/routes/all \
+curl -X PUT 'http://127.0.0.1:8080/__setline/routes/all?host=local1.example.com' \
   -d '{"routes":{"/api/edu":[9002,9003],"/m/edu/learning":5173}}'
 ```
 
 Response is the new route list:
 
 ```json
-[
-  {"prefix":"/m/edu/learning","port":5173},
-  {"prefix":"/api/edu","ports":[9002,9003]}
-]
+{
+  "local1.example.com": [
+    {"prefix":"/m/edu/learning","port":5173},
+    {"prefix":"/api/edu","ports":[9002,9003]}
+  ]
+}
 ```
 
 ## Validation Rules
 
 - `prefix` must start with `/`.
+- write operations must include a `host` query parameter.
+- route host names are lowercased and must not include a port.
+- `host=*` is allowed and updates the fallback route namespace, not all hosts.
 - trailing slashes are ignored except for root `/`; `/m/edu/learning/` is
   normalized to `/m/edu/learning`.
 - `prefix` must not start with `/__setline`.
@@ -156,8 +171,8 @@ Response is the new route list:
 ## Status Codes
 
 - `200 OK`: request accepted.
-- `400 Bad Request`: invalid JSON, invalid route, missing route, or unsupported
-  field.
+- `400 Bad Request`: invalid JSON, invalid host, invalid route, missing route,
+  or unsupported field.
 - `401 Unauthorized`: missing or invalid `X-Setline-Token` on read APIs.
 - `403 Forbidden`: write request did not come from localhost.
 - `404 Not Found`: unknown admin endpoint.

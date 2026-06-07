@@ -26,6 +26,7 @@ import setline.config : normalizeRoutePrefix;
 import setline.health;
 import setline.model;
 import setline.state;
+import setline.test_lock;
 
 @("admin validates status basic auth") unittest {
   auto encoded = Base64.encode(cast(ubyte[]) "setline:secret").to!string;
@@ -41,35 +42,46 @@ import setline.state;
 }
 
 @("admin renders status html") unittest {
-  Config config;
-  config.listen = ListenAddress("0.0.0.0", 8080);
-  config.routes = [Route("/api", [Backend("127.0.0.1", 9001)])];
-  initialize(config);
+  withStateTestLock({
+    Config config;
+    config.listen = ListenAddress("0.0.0.0", 8080);
+    config.routes = [HostRoutes("local.example.com", [Route("/api", [Backend("127.0.0.1", 9001)])])];
+    initialize(config);
 
-  auto html = statusHtml();
-  assert(html.indexOf("setline status") >= 0);
-  assert(html.indexOf("0.0.0.0:8080") >= 0);
-  assert(html.indexOf("/api") >= 0);
-  assert(html.indexOf("9001") >= 0);
-  assert(html.indexOf("online") >= 0);
-  assert(html.indexOf("dot") >= 0);
+    auto html = statusHtml();
+    assert(html.indexOf("setline status") >= 0);
+    assert(html.indexOf("0.0.0.0:8080") >= 0);
+    assert(html.indexOf("local.example.com") >= 0);
+    assert(html.indexOf("/api") >= 0);
+    assert(html.indexOf("9001") >= 0);
+    assert(html.indexOf("online") >= 0);
+    assert(html.indexOf("dot") >= 0);
+  });
 }
 
 @("admin renders status json") unittest {
-  Config config;
-  config.listen = ListenAddress("127.0.0.1", 18080);
-  config.connectTimeoutMillis = 1500;
-  config.routes = [Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9002)])];
-  initialize(config);
+  withStateTestLock({
+    Config config;
+    config.listen = ListenAddress("127.0.0.1", 18080);
+    config.connectTimeoutMillis = 1500;
+    config.routes = [
+      HostRoutes("local.example.com", [
+        Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9002)])
+      ])
+    ];
+    initialize(config);
 
-  auto status = statusJson();
-  assert(status["listen"]["host"].str == "127.0.0.1");
-  assert(jsonNumber(status["listen"]["port"]) == 18080);
-  assert(jsonNumber(status["connectTimeoutMillis"]) > 0);
-  assert(jsonNumber(status["routeCount"]) >= 0);
-  assert(jsonNumber(status["healthCheck"]["intervalMillis"]) == 5000);
-  assert(status["healthCheck"]["backends"].type == JSONType.array);
-  assert(status["routes"].type == JSONType.array);
+    auto status = statusJson();
+    assert(status["listen"]["host"].str == "127.0.0.1");
+    assert(jsonNumber(status["listen"]["port"]) == 18080);
+    assert(jsonNumber(status["connectTimeoutMillis"]) > 0);
+    assert(jsonNumber(status["routeHostCount"]) == 1);
+    assert(jsonNumber(status["routeCount"]) == 1);
+    assert(jsonNumber(status["healthCheck"]["intervalMillis"]) == 5000);
+    assert(status["routes"].type == JSONType.object);
+    assert(status["routes"]["local.example.com"].type == JSONType.array);
+    assert(status["routes"]["local.example.com"][0]["ports"][0]["healthy"].boolean);
+  });
 }
 
 @("admin escapes status html") unittest {
@@ -92,34 +104,41 @@ import setline.state;
   assert(normalizeRoutePrefix(queryValue("/__setline/routes?prefix=/api/", "prefix")) == "/api");
   assert(queryValue("/__setline/routes?x=1&prefix=/m/edu", "prefix") == "/m/edu");
   assert(queryValue("/__setline/routes", "prefix") == "");
+  assert(routeHostFromTarget("/__setline/routes?host=LOCAL.EXAMPLE.COM") == "local.example.com");
 }
 
 @("admin updates route set") unittest {
-  Config config;
-  config.routes = [
-    Route("/api", [Backend("127.0.0.1", 9001)]),
-    Route("/m", [Backend("127.0.0.1", 9002)])
-  ];
-  initialize(config);
-  updateBackendHealth(9001, false);
-  updateBackendHealth(9001, false);
+  withStateTestLock({
+    Config config;
+    config.routes = [
+      HostRoutes("local.example.com", [
+        Route("/api", [Backend("127.0.0.1", 9001)]),
+        Route("/m", [Backend("127.0.0.1", 9002)])
+      ])
+    ];
+    initialize(config);
+    updateBackendHealth(9001, false);
+    updateBackendHealth(9001, false);
 
-  upsertRoute(Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9003)]));
-  assert(routesSnapshot().length == 2);
-  assert(!isBackendHealthy(Backend("127.0.0.1", 9001)));
-  assert(isBackendHealthy(Backend("127.0.0.1", 9003)));
+    upsertRoute("local.example.com",
+      Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9003)]));
+    assert(routesSnapshot().length == 1);
+    assert(routesSnapshot()[0].routes.length == 2);
+    assert(!isBackendHealthy(Backend("127.0.0.1", 9001)));
+    assert(isBackendHealthy(Backend("127.0.0.1", 9003)));
 
-  assert(deleteRoute("/m"));
-  assert(!deleteRoute("/missing"));
-  assert(routesSnapshot().length == 1);
+    assert(deleteRoute("local.example.com", "/m"));
+    assert(!deleteRoute("local.example.com", "/missing"));
+    assert(routesSnapshot()[0].routes.length == 1);
 
-  clearRoutes();
-  assert(routesSnapshot().length == 0);
+    clearRoutes("local.example.com");
+    assert(routesSnapshot().length == 0);
 
-  replaceRoutes([Route("/new", [Backend("127.0.0.1", 9010)])]);
-  assert(routesSnapshot().length == 1);
-  assert(routesSnapshot()[0].prefix == "/new");
-  assert(isBackendHealthy(Backend("127.0.0.1", 9010)));
+    replaceRoutes("local.example.com", [Route("/new", [Backend("127.0.0.1", 9010)])]);
+    assert(routesSnapshot().length == 1);
+    assert(routesSnapshot()[0].routes[0].prefix == "/new");
+    assert(isBackendHealthy(Backend("127.0.0.1", 9010)));
+  });
 }
 
 long jsonNumber(JSONValue value) {

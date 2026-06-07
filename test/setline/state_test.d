@@ -19,39 +19,74 @@ module setline.state_test;
 import std.file : remove, write;
 
 import setline.config;
+import setline.health;
 import setline.model;
 import setline.state;
+import setline.test_lock;
 
 @("state enforces max active connections") unittest {
-  Config config;
-  config.maxConnections = 1;
-  initialize(config);
+  withStateTestLock({
+    Config config;
+    config.maxConnections = 1;
+    initialize(config);
 
-  assert(maxConnections() == 1);
-  assert(activeConnections() == 0);
-  assert(tryAcquireConnection());
-  assert(activeConnections() == 1);
-  assert(!tryAcquireConnection());
+    assert(maxConnections() == 1);
+    assert(activeConnections() == 0);
+    assert(tryAcquireConnection());
+    assert(activeConnections() == 1);
+    assert(!tryAcquireConnection());
 
-  releaseConnection();
-  assert(activeConnections() == 0);
-  assert(tryAcquireConnection());
-  releaseConnection();
+    releaseConnection();
+    assert(activeConnections() == 0);
+    assert(tryAcquireConnection());
+    releaseConnection();
+  });
 }
 
 @("state persists runtime route changes") unittest {
-  auto path = "/tmp/setline-state-persist-routes-test.json";
-  write(path, `{"listen":"127.0.0.1:8080","routes":{"/old":9000}}`);
-  scope (exit) remove(path);
+  withStateTestLock({
+    auto path = "/tmp/setline-state-persist-routes-test.json";
+    write(path, `{"listen":"127.0.0.1:8080","routes":{"local.example.com":{"/old":9000}}}`);
+    scope (exit) remove(path);
 
-  Config config;
-  config.routes = [Route("/old", [Backend("127.0.0.1", 9000)])];
-  initialize(config, path);
+    Config config;
+    config.routes = [HostRoutes("local.example.com", [Route("/old", [Backend("127.0.0.1", 9000)])])];
+    initialize(config, path);
 
-  replaceRoutes([Route("/new", [Backend("127.0.0.1", 9001)])]);
+    replaceRoutes("local.example.com", [Route("/new", [Backend("127.0.0.1", 9001)])]);
 
-  auto saved = loadConfig(path);
-  assert(saved.routes.length == 1);
-  assert(saved.routes[0].prefix == "/new");
-  assert(saved.routes[0].backends[0].port == 9001);
+    auto saved = loadConfig(path);
+    assert(saved.routes.length == 1);
+    assert(saved.routes[0].host == "local.example.com");
+    assert(saved.routes[0].routes[0].prefix == "/new");
+    assert(saved.routes[0].routes[0].backends[0].port == 9001);
+  });
+}
+
+@("state selects routes by host") unittest {
+  withStateTestLock({
+    Config config;
+    config.routes = [
+      HostRoutes("local1.example.com", [Route("/api", [Backend("127.0.0.1", 9080)])]),
+      HostRoutes("local2.example.com", [Route("/api", [Backend("127.0.0.1", 9081)])]),
+      HostRoutes("*", [
+        Route("/api", [Backend("127.0.0.1", 9090)]),
+        Route("/m", [Backend("127.0.0.1", 9091)])
+      ])
+    ];
+    initialize(config);
+
+    assert(selectBackend("local1.example.com", "/api/users").get.port == 9080);
+    assert(selectBackend("local1.example.com", "/m/edu").get.port == 9091);
+    assert(selectBackend("local2.example.com", "/api/users").get.port == 9081);
+    assert(selectBackend("missing.example.com", "/api/users").get.port == 9090);
+
+    updateBackendHealth(9080, false);
+    updateBackendHealth(9080, false);
+    assert(selectBackend("local1.example.com", "/api/users").isNull);
+
+    auto snapshot = routesSnapshot();
+    snapshot[0].routes[0].backends[0].port = 1;
+    assert(selectBackend("missing.example.com", "/api/users").get.port == 9090);
+  });
 }

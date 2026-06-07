@@ -8,7 +8,7 @@ predictable.
 - Linux only.
 - Backends are local only; listeners default to loopback but may explicitly bind
   all IPv4 addresses with `*:port`.
-- HTTP/1.x path-prefix routing.
+- HTTP/1.x host-scoped path-prefix routing.
 - Local HTTP backends only, configured by port number.
 - Longest-prefix route matching.
 - Optional random selection across local backends.
@@ -60,8 +60,10 @@ These are intentionally out of scope unless the project goal changes:
 ## Implementation Constraints
 
 - Keep the route model simple: prefix plus exactly one action.
-- Keep route configuration as `path prefix -> port or ports`; backend host is
-  fixed to `127.0.0.1`.
+- Keep route configuration as `host -> path prefix -> port or ports`; backend
+  host is fixed to `127.0.0.1`.
+- Route hosts do not include a port. Host `*` is allowed only as a fallback
+  namespace, not as a bulk operation over all hosts.
 - Normalize route prefixes at input boundaries. Except for root `/`, trailing
   slashes are removed so `/m/edu/learning/` and `/m/edu/learning` identify the
   same route.
@@ -91,16 +93,16 @@ The admin API can update the runtime route table:
 
 - add or replace a single route
 - delete a single route
-- clear all routes
-- replace all routes
+- clear routes for a single host
+- replace routes for a single host
 
 Runtime route changes write the top-level `routes` field back to the startup
 config file by default. They never change listener, token, timeout,
 health-check, or connection-limit settings.
 
-All route-changing requests must come from localhost and must still pass the
-admin token check. The localhost decision is based on the TCP peer address, not
-on `Forwarded` or `X-Forwarded-*` headers.
+All route-changing requests must come from localhost and must specify the
+target host. They do not require the admin token. The localhost decision is
+based on the TCP peer address, not on `Forwarded` or `X-Forwarded-*` headers.
 
 The new routes are written to disk before the in-memory route table is swapped.
 If persistence fails, the existing runtime routes remain active.

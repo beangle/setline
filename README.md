@@ -2,15 +2,16 @@
 
 `setline` is a small Linux-only local HTTP path router written in D.
 
-It listens on a local address, matches requests by path prefix, and forwards
-them to local backend services.
+It listens on a local address, matches requests by host and path prefix, and
+forwards them to local backend services.
 
 ## Scope
 
 - Linux only.
-- Local only: the listener must bind to loopback or localhost.
+- Backends are local only; the listener defaults to loopback and can
+  explicitly bind other interfaces.
 - HTTP/1.x only in this first version.
-- Path-prefix routing with longest-prefix priority.
+- Host-scoped path-prefix routing with longest-prefix priority.
 - Local HTTP backends only.
 - Multiple backends use random selection. No weight support.
 - `stripPrefix` is intentionally unsupported.
@@ -47,9 +48,17 @@ dub run -- -c -f config.example.json
     "healthyThreshold": 1
   },
   "routes": {
-    "/api/edu": [9002, 9003],
-    "/m/edu/learning": 5173,
-    "/api": 9001
+    "local1.example.com": {
+      "/api/edu": [9002, 9003],
+      "/m/edu/learning": 5173,
+      "/api": 9001
+    },
+    "local2.example.com": {
+      "/api": 9081
+    },
+    "*": {
+      "/": 9090
+    }
   }
 }
 ```
@@ -63,11 +72,14 @@ Top-level fields:
 - `maxConnections`: active client connection limit, default `65535`.
 - `healthCheck`: TCP connect health check tuning; health checks are always
   enabled and run on a fixed background interval.
-- `routes`: object mapping URL path prefixes to a local backend port or a list
-  of local backend ports.
+- `routes`: object mapping host names to URL path prefixes, then to a local
+  backend port or a list of local backend ports. Route host names do not include
+  a port. Host `*` is the fallback route namespace.
 
-Routes are indexed by path segment with longest-prefix priority, so `/api/edu`
-wins over `/api`.
+Routes are first selected by the request `Host` header after removing its port
+and lowercasing it. Within that host, routes are indexed by path segment with
+longest-prefix priority, so `/api/edu` wins over `/api`. If the request host has
+no matching route for the requested path, setline tries `*`.
 
 ## Runtime Route Management
 
@@ -77,26 +89,26 @@ in-memory routes and write the `routes` field back to the JSON config file.
 Add or replace one route:
 
 ```bash
-curl -X PUT http://127.0.0.1:8080/__setline/routes \
+curl -X PUT 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com' \
   -d '{"prefix":"/api/edu","ports":[9002,9003]}'
 ```
 
 Delete one route:
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?prefix=/api/edu'
+curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com&prefix=/api/edu'
 ```
 
-Clear all routes:
+Clear routes for one host:
 
 ```bash
-curl -X DELETE http://127.0.0.1:8080/__setline/routes
+curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com'
 ```
 
-Replace all routes:
+Replace routes for one host:
 
 ```bash
-curl -X PUT http://127.0.0.1:8080/__setline/routes/all \
+curl -X PUT 'http://127.0.0.1:8080/__setline/routes/all?host=local1.example.com' \
   -d '{"routes":{"/api":9001,"/m/edu/learning":5173}}'
 ```
 
@@ -124,8 +136,8 @@ http://127.0.0.1:8080/__setline/status.html
 
 ## Notes
 
-This project is deliberately narrow: local-only HTTP path routing, local backend
-selection, and transparent proxying.
+This project is deliberately narrow: host-scoped local HTTP path routing, local
+backend selection, and transparent proxying.
 
 See also:
 

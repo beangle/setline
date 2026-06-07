@@ -9,8 +9,16 @@
     "healthyThreshold": 1
   },
   "routes": {
-    "/api/edu": [9002, 9003],
-    "/m/edu/learning": [5173, 4545],
-    "/api": 9001
+    "local1.example.com": {
+      "/api/edu": [9002, 9003],
+      "/m/edu/learning": [5173, 4545],
+      "/api": 9001
+    },
+    "local2.example.com": {
+      "/api": 9081
+    },
+    "*": {
+      "/": 9090
+    }
   }
 }

@@ -59,14 +59,14 @@ Supported runtime operations are:
 
 - add or replace one route
 - delete one route
-- clear all routes
-- replace all routes
+- clear routes for one host
+- replace routes for one host
 
-All route-changing calls must come from localhost and must pass the admin token
-check. Keep these endpoints bound to trusted local automation such as service
-startup scripts or deployment hooks.
+All route-changing calls must come from localhost and must specify the target
+route host. They do not require the admin token. Keep these endpoints bound to
+trusted local automation such as service startup scripts or deployment hooks.
 
-When routes change, setline rebuilds the next route tree, writes the new
+When routes change, setline rebuilds the next host route trees, writes the new
 `routes` field to disk, and then swaps it into runtime state. Backend health
 information is preserved for ports that remain referenced by the new route set.
 If writing the config file fails, runtime routes are not changed.

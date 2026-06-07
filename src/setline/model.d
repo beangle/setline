@@ -47,6 +47,16 @@ struct Route {
   Backend[] backends;
 }
 
+/** 一个明确 host 下的路由集合。
+
+    host 是运行时路由的第一层命名空间，普通主机名不带端口。`*` 是 fallback 命名空间：
+    请求 `Host` 头没有精确命中时，才会尝试 `*` 下的路由。
+*/
+struct HostRoutes {
+  string host;
+  Route[] routes;
+}
+
 /** 后端健康检查配置。
 
     健康检查总是开启，只允许调整固定后台循环的间隔和阈值。检查方式为 TCP connect 到
@@ -70,5 +80,5 @@ struct Config {
   int connectTimeoutMillis = 3000;
   size_t maxConnections = 65535;
   HealthConfig healthCheck;
-  Route[] routes;
+  HostRoutes[] routes;
 }

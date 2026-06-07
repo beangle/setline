@@ -25,6 +25,7 @@ import vibe.core.net : TCPConnection, TCPListener, listenTCP;
 import vibe.core.task : Task;
 
 import setline.admin;
+import setline.config : normalizeRequestHost;
 import setline.constants;
 import setline.health;
 import setline.http;
@@ -127,18 +128,27 @@ void handleClient(TCPConnection client) {
     return;
   }
 
+  string routeHost;
+  try {
+    routeHost = normalizeRequestHost(headerValue(request.head, "Host"));
+  } catch (Exception e) {
+    sendResponse(client, 400, "Bad Request", e.msg);
+    return;
+  }
+
   try {
     Backend[] tried;
     Exception lastConnectFailure;
     while (true) {
-      auto backend = selectBackendExcept(path, tried);
+      auto backend = selectBackendExcept(routeHost, path, tried);
       if (backend.isNull) {
         if (tried.length > 0 && lastConnectFailure !is null) {
           sendResponse(client, 502, "Bad Gateway", lastConnectFailure.msg);
-        } else if (hasRoute(path)) {
-          sendResponse(client, 503, "Service Unavailable", "no healthy backend for " ~ path);
+        } else if (hasRoute(routeHost, path)) {
+          sendResponse(client, 503, "Service Unavailable",
+            "no healthy backend for " ~ routeHost ~ path);
         } else {
-          sendResponse(client, 404, "Not Found", "no route for " ~ path);
+          sendResponse(client, 404, "Not Found", "no route for " ~ routeHost ~ path);
         }
         return;
       }
@@ -156,10 +166,10 @@ void handleClient(TCPConnection client) {
     }
   }
   catch (Exception e) {
-    if (hasRoute(path)) {
+    if (hasRoute(routeHost, path)) {
       sendResponse(client, 502, "Bad Gateway", e.msg);
     } else {
-      sendResponse(client, 404, "Not Found", "no route for " ~ path);
+      sendResponse(client, 404, "Not Found", "no route for " ~ routeHost ~ path);
     }
   }
 }

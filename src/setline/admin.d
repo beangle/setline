@@ -25,12 +25,12 @@ import std.string : indexOf, startsWith;
 
 import vibe.core.net : TCPConnection;
 
-import setline.config : normalizeRoutePrefix, parseRoute, parseRoutes;
+import setline.config : normalizeRouteHost, normalizeRoutePrefix, parseRoute, parseRoutes;
 import setline.constants;
 import setline.health;
 import setline.http;
 import setline.jsonview;
-import setline.model : Backend;
+import setline.model : Backend, HostRoutes, Route;
 import setline.state;
 
 /** 处理 `__setline` 管理接口请求。
@@ -64,15 +64,16 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
       sendResponse(client, 401, "Unauthorized", "missing or invalid token");
       return;
     }
-    sendJson(client, routesJson(routesSnapshot()));
+    sendJson(client, hostRoutesJson(routesSnapshot()));
     return;
   }
 
   if (path == adminPrefix ~ "/routes" && method == "PUT") {
     if (!isLocalRouteUpdateAllowed(client)) return;
     try {
+      auto host = routeHostFromTarget(target);
       auto route = parseRoute(parseJSON(bodyOf(request)));
-      upsertRoute(route);
+      upsertRoute(host, route);
       sendJson(client, routeJson(route));
     }
     catch (Exception e) {
@@ -84,14 +85,15 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   if (path == adminPrefix ~ "/routes" && method == "DELETE") {
     if (!isLocalRouteUpdateAllowed(client)) return;
     try {
+      auto host = routeHostFromTarget(target);
       auto prefix = queryValue(target, "prefix");
       if (prefix.length == 0) {
-        clearRoutes();
+        clearRoutes(host);
       } else {
         auto normalized = normalizeRoutePrefix(prefix);
-        enforce(deleteRoute(normalized), "route not found: " ~ normalized);
+        enforce(deleteRoute(host, normalized), "route not found: " ~ host ~ normalized);
       }
-      sendJson(client, routesJson(routesSnapshot()));
+      sendJson(client, hostRoutesJson(routesSnapshot()));
     }
     catch (Exception e) {
       sendResponse(client, 400, "Bad Request", e.msg);
@@ -102,10 +104,11 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   if (path == adminPrefix ~ "/routes/all" && method == "PUT") {
     if (!isLocalRouteUpdateAllowed(client)) return;
     try {
+      auto host = routeHostFromTarget(target);
       auto root = parseJSON(bodyOf(request));
       enforce("routes" in root.object, "routes is required");
-      replaceRoutes(parseRoutes(root["routes"]));
-      sendJson(client, routesJson(routesSnapshot()));
+      replaceRoutes(host, parseRoutes(root["routes"]));
+      sendJson(client, hostRoutesJson(routesSnapshot()));
     }
     catch (Exception e) {
       sendResponse(client, 400, "Bad Request", e.msg);
@@ -122,6 +125,12 @@ bool isLocalRouteUpdateAllowed(TCPConnection client) {
   }
   sendResponse(client, 403, "Forbidden", "route updates are only allowed from localhost");
   return false;
+}
+
+string routeHostFromTarget(string target) {
+  auto host = queryValue(target, "host");
+  enforce(host.length > 0, "host is required");
+  return normalizeRouteHost(host);
 }
 
 /** 校验管理接口 token。
@@ -229,17 +238,22 @@ string statusHtml() {
   html.put("<dt>active connections</dt><dd>" ~ activeConnections().to!string ~ "</dd>");
   html.put("<dt>max connections</dt><dd>" ~ maxConnections().to!string ~ "</dd>");
   html.put("<dt>connect timeout</dt><dd>" ~ connectTimeoutMillis().to!string ~ " ms</dd>");
-  html.put("<dt>route count</dt><dd>" ~ routes.length.to!string ~ "</dd>");
+  html.put("<dt>route hosts</dt><dd>" ~ routes.length.to!string ~ "</dd>");
+  html.put("<dt>route count</dt><dd>" ~ routeCount(routes).to!string ~ "</dd>");
   html.put("</dl></section>");
-  html.put("<section><table><thead><tr><th>prefix</th><th>ports</th></tr></thead><tbody>");
-  foreach (route; routes) {
-    html.put("<tr><td>" ~ escapeHtml(route.prefix) ~ "</td><td>");
-    foreach (i, backend; route.backends) {
-      html.put(backendHealthHtml(backend));
+  foreach (group; routes) {
+    html.put("<section><h2>" ~ escapeHtml(group.host) ~ "</h2>");
+    html.put("<table><thead><tr><th>prefix</th><th>ports</th></tr></thead><tbody>");
+    foreach (route; group.routes) {
+      html.put("<tr><td>" ~ escapeHtml(route.prefix) ~ "</td><td>");
+      foreach (backend; route.backends) {
+        html.put(backendHealthHtml(backend));
+      }
+      html.put("</td></tr>");
     }
-    html.put("</td></tr>");
+    html.put("</tbody></table></section>");
   }
-  html.put("</tbody></table></section></main></body></html>");
+  html.put("</main></body></html>");
   return html.data;
 }
 
@@ -256,8 +270,9 @@ JSONValue statusJson() {
   root["maxConnections"] = JSONValue(maxConnections());
   root["connectTimeoutMillis"] = JSONValue(connectTimeoutMillis());
   root["healthCheck"] = healthJson();
-  root["routeCount"] = JSONValue(routes.length);
-  root["routes"] = routesJson(routes);
+  root["routeHostCount"] = JSONValue(routes.length);
+  root["routeCount"] = JSONValue(routeCount(routes));
+  root["routes"] = statusRoutesJson(routes);
   return JSONValue(root);
 }
 
@@ -269,17 +284,42 @@ JSONValue healthJson() {
   item["unhealthyThreshold"] = JSONValue(config.unhealthyThreshold);
   item["healthyThreshold"] = JSONValue(config.healthyThreshold);
 
-  JSONValue[] backends;
-  foreach (health; healthSnapshot()) {
-    JSONValue[string] backend;
-    backend["port"] = JSONValue(health.port);
-    backend["healthy"] = JSONValue(health.healthy);
-    backend["successCount"] = JSONValue(health.successCount);
-    backend["failureCount"] = JSONValue(health.failureCount);
-    backends ~= JSONValue(backend);
-  }
-  item["backends"] = JSONValue(backends);
   return JSONValue(item);
+}
+
+JSONValue statusRoutesJson(HostRoutes[] groups) {
+  JSONValue[string] items;
+  foreach (group; groups) {
+    JSONValue[] routes;
+    foreach (route; group.routes) {
+      routes ~= statusRouteJson(route);
+    }
+    items[group.host] = JSONValue(routes);
+  }
+  return JSONValue(items);
+}
+
+JSONValue statusRouteJson(Route route) {
+  JSONValue[string] item;
+  item["prefix"] = JSONValue(route.prefix);
+
+  JSONValue[] ports;
+  foreach (backend; route.backends) {
+    JSONValue[string] port;
+    port["port"] = JSONValue(backend.port);
+    port["healthy"] = JSONValue(isBackendHealthy(backend));
+    ports ~= JSONValue(port);
+  }
+  item["ports"] = JSONValue(ports);
+  return JSONValue(item);
+}
+
+size_t routeCount(HostRoutes[] groups) {
+  size_t count;
+  foreach (group; groups) {
+    count += group.routes.length;
+  }
+  return count;
 }
 
 string backendHealthHtml(Backend backend) {
