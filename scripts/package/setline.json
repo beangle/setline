@@ -1,0 +1,13 @@
+{
+  "listen": "*:8080",
+  "adminToken": "change-me",
+  "connectTimeoutMillis": 3000,
+  "maxConnections": 65535,
+  "healthCheck": {
+    "intervalMillis": 5000,
+    "timeoutMillis": 1000,
+    "unhealthyThreshold": 2,
+    "healthyThreshold": 1
+  },
+  "routes": {}
+}

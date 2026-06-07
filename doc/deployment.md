@@ -18,6 +18,34 @@ Optionally strip the binary after building:
 strip target/setline
 ```
 
+## Linux Packages
+
+Native Linux package scripts live in `scripts/`:
+
+```bash
+scripts/build_deb.sh
+scripts/build_rpm.sh
+scripts/build_srpm.sh
+```
+
+The binary package installs:
+
+- `/usr/bin/setline`
+- `/usr/share/setline/setline.json.default`
+- `/usr/lib/systemd/system/setline.service`
+- `/etc/setline/setline.json`
+
+The systemd service runs:
+
+```text
+/usr/bin/setline -f /etc/setline/setline.json
+```
+
+Runtime route updates rewrite the configured JSON file, so package install
+scripts make `/etc/setline/setline.json` writable by the `setline` service user.
+The config file is generated on first install and is not tracked as a package
+file, so removing the package preserves `/etc/setline/setline.json`.
+
 ## Application Config
 
 Use `connectTimeoutMillis` to limit how long setline waits when opening a TCP
