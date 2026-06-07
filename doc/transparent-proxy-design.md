@@ -214,3 +214,23 @@ packet marks, elevated privileges, and operational failure modes without
 improving the core proxy path.
 
 Keep the default architecture as user-space HTTP proxying with `vibe-core`.
+
+## External Proxy Integration Decision
+
+`setline` does not generate HAProxy/Nginx configuration and does not push route
+updates to external proxies.
+
+The route table inside one setline process is a local-machine view:
+`host + path prefix -> 127.0.0.1:<port>`. External proxies usually need a
+global service view across multiple machines. For example, `/api/edu` may be
+served by the same local port on two or more hosts; one setline instance cannot
+know whether another machine also serves that URI prefix, nor can it know the
+global balancing, failover, TLS, ACL, or rollout policy.
+
+Keep the boundary simple:
+
+- setline manages routing from its own listen address to local backend ports.
+- HAProxy/Nginx or other edge proxies manage cross-machine routing and global
+  entry policies.
+- Any external proxy configuration should be owned by deployment tooling that
+  has the complete service topology, not by a single setline instance.

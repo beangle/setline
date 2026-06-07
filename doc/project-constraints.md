@@ -58,6 +58,7 @@ These are intentionally out of scope unless the project goal changes:
 - Linux TPROXY or other kernel traffic interception
 - HTTP pipelining
 - setline-to-backend keep-alive or backend connection pooling
+- HAProxy/Nginx config generation or dynamic synchronization
 
 ## Implementation Constraints
 
@@ -93,6 +94,9 @@ These are intentionally out of scope unless the project goal changes:
   traffic to buffer request bodies.
 - Do not add kernel-level transparent proxying for the current explicit-proxy
   deployment model.
+- Do not generate or synchronize external proxy configuration. setline only
+  knows this machine's local route-to-port view; external proxies need a
+  global cross-machine service topology.
 - Do not synthesize proxy identity headers. Existing proxy headers pass through
   only because the request head is otherwise forwarded unchanged.
 - Do not track every active client connection just to silence Ctrl+C shutdown

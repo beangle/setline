@@ -5,6 +5,11 @@
 It listens on a local address, matches requests by host and path prefix, and
 forwards them to local backend services.
 
+`setline` is a lightweight user-space HTTP full proxy that listens on a fixed
+port and dispatches requests to local backend ports by host and URI prefix. It
+favors simple deployment and predictable HTTP streaming over kernel-level
+transparent proxy techniques.
+
 ## Scope
 
 - Linux only.
