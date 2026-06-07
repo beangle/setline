@@ -16,7 +16,7 @@
 
 module setline.http;
 
-import std.array : appender, split;
+import std.array : appender;
 import std.conv : to;
 import std.json;
 import std.string : indexOf, strip;
@@ -24,31 +24,65 @@ import std.string : indexOf, strip;
 import vibe.core.net : TCPConnection;
 import vibe.core.stream : IOMode;
 
-import setline.ascii : toLowerAscii;
+import setline.util : toLowerAscii;
 
-/** 表示一次 HTTP 请求已经读取到的头部，以及读头时顺带收到的请求体字节。
+/** 表示一次已经读取到的 HTTP 头部，以及读头时顺带收到的 body 前缀。
 
-    setline 的普通代理路径只需要先理解请求行和头部，用 URL 做路由判断；请求体不在
-    这里解析，也不提前完整读入内存。由于 TCP 是字节流，读取到 `\r\n\r\n` 时可能已经
-    同时收到了部分请求体，所以用 `bufferedBody` 保存这段多读出来的数据，后续转发时
-    原样补给上游，避免丢失 POST/PUT 或 WebSocket 握手后紧跟的数据。
+    请求和响应都使用相同的头部读取规则：读到 `\r\n\r\n` 为止，头后已经到达的字节放在
+    `bufferedBody`。代理层随后先转发这些前缀字节，再从 socket 继续流式转发剩余 body。
 */
-struct HttpRequestHead {
+struct HttpHead {
+  /// 原始 HTTP 头部字节转成的字符串，包含结尾的 `\r\n\r\n`。
   string head;
+
+  /// 读头时已经从 socket 多读到的 body 前缀；代理会先原样转发这部分。
   ubyte[] bufferedBody;
+
+  /// 请求行中的 HTTP 方法，例如 `GET`、`POST`；响应头中为空。
+  string method;
+
+  /// 请求行中的 request target，例如 `/api/users?x=1`；响应头中为空。
+  string target;
+
+  /// 从 `target` 中去掉 query string 后的路径，用于路由匹配；响应头中为空。
+  string path;
+
+  /// 响应状态行中的状态码，例如 `200`、`101`；请求头中为 `0`。
+  int statusCode;
+
+  /// `Host` 头字段原值，可能包含端口，例如 `example.com:8080`。
+  string host;
+
+  /// 是否出现了 `Content-Length` 头字段。
+  bool hasContentLength;
+
+  /// `Content-Length` 的数值；只有 `hasContentLength` 为 true 时才有意义。
+  size_t contentLength;
+
+  /// `Transfer-Encoding` 是否包含 `chunked`。
+  bool transferChunked;
+
+  /// `Connection` 是否包含 `upgrade`。
+  bool connectionUpgrade;
+
+  /// `Upgrade` 是否为 `websocket`。
+  bool upgradeWebSocket;
+
+  /// 是否已有 `Forwarded` 或 `X-Forwarded-For`，用于决定是否补充代理身份头。
+  bool hasProxyHeaders;
 }
 
-/** 读取 HTTP 请求头，并保留已经到达的请求体前缀。
+/** 读取 HTTP 头，并保留已经到达的 body 前缀。
 
-    这是透明代理的入口约束：路由只依赖请求行里的 URL 和请求头，不主动消费完整
-    request body。这样可以让大文件上传、表单提交、流式请求和 WebSocket 初始数据都
+    这是透明代理的入口约束：请求路由只依赖请求行里的 URL 和请求头，不主动消费完整
+    request body；响应转发也只先读响应头。这样可以让大文件上传、表单提交和响应体都
     在后续代理阶段边读边写，避免因为代理层缓冲整个 body 而造成延迟和内存压力。
 
     Returns:
       `head` 为空表示连接关闭或没有读到完整请求头；否则 `head` 总是包含结尾的
       `\r\n\r\n`，`bufferedBody` 为读头过程中额外收到的字节。
 */
-HttpRequestHead readHttpHead(TCPConnection socket) {
+HttpHead readHttpHead(TCPConnection socket) {
   ubyte[8192] buffer;
   auto data = appender!string();
 
@@ -65,9 +99,23 @@ HttpRequestHead readHttpHead(TCPConnection socket) {
     }
 
     auto bodyStart = cast(size_t) headerEnd + 4;
-    return HttpRequestHead(current[0 .. bodyStart], cast(ubyte[]) current[bodyStart .. $].dup);
+    return parseHttpHead(current[0 .. bodyStart], cast(ubyte[]) current[bodyStart .. $].dup);
   }
-  return HttpRequestHead();
+  return HttpHead();
+}
+
+HttpHead parseHttpHead(string head, ubyte[] bufferedBody = null) {
+  HttpHead result;
+  result.head = head;
+  result.bufferedBody = bufferedBody;
+
+  auto firstLineEnd = head.indexOf("\r\n");
+  if (firstLineEnd < 0) {
+    return result;
+  }
+  parseFirstLine(result, head[0 .. firstLineEnd]);
+  parseHeaderFields(result);
+  return result;
 }
 
 /** 读取完整 HTTP 请求，主要供需要解析请求体的管理接口使用。
@@ -90,10 +138,10 @@ string readHttpRequest(TCPConnection socket) {
     请求字符串。调用方应确保该请求确实适合完整落入内存；透明代理的大多数请求应继续
     使用 `readHttpHead` 加流式转发。
 */
-string completeHttpRequest(TCPConnection socket, HttpRequestHead request) {
+string completeHttpRequest(TCPConnection socket, HttpHead request) {
   auto body = appender!string();
   body.put(cast(string) request.bufferedBody);
-  auto contentLength = parseContentLength(request.head);
+  auto contentLength = request.hasContentLength ? request.contentLength : parseContentLength(request.head);
   if (contentLength > request.bufferedBody.length) {
     ubyte[8192] buffer;
     auto remaining = contentLength - request.bufferedBody.length;
@@ -116,16 +164,19 @@ string completeHttpRequest(TCPConnection socket, HttpRequestHead request) {
     字段名大小写。未找到时返回 0，调用者需要结合实际场景区分“没有 body”和“长度为 0”。
 */
 size_t parseContentLength(string headers) {
-  foreach (line; headers.split("\r\n")) {
+  size_t contentLength;
+  foreachHeaderLine(headers, delegate bool(string line) {
     auto pos = line.indexOf(":");
     if (pos < 0) {
-      continue;
+      return true;
     }
     if (line[0 .. pos].strip.toLowerAscii == "content-length") {
-      return line[pos + 1 .. $].strip.to!size_t;
+      contentLength = line[pos + 1 .. $].strip.to!size_t;
+      return false;
     }
-  }
-  return 0;
+    return true;
+  });
+  return contentLength;
 }
 
 /** 返回用于路由匹配的路径部分。
@@ -144,74 +195,126 @@ string requestPath(string target) {
     当前代理只需要读取少数控制字段，因此保持简单线性扫描，避免为每个请求构造额外 map。
 */
 string headerValue(string request, string name) {
-  auto headerEnd = request.indexOf("\r\n\r\n");
-  if (headerEnd < 0) {
-    return "";
-  }
-  foreach (line; request[0 .. headerEnd].split("\r\n")) {
+  auto wanted = name.toLowerAscii;
+  string found;
+  foreachHeaderLine(request, delegate bool(string line) {
     auto pos = line.indexOf(":");
-    if (pos >= 0 && line[0 .. pos].strip.toLowerAscii == name.toLowerAscii) {
-      return line[pos + 1 .. $].strip;
+    if (pos >= 0 && line[0 .. pos].strip.toLowerAscii == wanted) {
+      found = line[pos + 1 .. $].strip;
+      return false;
     }
-  }
-  return "";
-}
-
-/** 判断请求是否声明 WebSocket 升级。
-
-    WebSocket 在收到 101 响应后不再是普通 HTTP 响应体模型，代理必须切换为双向字节
-    隧道；否则只转发握手头会导致浏览器看到 101 后后续没有任何数据。
-*/
-bool isWebSocketUpgrade(string request) {
-  return headerContains(request, "Connection", "upgrade") &&
-    headerValue(request, "Upgrade").toLowerAscii == "websocket";
+    return true;
+  });
+  return found;
 }
 
 bool headerContains(string request, string name, string token) {
-  foreach (part; headerValue(request, name).split(",")) {
-    if (part.strip.toLowerAscii == token.toLowerAscii) {
+  return headerValueContains(headerValue(request, name), token);
+}
+
+bool headerValueContains(string value, string token) {
+  auto wanted = token.toLowerAscii;
+  size_t start;
+  while (start <= value.length) {
+    auto comma = value[start .. $].indexOf(",");
+    auto end = comma < 0 ? value.length : start + cast(size_t) comma;
+    if (value[start .. end].strip.toLowerAscii == wanted) {
       return true;
     }
+    if (comma < 0) break;
+    start = end + 1;
   }
   return false;
 }
 
-/** 判断响应状态是否为 `101 Switching Protocols`。
-
-    该判断用于 WebSocket 握手后的分支选择。只有上游确实返回 101 时才进入双向 tunnel；
-    如果后端返回普通错误响应，则把响应头交给浏览器后关闭连接。
-*/
-bool isSwitchingProtocols(string response) {
-  auto firstLineEnd = response.indexOf("\r\n");
-  if (firstLineEnd < 0) {
+private bool foreachHeaderLine(string headers, scope bool delegate(string line) visitor) {
+  auto headerEnd = headers.indexOf("\r\n\r\n");
+  if (headerEnd < 0) {
     return false;
   }
 
-  auto parts = response[0 .. firstLineEnd].split(" ");
-  return parts.length >= 2 && parts[1] == "101";
+  size_t start;
+  while (start < headerEnd) {
+    auto lineEnd = headers[start .. headerEnd].indexOf("\r\n");
+    auto end = lineEnd < 0 ? cast(size_t) headerEnd : start + cast(size_t) lineEnd;
+    if (!visitor(headers[start .. end])) {
+      return false;
+    }
+    if (lineEnd < 0) {
+      break;
+    }
+    start = end + 2;
+  }
+  return true;
 }
 
-/** 读取 HTTP 响应头，并保留头后已经到达的响应体前缀。
-
-    返回值可能包含 `\r\n\r\n` 后的少量 body 字节。普通响应转发会先把这段数据发给
-    浏览器，再根据 `Content-Length`、`Transfer-Encoding: chunked` 或连接关闭继续转发
-    剩余数据，避免首包中的 body 被丢弃。
-*/
-string readHttpResponseHead(TCPConnection socket) {
-  ubyte[8192] buffer;
-  auto data = appender!string();
-
-  while (true) {
-    auto received = socket.read(buffer[], IOMode.once);
-    if (received <= 0) {
-      break;
-    }
-    data.put(cast(string) buffer[0 .. received]);
-    if (data.data.indexOf("\r\n\r\n") >= 0) {
-      break;
-    }
+private void parseFirstLine(ref HttpHead result, string line) {
+  if (line.length >= 5 && line[0 .. 5] == "HTTP/") {
+    result.statusCode = parseStatusCode(line);
+    return;
   }
-  return data.data;
+
+  auto firstSpace = line.indexOf(" ");
+  if (firstSpace < 0) {
+    return;
+  }
+  auto secondSpace = line[firstSpace + 1 .. $].indexOf(" ");
+  if (secondSpace < 0) {
+    return;
+  }
+  auto targetStart = cast(size_t) firstSpace + 1;
+  auto targetEnd = targetStart + cast(size_t) secondSpace;
+  result.method = line[0 .. firstSpace];
+  result.target = line[targetStart .. targetEnd];
+  result.path = requestPath(result.target);
+}
+
+private int parseStatusCode(string line) {
+  auto statusStart = line.indexOf(" ");
+  if (statusStart < 0) {
+    return 0;
+  }
+  ++statusStart;
+  auto statusEnd = line[statusStart .. $].indexOf(" ");
+  auto end = statusEnd < 0 ? line.length : cast(size_t) statusStart + cast(size_t) statusEnd;
+  return line[statusStart .. end].to!int;
+}
+
+private void parseHeaderFields(ref HttpHead result) {
+  foreachHeaderLine(result.head, delegate bool(string line) {
+    auto pos = line.indexOf(":");
+    if (pos < 0) {
+      return true;
+    }
+
+    auto name = line[0 .. pos].strip.toLowerAscii;
+    auto value = line[pos + 1 .. $].strip;
+    switch (name) {
+      case "host":
+        result.host = value;
+        break;
+      case "content-length":
+        result.hasContentLength = true;
+        result.contentLength = value.to!size_t;
+        break;
+      case "transfer-encoding":
+        result.transferChunked = headerValueContains(value, "chunked");
+        break;
+      case "connection":
+        result.connectionUpgrade = headerValueContains(value, "upgrade");
+        break;
+      case "upgrade":
+        result.upgradeWebSocket = value.toLowerAscii == "websocket";
+        break;
+      case "forwarded":
+      case "x-forwarded-for":
+        result.hasProxyHeaders = true;
+        break;
+      default:
+        break;
+    }
+    return true;
+  });
 }
 
 /** 从完整 HTTP 消息中取出 body 字符串。

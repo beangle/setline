@@ -29,13 +29,37 @@ import setline.http;
     "Host: 127.0.0.1:8080\r\n" ~
     "Connection: keep-alive, Upgrade\r\n" ~
     "Upgrade: websocket\r\n\r\n";
-  assert(isWebSocketUpgrade(request));
+  auto head = parseHttpHead(request);
+  assert(head.method == "GET");
+  assert(head.target == "/m/edu/learning/@vite/client");
+  assert(head.path == "/m/edu/learning/@vite/client");
+  assert(head.host == "127.0.0.1:8080");
+  assert(head.connectionUpgrade);
+  assert(head.upgradeWebSocket);
 }
 
-@("http detects switching protocols response") unittest {
+@("http scans header values without body interference") unittest {
+  auto request =
+    "POST /api HTTP/1.1\r\n" ~
+    "Host: LOCAL.EXAMPLE.COM:8080\r\n" ~
+    "Connection: keep-alive, Upgrade\r\n" ~
+    "Content-Length: 5\r\n\r\n" ~
+    "Host: body";
+  auto head = parseHttpHead(request);
+  assert(head.host == "LOCAL.EXAMPLE.COM:8080");
+  assert(head.connectionUpgrade);
+  assert(head.hasContentLength);
+  assert(head.contentLength == 5);
+  assert(headerValue(request, "host") == "LOCAL.EXAMPLE.COM:8080");
+  assert(headerContains(request, "Connection", "upgrade"));
+  assert(parseContentLength(request) == 5);
+}
+
+@("http parses switching protocols response") unittest {
   auto response =
     "HTTP/1.1 101 Switching Protocols\r\n" ~
     "Connection: Upgrade\r\n" ~
     "Upgrade: websocket\r\n\r\n";
-  assert(isSwitchingProtocols(response));
+  auto head = parseHttpHead(response);
+  assert(head.statusCode == 101);
 }

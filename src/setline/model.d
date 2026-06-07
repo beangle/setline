@@ -27,24 +27,14 @@ struct ListenAddress {
   ushort port = 8080;
 }
 
-/** 一个可连接的本机 HTTP 后端。
-
-    当前只支持 `http://host:port`，不在这里保存 path，也不支持上游 HTTPS。URL 路径由
-    浏览器原样发来并原样传给后端，setline 不做 stripPrefix、rewrite 或 path join。
-*/
-struct Backend {
-  string host;
-  ushort port;
-}
-
 /** 一条基于路径前缀的路由规则。
 
-    `prefix` 只参与最长前缀匹配；命中后在 `backends` 之间做随机选择。选择过程不改写路由
-    配置，也不在路由树节点中保存每次请求都会变化的运行状态。
+    `prefix` 只参与最长前缀匹配；命中后在本机端口之间做随机选择。后端固定为
+    `127.0.0.1:<port>`，因此 Route 不再为 backend 单独建模。
 */
 struct Route {
   string prefix;
-  Backend[] backends;
+  ushort[] ports;
 }
 
 /** 一个明确 host 下的路由集合。

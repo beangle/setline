@@ -55,20 +55,20 @@ PUT /__setline/routes?host=local1.example.com
 Single port:
 
 ```json
-{"prefix":"/m/edu/learning","port":5173}
+{"/m/edu/learning":5173}
 ```
 
 Multiple ports:
 
 ```json
-{"prefix":"/api/edu","ports":[9002,9003]}
+{"/api/edu":[9002,9003]}
 ```
 
 Example:
 
 ```bash
 curl -X PUT 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com' \
-  -d '{"prefix":"/api/edu","ports":[9002,9003]}'
+  -d '{"/api/edu":[9002,9003]}'
 ```
 
 Response:
@@ -161,12 +161,12 @@ Response is the new route list:
 - trailing slashes are ignored except for root `/`; `/m/edu/learning/` is
   normalized to `/m/edu/learning`.
 - `prefix` must not start with `/__setline`.
-- backend ports must be integers in `1..65535`.
-- backend host is always `127.0.0.1`.
-- route values accept either one `port` or `ports`, not both.
+- ports must be integers in `1..65535`.
+- each port maps to `127.0.0.1:<port>`; full upstream URLs are not part of the
+  route model.
+- route object values are either one port integer or a non-empty array of ports.
 - write request bodies must be JSON text; `Content-Type` is not required.
-- full backend URLs, `stripPrefix`, `directResponse`, and URL rewriting are not
-  supported.
+- URL rewriting is not supported.
 
 ## Status Codes
 
@@ -179,7 +179,7 @@ Response is the new route list:
 
 ## Health State
 
-After a route update, backend health state is synchronized by port:
+After a route update, port health state is refreshed:
 
 - ports still referenced keep their current online/offline state and counters
 - new ports start healthy

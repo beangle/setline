@@ -18,7 +18,7 @@ module setline.config_test;
 
 import std.file : remove, write;
 import std.exception : assertThrown;
-import std.json : JSONValue;
+import std.json : JSONValue, parseJSON;
 
 import setline.config;
 import setline.model;
@@ -48,6 +48,14 @@ import setline.model;
 
   auto route = parseRoute("/api/", JSONValue(9001));
   assert(route.prefix == "/api");
+}
+
+@("config parses single route object") unittest {
+  auto route = parseSingleRoute(parseJSON(`{"/api/edu/":[9002,9003]}`));
+  assert(route.prefix == "/api/edu");
+  assert(route.ports == [9002, 9003]);
+
+  assertThrown!Exception(parseSingleRoute(parseJSON(`{"/api":9001,"/m":9002}`)));
 }
 
 @("config keeps large default connection limit") unittest {
@@ -91,14 +99,6 @@ import setline.model;
   assert(config.healthCheck.healthyThreshold == 2);
 }
 
-@("config rejects direct response routes") unittest {
-  auto path = "/tmp/setline-config-direct-response-test.json";
-  write(path, `{"routes":{"local.example.com":{"/healthz":{"directResponse":{"body":"ok"}}}}}`);
-  scope (exit) remove(path);
-
-  assertThrown!Exception(loadConfig(path));
-}
-
 @("config parses route ports") unittest {
   auto path = "/tmp/setline-config-routes-test.json";
   write(path, `{"routes":{"local.example.com":{"/api":9001,"/api/edu":[9002,9003]}}}`);
@@ -108,10 +108,10 @@ import setline.model;
   assert(config.routes.length == 1);
   assert(config.routes[0].host == "local.example.com");
   assert(config.routes[0].routes[0].prefix == "/api/edu");
-  assert(config.routes[0].routes[0].backends[0].port == 9002);
-  assert(config.routes[0].routes[0].backends[1].port == 9003);
+  assert(config.routes[0].routes[0].ports[0] == 9002);
+  assert(config.routes[0].routes[0].ports[1] == 9003);
   assert(config.routes[0].routes[1].prefix == "/api");
-  assert(config.routes[0].routes[1].backends[0].port == 9001);
+  assert(config.routes[0].routes[1].ports[0] == 9001);
 }
 
 @("config normalizes route prefixes from file") unittest {
@@ -132,10 +132,10 @@ import setline.model;
 
   saveRoutes(path, [
     HostRoutes("local.example.com", [
-      Route("/api", [Backend("127.0.0.1", 9001)]),
+      Route("/api", [9001]),
       Route("/api/edu", [
-        Backend("127.0.0.1", 9002),
-        Backend("127.0.0.1", 9003)
+        9002,
+        9003
       ])
     ])
   ]);
@@ -146,14 +146,6 @@ import setline.model;
   assert(config.routes[0].host == "local.example.com");
   assert(config.routes[0].routes[0].prefix == "/api/edu");
   assert(config.routes[0].routes[1].prefix == "/api");
-}
-
-@("config rejects backend urls") unittest {
-  auto path = "/tmp/setline-config-backend-url-test.json";
-  write(path, `{"routes":{"local.example.com":{"/api":{"backend":"http://127.0.0.1:9001"}}}}`);
-  scope (exit) remove(path);
-
-  assertThrown!Exception(loadConfig(path));
 }
 
 @("config normalizes route hosts") unittest {

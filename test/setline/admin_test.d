@@ -27,6 +27,7 @@ import setline.health;
 import setline.model;
 import setline.state;
 import setline.test_lock;
+import setline.util : escapeHtml;
 
 @("admin validates status basic auth") unittest {
   auto encoded = Base64.encode(cast(ubyte[]) "setline:secret").to!string;
@@ -45,7 +46,7 @@ import setline.test_lock;
   withStateTestLock({
     Config config;
     config.listen = ListenAddress("0.0.0.0", 8080);
-    config.routes = [HostRoutes("local.example.com", [Route("/api", [Backend("127.0.0.1", 9001)])])];
+    config.routes = [HostRoutes("local.example.com", [Route("/api", [9001])])];
     initialize(config);
 
     auto html = statusHtml();
@@ -66,7 +67,7 @@ import setline.test_lock;
     config.connectTimeoutMillis = 1500;
     config.routes = [
       HostRoutes("local.example.com", [
-        Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9002)])
+        Route("/api", [9001, 9002])
       ])
     ];
     initialize(config);
@@ -112,20 +113,20 @@ import setline.test_lock;
     Config config;
     config.routes = [
       HostRoutes("local.example.com", [
-        Route("/api", [Backend("127.0.0.1", 9001)]),
-        Route("/m", [Backend("127.0.0.1", 9002)])
+        Route("/api", [9001]),
+        Route("/m", [9002])
       ])
     ];
     initialize(config);
-    updateBackendHealth(9001, false);
-    updateBackendHealth(9001, false);
+    updatePortHealth(9001, false);
+    updatePortHealth(9001, false);
 
     upsertRoute("local.example.com",
-      Route("/api", [Backend("127.0.0.1", 9001), Backend("127.0.0.1", 9003)]));
+      Route("/api", [9001, 9003]));
     assert(routesSnapshot().length == 1);
     assert(routesSnapshot()[0].routes.length == 2);
-    assert(!isBackendHealthy(Backend("127.0.0.1", 9001)));
-    assert(isBackendHealthy(Backend("127.0.0.1", 9003)));
+    assert(!isPortHealthy(9001));
+    assert(isPortHealthy(9003));
 
     assert(deleteRoute("local.example.com", "/m"));
     assert(!deleteRoute("local.example.com", "/missing"));
@@ -134,10 +135,10 @@ import setline.test_lock;
     clearRoutes("local.example.com");
     assert(routesSnapshot().length == 0);
 
-    replaceRoutes("local.example.com", [Route("/new", [Backend("127.0.0.1", 9010)])]);
+    replaceRoutes("local.example.com", [Route("/new", [9010])]);
     assert(routesSnapshot().length == 1);
     assert(routesSnapshot()[0].routes[0].prefix == "/new");
-    assert(isBackendHealthy(Backend("127.0.0.1", 9010)));
+    assert(isPortHealthy(9010));
   });
 }
 

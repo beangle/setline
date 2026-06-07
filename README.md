@@ -14,7 +14,7 @@ forwards them to local backend services.
 - Host-scoped path-prefix routing with longest-prefix priority.
 - Local HTTP backends only.
 - Multiple backends use random selection. No weight support.
-- `stripPrefix` is intentionally unsupported.
+- URL/path rewriting is intentionally unsupported.
 
 ## Build
 
@@ -73,8 +73,8 @@ Top-level fields:
 - `healthCheck`: TCP connect health check tuning; health checks are always
   enabled and run on a fixed background interval.
 - `routes`: object mapping host names to URL path prefixes, then to a local
-  backend port or a list of local backend ports. Route host names do not include
-  a port. Host `*` is the fallback route namespace.
+  port or a list of local ports. Each port maps to `127.0.0.1:<port>`. Route
+  host names do not include a port. Host `*` is the fallback route namespace.
 
 Routes are first selected by the request `Host` header after removing its port
 and lowercasing it. Within that host, routes are indexed by path segment with
@@ -90,7 +90,7 @@ Add or replace one route:
 
 ```bash
 curl -X PUT 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com' \
-  -d '{"prefix":"/api/edu","ports":[9002,9003]}'
+  -d '{"/api/edu":[9002,9003]}'
 ```
 
 Delete one route:

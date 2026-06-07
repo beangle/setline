@@ -17,7 +17,6 @@
 module setline.server;
 
 import std.algorithm : startsWith;
-import std.array : split;
 import std.string : indexOf;
 
 import vibe.core.core : runEventLoop, runTask;
@@ -26,12 +25,12 @@ import vibe.core.task : Task;
 
 import setline.admin;
 import setline.config : normalizeRequestHost;
-import setline.constants;
 import setline.health;
 import setline.http;
 import setline.model;
 import setline.proxy;
 import setline.state;
+import setline.util : adminPrefix;
 
 /** 启动本地 TCP 监听并进入 vibe-core 事件循环。
 
@@ -107,60 +106,51 @@ void handleClient(TCPConnection client) {
     return;
   }
 
-  auto firstLineEnd = request.head.indexOf("\r\n");
-  if (firstLineEnd < 0) {
-    sendResponse(client, 400, "Bad Request", "malformed request");
-    return;
-  }
-
-  auto parts = request.head[0 .. firstLineEnd].split(" ");
-  if (parts.length < 3) {
+  if (request.method.length == 0 || request.target.length == 0) {
     sendResponse(client, 400, "Bad Request", "malformed request line");
     return;
   }
 
-  auto method = parts[0];
-  auto target = parts[1];
-  auto path = requestPath(target);
+  auto path = request.path;
 
   if (path.startsWith(adminPrefix)) {
-    handleAdmin(client, method, target, completeHttpRequest(client, request));
+    handleAdmin(client, request.method, request.target, completeHttpRequest(client, request));
     return;
   }
 
   string routeHost;
   try {
-    routeHost = normalizeRequestHost(headerValue(request.head, "Host"));
+    routeHost = normalizeRequestHost(request.host);
   } catch (Exception e) {
     sendResponse(client, 400, "Bad Request", e.msg);
     return;
   }
 
   try {
-    Backend[] tried;
+    ushort[] tried;
     Exception lastConnectFailure;
     while (true) {
-      auto backend = selectBackendExcept(routeHost, path, tried);
-      if (backend.isNull) {
+      auto port = selectPortExcept(routeHost, path, tried);
+      if (port == 0) {
         if (tried.length > 0 && lastConnectFailure !is null) {
           sendResponse(client, 502, "Bad Gateway", lastConnectFailure.msg);
         } else if (hasRoute(routeHost, path)) {
           sendResponse(client, 503, "Service Unavailable",
-            "no healthy backend for " ~ routeHost ~ path);
+            "no healthy port for " ~ routeHost ~ path);
         } else {
           sendResponse(client, 404, "Not Found", "no route for " ~ routeHost ~ path);
         }
         return;
       }
       try {
-        if (shouldUseWebSocketTunnel(request.head)) {
-          forwardWebSocket(client, request.head, request.bufferedBody, backend.get);
+        if (request.connectionUpgrade && request.upgradeWebSocket) {
+          forwardWebSocket(client, request, port);
           return;
         }
-        forward(client, request.head, request.bufferedBody, backend.get);
+        forward(client, request, port);
         return;
-      } catch (BackendConnectException e) {
-        tried ~= backend.get;
+      } catch (PortConnectException e) {
+        tried ~= port;
         lastConnectFailure = e;
       }
     }

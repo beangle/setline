@@ -50,16 +50,16 @@ import setline.test_lock;
     scope (exit) remove(path);
 
     Config config;
-    config.routes = [HostRoutes("local.example.com", [Route("/old", [Backend("127.0.0.1", 9000)])])];
+    config.routes = [HostRoutes("local.example.com", [Route("/old", [9000])])];
     initialize(config, path);
 
-    replaceRoutes("local.example.com", [Route("/new", [Backend("127.0.0.1", 9001)])]);
+    replaceRoutes("local.example.com", [Route("/new", [9001])]);
 
     auto saved = loadConfig(path);
     assert(saved.routes.length == 1);
     assert(saved.routes[0].host == "local.example.com");
     assert(saved.routes[0].routes[0].prefix == "/new");
-    assert(saved.routes[0].routes[0].backends[0].port == 9001);
+    assert(saved.routes[0].routes[0].ports[0] == 9001);
   });
 }
 
@@ -67,26 +67,26 @@ import setline.test_lock;
   withStateTestLock({
     Config config;
     config.routes = [
-      HostRoutes("local1.example.com", [Route("/api", [Backend("127.0.0.1", 9080)])]),
-      HostRoutes("local2.example.com", [Route("/api", [Backend("127.0.0.1", 9081)])]),
+      HostRoutes("local1.example.com", [Route("/api", [9080])]),
+      HostRoutes("local2.example.com", [Route("/api", [9081])]),
       HostRoutes("*", [
-        Route("/api", [Backend("127.0.0.1", 9090)]),
-        Route("/m", [Backend("127.0.0.1", 9091)])
+        Route("/api", [9090]),
+        Route("/m", [9091])
       ])
     ];
     initialize(config);
 
-    assert(selectBackend("local1.example.com", "/api/users").get.port == 9080);
-    assert(selectBackend("local1.example.com", "/m/edu").get.port == 9091);
-    assert(selectBackend("local2.example.com", "/api/users").get.port == 9081);
-    assert(selectBackend("missing.example.com", "/api/users").get.port == 9090);
+    assert(selectPort("local1.example.com", "/api/users") == 9080);
+    assert(selectPort("local1.example.com", "/m/edu") == 9091);
+    assert(selectPort("local2.example.com", "/api/users") == 9081);
+    assert(selectPort("missing.example.com", "/api/users") == 9090);
 
-    updateBackendHealth(9080, false);
-    updateBackendHealth(9080, false);
-    assert(selectBackend("local1.example.com", "/api/users").isNull);
+    updatePortHealth(9080, false);
+    updatePortHealth(9080, false);
+    assert(selectPort("local1.example.com", "/api/users") == 0);
 
     auto snapshot = routesSnapshot();
-    snapshot[0].routes[0].backends[0].port = 1;
-    assert(selectBackend("missing.example.com", "/api/users").get.port == 9090);
+    snapshot[0].routes[0].ports[0] = 1;
+    assert(selectPort("missing.example.com", "/api/users") == 9090);
   });
 }

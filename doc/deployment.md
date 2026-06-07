@@ -67,7 +67,7 @@ route host. They do not require the admin token. Keep these endpoints bound to
 trusted local automation such as service startup scripts or deployment hooks.
 
 When routes change, setline rebuilds the next host route trees, writes the new
-`routes` field to disk, and then swaps it into runtime state. Backend health
+`routes` field to disk, and then swaps it into runtime state. Port health
 information is preserved for ports that remain referenced by the new route set.
 If writing the config file fails, runtime routes are not changed.
 
@@ -157,6 +157,12 @@ normal setline workload. The project routes by HTTP URL and may add
 `Forwarded`/`X-Forwarded-*` headers, so it must read and sometimes rewrite HTTP
 headers. The first practical bottlenecks are usually file descriptors, backend
 connect timeout, listen queue limits, and short-lived upstream connections.
+
+The normal proxy path reads the HTTP head once, parses the fields it needs into
+`HttpHead`, and then streams request and response bodies. Chunked bodies are
+tracked by boundary state only, not buffered as full body strings. Route lookup
+and health reads avoid production `synchronized`; active-connection limiting is
+handled with atomics.
 
 ## Shutdown Notes
 

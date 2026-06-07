@@ -23,12 +23,12 @@ import setline.model;
 JSONValue routeJson(Route route) {
   JSONValue[string] item;
   item["prefix"] = JSONValue(route.prefix);
-  if (route.backends.length == 1) {
-    item["port"] = JSONValue(route.backends[0].port);
+  if (route.ports.length == 1) {
+    item["port"] = JSONValue(route.ports[0]);
   } else {
     JSONValue[] ports;
-    foreach (backend; route.backends) {
-      ports ~= JSONValue(backend.port);
+    foreach (port; route.ports) {
+      ports ~= JSONValue(port);
     }
     item["ports"] = JSONValue(ports);
   }

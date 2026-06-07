@@ -44,7 +44,7 @@ browser-to-setline requests are annotated by `setline`.
 
 These are intentionally out of scope unless the project goal changes:
 
-- `stripPrefix`
+- URL/path rewriting
 - URL rewrite rules
 - reverse-proxy header rewriting
 - response caching
@@ -60,8 +60,8 @@ These are intentionally out of scope unless the project goal changes:
 ## Implementation Constraints
 
 - Keep the route model simple: prefix plus exactly one action.
-- Keep route configuration as `host -> path prefix -> port or ports`; backend
-  host is fixed to `127.0.0.1`.
+- Keep route configuration as `host -> path prefix -> port or ports`. Route
+  ports map directly to `127.0.0.1:<port>`; do not add a backend URL model.
 - Route hosts do not include a port. Host `*` is allowed only as a fallback
   namespace, not as a bulk operation over all hosts.
 - Normalize route prefixes at input boundaries. Except for root `/`, trailing
@@ -69,6 +69,11 @@ These are intentionally out of scope unless the project goal changes:
   same route.
 - Keep route lookup indexed by URI path segment instead of scanning every route
   for each request.
+- Parse the HTTP head once into `HttpHead` and use its fields on the proxy hot
+  path. Do not repeatedly scan raw header strings for host, body framing,
+  WebSocket, response status, or proxy identity decisions.
+- Keep request and response bodies streaming. For chunked bodies, track only
+  chunk boundaries and do not accumulate full body content.
 - Runtime route changes must build the next route set and route tree first,
   then swap them into state once. Request routing should never observe a
   partially changed route table.
@@ -86,6 +91,9 @@ These are intentionally out of scope unless the project goal changes:
 - Do not track every active client connection just to silence Ctrl+C shutdown
   warnings. Avoid adding hot-path global synchronization unless it protects
   normal proxy correctness.
+- Do not use production `synchronized` around route lookup, health reads, or
+  route persistence. Only active-connection accounting currently needs hot-path
+  atomic mutation.
 
 ## Runtime Route Management
 
@@ -107,7 +115,7 @@ based on the TCP peer address, not on `Forwarded` or `X-Forwarded-*` headers.
 The new routes are written to disk before the in-memory route table is swapped.
 If persistence fails, the existing runtime routes remain active.
 
-Health state is synchronized after successful route changes. Existing backend
+Health state is refreshed after successful route changes. Existing backend
 ports keep their current health counters and online/offline state; newly
 introduced ports start healthy; ports that are no longer referenced by any
 route are removed from the health table.

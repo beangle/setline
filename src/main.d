@@ -20,9 +20,9 @@ import std.getopt : defaultGetoptPrinter, getopt;
 import std.stdio : stderr, stdout;
 
 import setline.config;
-import setline.constants;
 import setline.server;
 import setline.state;
+import setline.util : defaultConfigPath;
 
 version (unittest) {
 } else {

@@ -24,7 +24,8 @@ port from proxy identity headers.
 ## Request Flow
 
 For proxied routes, the server reads only the HTTP request head up to
-`\r\n\r\n`. That head is enough to parse:
+`\r\n\r\n`. `readHttpHead` then builds an `HttpHead` value and parses the
+fields used by the hot path once:
 
 - request method
 - request target URL
@@ -32,11 +33,12 @@ For proxied routes, the server reads only the HTTP request head up to
 - path used for route matching
 - WebSocket upgrade headers
 - request body framing headers
+- existing proxy identity headers
 
 The request `Host` header is normalized by removing the port and lowercasing
 the host name. That value selects a host-specific route tree; if that tree has
 no matching path route, the `*` fallback tree is tried. If the exact host has a
-matching route but no healthy backend, fallback is not used. The proxy then
+matching route but no healthy port, fallback is not used. The proxy then
 forwards the request head to the backend without URL rewriting,
 `Host` rewriting, `Connection` rewriting, or cache handling.
 
@@ -58,6 +60,11 @@ If the socket read that found the header boundary also read some request body
 bytes, those bytes are immediately forwarded to the backend before the proxy
 continues streaming the rest of the body.
 
+The proxy hot path should use the parsed `HttpHead` fields instead of repeatedly
+scanning the raw header string. Raw header lookup helpers remain for admin
+requests and tests, but they are not part of normal proxy routing or body
+framing decisions.
+
 ## Request Body
 
 The proxy does not parse request body content.
@@ -65,7 +72,8 @@ The proxy does not parse request body content.
 - `Content-Length`: forward the already buffered bytes, then stream the
   remaining byte count from client to backend.
 - `Transfer-Encoding: chunked`: forward the already buffered bytes, then stream
-  chunks until the terminating chunk is observed.
+  chunks until the terminating chunk is observed. The chunk parser keeps only
+  boundary state and never accumulates the full body.
 - no body framing header: do not read a request body.
 
 This keeps POST/PUT/upload requests transparent and avoids loading full request
@@ -82,7 +90,7 @@ uses HTTP framing to know when the response is complete:
 
 - `Content-Length`: stream the remaining byte count.
 - `Transfer-Encoding: chunked`: stream chunks until the terminating chunk is
-  observed.
+  observed using the same small boundary-state tracker.
 - `HEAD`, `1xx`, `204`, `304`: treat as no-body responses.
 - otherwise: stream until the backend closes the response.
 
@@ -111,6 +119,12 @@ loads exposed limitations in a thread-per-request implementation. The
 transparent proxy path should stay fiber/event-loop based unless there is a
 measured reason to change it.
 
+Runtime route state and port health state are intentionally read without
+`synchronized` in production code. Route updates are localhost-only and low
+frequency; they build complete replacement route trees before assigning them to
+runtime state. Connection limiting is the hot-path mutable counter and remains
+implemented with atomics.
+
 ## Runtime Routes
 
 Runtime route management is deliberately narrow. It supports four operations:
@@ -126,34 +140,36 @@ but they must specify the route host. The localhost check uses the TCP peer
 address because proxy headers are user-controlled input at this security
 boundary.
 
-Route updates are persisted and applied atomically at the state level:
+Route updates rebuild a complete runtime snapshot and then replace the current
+state:
 
 1. Read the current route snapshot.
 2. Build the next host route set and fresh route trees.
 3. Rewrite only the top-level `routes` field in the startup config file.
-4. Swap the routes and route tree into runtime state under the state lock.
-5. Synchronize backend health state from the new routes.
+4. Assign the new routes and route trees to runtime state.
+5. Refresh port health state from the new routes.
 
 The proxy request path always reads from the current route tree. It never sees
-a half-mutated tree. If config-file persistence fails, the current in-memory
-routes remain active.
+a half-mutated tree in normal `vibe-core` task scheduling because route trees
+are built before assignment and assignment does not perform I/O. If config-file
+persistence fails, the current in-memory routes remain active.
 
-Health state is preserved by backend port. If a port remains referenced after a
-route change, its current online/offline state and counters are kept. New ports
-start healthy so they can receive traffic before the next health-check cycle.
+Health state is preserved by port. If a port remains referenced after a route
+change, its current online/offline state and counters are kept. New ports start
+healthy so they can receive traffic before the next health-check cycle.
 Ports no longer referenced by any route are removed from the health table.
 
-## Backend Selection
+## Port Selection
 
-When a route has multiple healthy backends, selection is random. The route tree
+When a route has multiple healthy ports, selection is random. The route tree
 does not store a round-robin cursor. This avoids mutating routing state for
 each request and keeps the request hot path read-oriented apart from normal
 connection accounting.
 
-If connecting to a selected backend fails before any request bytes are sent,
-the current request may try another healthy backend from the same route. This
-retry uses only request-local state and does not update the shared health
-table; backend health remains owned by the background health-check loop.
+If connecting to a selected port fails before any request bytes are sent, the
+current request may try another healthy port from the same route. This retry
+uses only request-local state and does not update the shared health table; port
+health remains owned by the background health-check loop.
 
 ## Shutdown
 

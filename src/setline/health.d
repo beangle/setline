@@ -24,7 +24,7 @@ import vibe.core.net : connectTCP;
 
 import setline.model;
 
-struct BackendHealth {
+struct PortHealth {
   ushort port;
   bool healthy = true;
   int successCount;
@@ -32,19 +32,22 @@ struct BackendHealth {
 }
 
 __gshared private HealthConfig gConfig;
-__gshared private BackendHealth[ushort] gHealth;
+__gshared private PortHealth[ushort] gHealth;
 shared private bool gStopping;
 
+/** 初始化端口健康状态。
+
+    健康检查在后台 task 中低频更新，代理请求只读取当前端口状态。这里不使用互斥锁，避免
+    每次路由选择都因为健康状态查询进入同步区。
+*/
 void initializeHealth(Config config) {
-  synchronized {
-    gConfig = config.healthCheck;
-    gHealth = null;
-    foreach (group; config.routes) {
-      foreach (route; group.routes) {
-        foreach (backend; route.backends) {
-          if ((backend.port in gHealth) is null) {
-            gHealth[backend.port] = BackendHealth(backend.port, true);
-          }
+  gConfig = config.healthCheck;
+  gHealth = null;
+  foreach (group; config.routes) {
+    foreach (route; group.routes) {
+      foreach (port; route.ports) {
+        if ((port in gHealth) is null) {
+          gHealth[port] = PortHealth(port, true);
         }
       }
     }
@@ -64,7 +67,7 @@ void startHealthChecks() {
   while (!healthChecksStopped()) {
     auto config = healthConfig();
     foreach (port; healthPorts()) {
-      updateBackendHealth(port, probeBackend(port, config.timeoutMillis));
+      updatePortHealth(port, probePort(port, config.timeoutMillis));
     }
     sleep(config.intervalMillis.msecs);
   }
@@ -79,68 +82,58 @@ bool healthChecksStopped() nothrow {
 }
 
 HealthConfig healthConfig() {
-  synchronized {
-    return gConfig;
-  }
+  return gConfig;
 }
 
-bool isBackendHealthy(Backend backend) {
-  synchronized {
-    auto health = backend.port in gHealth;
-    return health is null || health.healthy;
-  }
+bool isPortHealthy(ushort port) {
+  auto health = port in gHealth;
+  return health is null || health.healthy;
 }
 
-void syncBackendHealth(HostRoutes[] groups) {
-  synchronized {
-    BackendHealth[ushort] next;
-    foreach (group; groups) {
-      foreach (route; group.routes) {
-        foreach (backend; route.backends) {
-          auto existing = backend.port in gHealth;
-          next[backend.port] = existing is null ? BackendHealth(backend.port, true) : *existing;
-        }
+void syncPortHealth(HostRoutes[] groups) {
+  PortHealth[ushort] next;
+  foreach (group; groups) {
+    foreach (route; group.routes) {
+      foreach (port; route.ports) {
+        auto existing = port in gHealth;
+        next[port] = existing is null ? PortHealth(port, true) : *existing;
       }
     }
-    gHealth = next;
   }
+  gHealth = next;
 }
 
-void updateBackendHealth(ushort port, bool ok) {
-  synchronized {
-    auto health = port in gHealth;
-    if (health is null) {
-      gHealth[port] = BackendHealth(port, true);
-      health = port in gHealth;
-    }
+void updatePortHealth(ushort port, bool ok) {
+  auto health = port in gHealth;
+  if (health is null) {
+    gHealth[port] = PortHealth(port, true);
+    health = port in gHealth;
+  }
 
-    if (ok) {
-      health.successCount++;
-      health.failureCount = 0;
-      if (health.successCount >= gConfig.healthyThreshold) {
-        health.healthy = true;
-      }
-    } else {
-      health.failureCount++;
-      health.successCount = 0;
-      if (health.failureCount >= gConfig.unhealthyThreshold) {
-        health.healthy = false;
-      }
+  if (ok) {
+    health.successCount++;
+    health.failureCount = 0;
+    if (health.successCount >= gConfig.healthyThreshold) {
+      health.healthy = true;
+    }
+  } else {
+    health.failureCount++;
+    health.successCount = 0;
+    if (health.failureCount >= gConfig.unhealthyThreshold) {
+      health.healthy = false;
     }
   }
 }
 
 ushort[] healthPorts() {
-  synchronized {
-    ushort[] ports;
-    foreach (port; gHealth.byKey) {
-      ports ~= port;
-    }
-    return ports;
+  ushort[] ports;
+  foreach (port; gHealth.byKey) {
+    ports ~= port;
   }
+  return ports;
 }
 
-bool probeBackend(ushort port, int timeoutMillis) {
+bool probePort(ushort port, int timeoutMillis) {
   try {
     auto connection = connectTCP("127.0.0.1", port, null, 0, timeoutMillis.msecs);
     scope (exit) connection.close();

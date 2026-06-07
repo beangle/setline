@@ -18,8 +18,6 @@ module setline.state;
 
 import core.atomic : atomicLoad, atomicStore, cas;
 
-import std.typecons : Nullable;
-
 import setline.config : saveRoutes, sortHostRoutes;
 import setline.health;
 import setline.model;
@@ -34,37 +32,34 @@ __gshared private int gConnectTimeoutMillis = 3000;
 shared private size_t gMaxConnections = 65535;
 shared private size_t gActiveConnections;
 
+/** 初始化运行时状态。
+
+    路由表、监听地址和超时配置只在启动或 localhost 管理接口中低频替换。请求处理路径直接
+    读取当前快照，不使用 `synchronized`，避免每个资源请求都排队经过全局锁。
+*/
 void initialize(Config config, string configPath = "") {
-  synchronized {
-    gRoutes = cloneHostRoutes(config.routes);
-    sortHostRoutes(gRoutes);
-    gRouteTrees = buildRouteTrees(gRoutes);
-    gAdminToken = config.adminToken;
-    gConfigPath = configPath;
-    gListenAddress = config.listen;
-    gConnectTimeoutMillis = config.connectTimeoutMillis;
-  }
+  gRoutes = cloneHostRoutes(config.routes);
+  sortHostRoutes(gRoutes);
+  gRouteTrees = buildRouteTrees(gRoutes);
+  gAdminToken = config.adminToken;
+  gConfigPath = configPath;
+  gListenAddress = config.listen;
+  gConnectTimeoutMillis = config.connectTimeoutMillis;
   initializeHealth(config);
   atomicStore(gMaxConnections, config.maxConnections);
   atomicStore(gActiveConnections, 0);
 }
 
 string adminToken() {
-  synchronized {
-    return gAdminToken;
-  }
+  return gAdminToken;
 }
 
 int connectTimeoutMillis() {
-  synchronized {
-    return gConnectTimeoutMillis;
-  }
+  return gConnectTimeoutMillis;
 }
 
 ListenAddress listenAddress() {
-  synchronized {
-    return gListenAddress;
-  }
+  return gListenAddress;
 }
 
 size_t maxConnections() {
@@ -99,48 +94,42 @@ void releaseConnection() {
   }
 }
 
-Nullable!Backend selectBackend(string host, string path) {
-  synchronized {
-    return selectBackendForHost(host, path, backend => isBackendHealthy(backend));
-  }
+ushort selectPort(string host, string path) {
+  return selectPortForHost(host, path, port => isPortHealthy(port));
 }
 
-Nullable!Backend selectBackendExcept(string host, string path, Backend[] skipped) {
-  synchronized {
-    return selectBackendForHost(host, path, delegate bool(Backend backend) {
-      if (!isBackendHealthy(backend)) {
+ushort selectPortExcept(string host, string path, ushort[] skipped) {
+  return selectPortForHost(host, path, delegate bool(ushort port) {
+    if (!isPortHealthy(port)) {
+      return false;
+    }
+    foreach (item; skipped) {
+      if (item == port) {
         return false;
       }
-      foreach (item; skipped) {
-        if (item == backend) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }
+    }
+    return true;
+  });
 }
 
 bool hasRoute(string host, string path) {
-  synchronized {
-    return hasRouteForHost(host, path);
-  }
+  return hasRouteForHost(host, path);
 }
 
-/** 按 host 选择后端，必要时查找 `*` fallback。
+/** 按 host 选择端口，必要时查找 `*` fallback。
 
     fallback 只在精确 host 没有匹配 path 路由时生效。如果精确 host 下有路由但没有健康
-    backend，则返回空结果，让调用方按明确配置返回 503，而不是把请求送到默认应用。
+    端口，则返回空结果，让调用方按明确配置返回 503，而不是把请求送到默认应用。
 */
-private Nullable!Backend selectBackendForHost(string host, string path, BackendPredicate available) {
+private ushort selectPortForHost(string host, string path, PortPredicate available) {
   auto exact = host in gRouteTrees;
-  auto selected = selectBackendFromTree(exact, path, available);
-  if (!selected.isNull || routeExists(exact, path)) {
+  auto selected = selectPortFromTree(exact, path, available);
+  if (selected != 0 || routeExists(exact, path)) {
     return selected;
   }
 
   auto fallback = "*" in gRouteTrees;
-  return selectBackendFromTree(fallback, path, available);
+  return selectPortFromTree(fallback, path, available);
 }
 
 private bool hasRouteForHost(string host, string path) {
@@ -153,8 +142,8 @@ private bool hasRouteForHost(string host, string path) {
   return routeExists(fallback, path);
 }
 
-private Nullable!Backend selectBackendFromTree(RouteTree* tree, string path, BackendPredicate available) {
-  return tree is null ? Nullable!Backend.init : setline.router.selectBackend(*tree, path, available);
+private ushort selectPortFromTree(RouteTree* tree, string path, PortPredicate available) {
+  return tree is null ? 0 : setline.router.selectPort(*tree, path, available);
 }
 
 private bool routeExists(RouteTree* tree, string path) {
@@ -162,71 +151,51 @@ private bool routeExists(RouteTree* tree, string path) {
 }
 
 void upsertRoute(string host, Route route) {
-  HostRoutes[] groups;
-  RouteTree[string] trees;
-  synchronized {
-    groups = cloneHostRoutes(gRoutes);
-    upsertHostRoute(groups, host, route);
-    trees = buildRouteTrees(groups);
-    persistRoutes(groups);
-    gRoutes = groups;
-    gRouteTrees = trees;
-  }
-  syncBackendHealth(groups);
+  auto groups = cloneHostRoutes(gRoutes);
+  upsertHostRoute(groups, host, route);
+  auto trees = buildRouteTrees(groups);
+  persistRoutes(groups);
+  gRoutes = groups;
+  gRouteTrees = trees;
+  syncPortHealth(groups);
 }
 
 bool deleteRoute(string host, string prefix) {
-  HostRoutes[] groups;
-  RouteTree[string] trees;
-  bool removed;
-  synchronized {
-    groups = cloneHostRoutes(gRoutes);
-    removed = deleteHostRoute(groups, host, prefix);
-    if (!removed) {
-      return false;
-    }
-    trees = buildRouteTrees(groups);
-    persistRoutes(groups);
-    gRoutes = groups;
-    gRouteTrees = trees;
+  auto groups = cloneHostRoutes(gRoutes);
+  if (!deleteHostRoute(groups, host, prefix)) {
+    return false;
   }
-  syncBackendHealth(groups);
+  auto trees = buildRouteTrees(groups);
+  persistRoutes(groups);
+  gRoutes = groups;
+  gRouteTrees = trees;
+  syncPortHealth(groups);
   return true;
 }
 
 void clearRoutes(string host) {
-  HostRoutes[] groups;
-  RouteTree[string] trees;
-  synchronized {
-    groups = cloneHostRoutes(gRoutes);
-    clearHostRoutes(groups, host);
-    trees = buildRouteTrees(groups);
-    persistRoutes(groups);
-    gRoutes = groups;
-    gRouteTrees = trees;
-  }
-  syncBackendHealth(groups);
+  auto groups = cloneHostRoutes(gRoutes);
+  clearHostRoutes(groups, host);
+  auto trees = buildRouteTrees(groups);
+  persistRoutes(groups);
+  gRoutes = groups;
+  gRouteTrees = trees;
+  syncPortHealth(groups);
 }
 
 void replaceRoutes(string host, Route[] routes) {
-  HostRoutes[] groups;
-  RouteTree[string] trees;
   sortRoutes(routes);
-  synchronized {
-    groups = cloneHostRoutes(gRoutes);
-    replaceHostRoutes(groups, host, routes);
-    trees = buildRouteTrees(groups);
-    persistRoutes(groups);
-    gRoutes = groups;
-    gRouteTrees = trees;
-  }
-  syncBackendHealth(groups);
+  auto groups = cloneHostRoutes(gRoutes);
+  replaceHostRoutes(groups, host, routes);
+  auto trees = buildRouteTrees(groups);
+  persistRoutes(groups);
+  gRoutes = groups;
+  gRouteTrees = trees;
+  syncPortHealth(groups);
 }
 
 HostRoutes[] routesSnapshot() {
-  synchronized {
-    return cloneHostRoutes(gRoutes);
-  }
+  return cloneHostRoutes(gRoutes);
 }
 
 private void persistRoutes(HostRoutes[] routes) {
@@ -255,7 +224,7 @@ private HostRoutes[] cloneHostRoutes(HostRoutes[] groups) {
 private Route[] cloneRoutes(Route[] routes) {
   Route[] copy;
   foreach (route; routes) {
-    copy ~= Route(route.prefix, route.backends.dup);
+    copy ~= Route(route.prefix, route.ports.dup);
   }
   return copy;
 }
@@ -336,7 +305,5 @@ private void replaceHostRoutes(ref HostRoutes[] groups, string host, Route[] rou
 }
 
 string configPath() {
-  synchronized {
-    return gConfigPath;
-  }
+  return gConfigPath;
 }

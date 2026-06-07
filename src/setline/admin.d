@@ -25,13 +25,13 @@ import std.string : indexOf, startsWith;
 
 import vibe.core.net : TCPConnection;
 
-import setline.config : normalizeRouteHost, normalizeRoutePrefix, parseRoute, parseRoutes;
-import setline.constants;
+import setline.config : normalizeRouteHost, normalizeRoutePrefix, parseRoutes, parseSingleRoute;
 import setline.health;
 import setline.http;
 import setline.jsonview;
-import setline.model : Backend, HostRoutes, Route;
+import setline.model : HostRoutes, Route;
 import setline.state;
+import setline.util : adminPrefix, escapeHtml;
 
 /** 处理 `__setline` 管理接口请求。
 
@@ -72,7 +72,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
     if (!isLocalRouteUpdateAllowed(client)) return;
     try {
       auto host = routeHostFromTarget(target);
-      auto route = parseRoute(parseJSON(bodyOf(request)));
+      auto route = parseSingleRoute(parseJSON(bodyOf(request)));
       upsertRoute(host, route);
       sendJson(client, routeJson(route));
     }
@@ -246,8 +246,8 @@ string statusHtml() {
     html.put("<table><thead><tr><th>prefix</th><th>ports</th></tr></thead><tbody>");
     foreach (route; group.routes) {
       html.put("<tr><td>" ~ escapeHtml(route.prefix) ~ "</td><td>");
-      foreach (backend; route.backends) {
-        html.put(backendHealthHtml(backend));
+      foreach (port; route.ports) {
+        html.put(portHealthHtml(port));
       }
       html.put("</td></tr>");
     }
@@ -304,10 +304,10 @@ JSONValue statusRouteJson(Route route) {
   item["prefix"] = JSONValue(route.prefix);
 
   JSONValue[] ports;
-  foreach (backend; route.backends) {
+  foreach (routePort; route.ports) {
     JSONValue[string] port;
-    port["port"] = JSONValue(backend.port);
-    port["healthy"] = JSONValue(isBackendHealthy(backend));
+    port["port"] = JSONValue(routePort);
+    port["healthy"] = JSONValue(isPortHealthy(routePort));
     ports ~= JSONValue(port);
   }
   item["ports"] = JSONValue(ports);
@@ -322,23 +322,9 @@ size_t routeCount(HostRoutes[] groups) {
   return count;
 }
 
-string backendHealthHtml(Backend backend) {
-  auto online = isBackendHealthy(backend);
+string portHealthHtml(ushort port) {
+  auto online = isPortHealthy(port);
   auto state = online ? "online" : "offline";
   return "<span class=\"state " ~ state ~ "\"><span class=\"dot\"></span>" ~
-    backend.port.to!string ~ " " ~ state ~ "</span>";
-}
-
-string escapeHtml(string value) {
-  auto escaped = appender!string();
-  foreach (ch; value) {
-    switch (ch) {
-      case '&': escaped.put("&amp;"); break;
-      case '<': escaped.put("&lt;"); break;
-      case '>': escaped.put("&gt;"); break;
-      case '"': escaped.put("&quot;"); break;
-      default: escaped.put(ch); break;
-    }
-  }
-  return escaped.data;
+    port.to!string ~ " " ~ state ~ "</span>";
 }

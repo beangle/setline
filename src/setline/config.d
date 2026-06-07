@@ -24,9 +24,9 @@ import std.json;
 import std.stdio : stderr;
 import std.string : indexOf, stripRight;
 
-import setline.ascii : toLowerAscii;
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
+import setline.util : toLowerAscii;
 
 /** 从 JSON 文件加载 setline 配置。
 
@@ -79,19 +79,19 @@ JSONValue hostRoutesConfigJson(HostRoutes[] routes) {
 JSONValue routesConfigJson(Route[] routes) {
   JSONValue[string] routesObject;
   foreach (route; routes) {
-    routesObject[route.prefix] = routeBackendsConfigJson(route);
+    routesObject[route.prefix] = routePortsConfigJson(route);
   }
   return JSONValue(routesObject);
 }
 
-JSONValue routeBackendsConfigJson(Route route) {
-  if (route.backends.length == 1) {
-    return JSONValue(route.backends[0].port);
+JSONValue routePortsConfigJson(Route route) {
+  if (route.ports.length == 1) {
+    return JSONValue(route.ports[0]);
   }
 
   JSONValue[] ports;
-  foreach (backend; route.backends) {
-    ports ~= JSONValue(backend.port);
+  foreach (port; route.ports) {
+    ports ~= JSONValue(port);
   }
   return JSONValue(ports);
 }
@@ -156,7 +156,7 @@ ListenAddress parseListen(string value) {
 Route parseRoute(string prefix, JSONValue ports) {
   Route route;
   route.prefix = normalizeRoutePrefix(prefix);
-  route.backends = parseBackends(ports);
+  route.ports = parsePorts(ports);
   validateRoute(route);
   return route;
 }
@@ -210,53 +210,30 @@ void sortHostRoutes(ref HostRoutes[] groups) {
   sort!((a, b) => a.host == "*" ? false : b.host == "*" ? true : a.host < b.host)(groups);
 }
 
-/** 解析管理接口提交的单条路由。
-
-    管理接口保留 JSON object 形式，但字段收缩为 `prefix` 加 `port` 或 `ports`。这里显式
-    拒绝旧的 `backend`、`backends`、`directResponse` 和 `stripPrefix`，避免配置语义回退到
-    通用反向代理。
-*/
-Route parseRoute(JSONValue value) {
-  auto obj = value.object;
-  enforce("prefix" in obj, "route.prefix is required");
-  enforce(!("backend" in obj), "route.backend is not supported; use port");
-  enforce(!("backends" in obj), "route.backends is not supported; use ports");
-  enforce(!("directResponse" in obj), "directResponse is not supported");
-  enforce(!("stripPrefix" in obj), "stripPrefix is not supported");
-  auto hasPort = ("port" in obj) !is null;
-  auto hasPorts = ("ports" in obj) !is null;
-  enforce(hasPort || hasPorts, "route.port or route.ports is required");
-  enforce(cast(int) hasPort + cast(int) hasPorts == 1, "route must define exactly one of port or ports");
-
-  Route route;
-  route.prefix = normalizeRoutePrefix(obj["prefix"].str);
-  route.backends = parseBackends(hasPort ? obj["port"] : obj["ports"]);
-  validateRoute(route);
-  return route;
+Route parseSingleRoute(JSONValue value) {
+  auto routes = parseRoutes(value);
+  enforce(routes.length == 1, "route object must contain exactly one route");
+  return routes[0];
 }
 
-/** 解析端口或端口数组为本机后端列表。
+/** 解析端口或端口数组。
 
-    简化配置后，不再接受完整 backend URL。所有端口都映射到 `127.0.0.1:<port>`，请求路径
-    仍然使用浏览器原始请求行中的路径，确保代理不做 URL 改写。
+    简化配置后，不再接受完整 backend URL。端口就是路由的全部后端信息，连接时统一映射到
+    `127.0.0.1:<port>`。
 */
-Backend[] parseBackends(JSONValue value) {
+ushort[] parsePorts(JSONValue value) {
   if (value.type == JSONType.integer) {
-    return [parseBackend(value.integer)];
+    return [parsePort(value.integer, "route port")];
   }
 
   enforce(value.type == JSONType.array, "route value must be port or ports");
-  Backend[] backends;
+  ushort[] ports;
   foreach (portValue; value.array) {
     enforce(portValue.type == JSONType.integer, "route ports must be integers");
-    backends ~= parseBackend(portValue.integer);
+    ports ~= parsePort(portValue.integer, "route port");
   }
-  enforce(backends.length > 0, "route ports must not be empty");
-  return backends;
-}
-
-Backend parseBackend(long port) {
-  return Backend("127.0.0.1", parsePort(port, "backend port"));
+  enforce(ports.length > 0, "route ports must not be empty");
+  return ports;
 }
 
 HealthConfig parseHealthConfig(JSONValue value) {

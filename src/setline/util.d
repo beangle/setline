@@ -14,9 +14,12 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-module setline.ascii;
+module setline.util;
 
 import std.array : appender;
+
+enum defaultConfigPath = "setline.json";
+enum adminPrefix = "/__setline";
 
 string toLowerAscii(string value) {
   auto outp = appender!string();
@@ -25,6 +28,33 @@ string toLowerAscii(string value) {
       outp.put(cast(char)(ch + 32));
     } else {
       outp.put(ch);
+    }
+  }
+  return outp.data;
+}
+
+string escapeHtml(string value) {
+  auto outp = appender!string();
+  foreach (ch; value) {
+    switch (ch) {
+      case '&':
+        outp.put("&amp;");
+        break;
+      case '<':
+        outp.put("&lt;");
+        break;
+      case '>':
+        outp.put("&gt;");
+        break;
+      case '"':
+        outp.put("&quot;");
+        break;
+      case '\'':
+        outp.put("&#39;");
+        break;
+      default:
+        outp.put(ch);
+        break;
     }
   }
   return outp.data;

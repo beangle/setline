@@ -17,23 +17,23 @@
 module setline.router;
 
 import std.algorithm : sort, startsWith;
-import std.array : split;
 import std.exception : enforce;
 import std.random : uniform;
 import std.typecons : Nullable, nullable;
 
-import setline.constants;
 import setline.model;
+import setline.util : adminPrefix;
 
 /** 路由树中的一个路径段节点。
 
-    `name` 是不带 `/` 的单个 URI path segment；根节点名字为空。节点自己承载后端列表和
-    `children` 以子 segment 为键。这样运行时查找命中节点后可以直接选择 backend，不需要
+    `name` 是不带 `/` 的单个 URI path segment；根节点名字为空。节点自己承载端口列表和
+    `children` 以子 segment 为键。这样运行时查找命中节点后可以直接选择端口，不需要
     再通过下标回查另一个数组，也不需要为每次请求改写路由节点状态。
 */
 struct RouteNode {
   string name;
-  Backend[] backends;
+  string prefix;
+  ushort[] ports;
   RouteNode[string] children;
 }
 
@@ -44,6 +44,54 @@ struct RouteNode {
 */
 struct RouteTree {
   RouteNode root;
+}
+
+struct RouteMatch {
+  string prefix;
+  ushort[] ports;
+}
+
+/** 按 URI path segment 迭代字符串切片。
+
+    该 range 跳过连续的 `/`，每次 `front` 返回原 path 上的一个 segment 切片，不创建
+    segment 数组。路由构建和请求匹配都使用它，避免各自手写路径扫描逻辑。
+*/
+struct PathSegments {
+  string path;
+  size_t pos;
+  string current;
+  bool done;
+
+  this(string path) {
+    this.path = path;
+    popFront();
+  }
+
+  @property bool empty() const {
+    return done;
+  }
+
+  @property string front() const {
+    return current;
+  }
+
+  void popFront() {
+    while (pos < path.length && path[pos] == '/') {
+      ++pos;
+    }
+    if (pos >= path.length) {
+      current = "";
+      done = true;
+      return;
+    }
+
+    auto start = pos;
+    while (pos < path.length && path[pos] != '/') {
+      ++pos;
+    }
+    current = path[start .. pos];
+    done = false;
+  }
 }
 
 /** 校验路由前缀是否符合项目约束。
@@ -84,57 +132,45 @@ RouteTree buildRouteTree(Route[] routes) {
     规则仍是最长路径前缀优先，并且按 segment 匹配，`/api` 不会误匹配 `/apiology`。
 */
 Nullable!Route findRoute(RouteTree tree, string path) {
-  return findRoute(path, tree.root, "");
+  auto matched = matchRoute(tree, path);
+  return matched.ports.length == 0 ? Nullable!Route.init : nullable(Route(matched.prefix, matched.ports));
 }
 
-/** 为 path 随机选择一个可用后端。
+/** 为 path 随机选择一个可用端口。
 
-    多后端场景只做随机选择，不维护 round-robin 游标、权重或粘性会话。这样请求热路径只
-    读取路由配置和健康状态，不会因为每次选择 backend 而改写路由树节点。
+    查找过程按 URI segment 从根节点向下走，并持续记录最后一个带端口列表的节点。这样
+    `/api/a/users` 会优先命中 `/api/a`，如果中途没有对应 child，就使用此前记录的最长
+    前缀节点。
+
+    多端口场景只做随机选择，不维护 round-robin 游标、权重或粘性会话。`available` 用于
+    调用方传入健康状态、请求内重试排除列表等过滤条件；过滤本身只读外部状态，不改写
+    路由树。
+
+    Returns:
+      选中的本机后端端口；`0` 表示没有匹配路由，或匹配路由下没有满足 `available`
+      条件的端口。配置层已经禁止端口 `0`，所以这里可以用它作为哨兵值，避免为一个整数
+      返回值再套 `Nullable`。
 */
-alias BackendPredicate = bool delegate(Backend backend);
+alias PortPredicate = bool delegate(ushort port);
 
-Nullable!Backend selectBackend(ref RouteTree tree, string path) {
-  return selectBackend(tree, path, null);
+ushort selectPort(ref RouteTree tree, string path) {
+  return selectPort(tree, path, null);
 }
 
-Nullable!Backend selectBackend(ref RouteTree tree, string path, BackendPredicate available) {
-  auto node = &tree.root;
-  RouteNode* best = node.backends.length > 0 ? node : null;
-  size_t pos;
-  while (pos < path.length) {
-    while (pos < path.length && path[pos] == '/') {
-      ++pos;
-    }
-    if (pos >= path.length) {
-      break;
-    }
-
-    auto start = pos;
-    while (pos < path.length && path[pos] != '/') {
-      ++pos;
-    }
-    auto child = path[start .. pos] in node.children;
-    if (child is null) {
-      break;
-    }
-
-    node = child;
-    if (node.backends.length > 0) {
-      best = node;
-    }
-  }
-  if (best is null) {
-    return Nullable!Backend.init;
+ushort selectPort(ref RouteTree tree, string path, PortPredicate available) {
+  auto matched = matchRoute(tree, path);
+  if (matched.ports.length == 0) {
+    return 0;
   }
 
-  Backend[] candidates;
-  foreach (backend; best.backends) {
-    if (available is null || available(backend)) {
-      candidates ~= backend;
+  ushort[] candidates;
+  foreach (port; matched.ports) {
+    // available 为空表示不做健康或重试过滤，直接在路由端口中随机选择。
+    if (available is null || available(port)) {
+      candidates ~= port;
     }
   }
-  return candidates.length == 0 ? Nullable!Backend.init : nullable(candidates[uniform(0, candidates.length)]);
+  return candidates.length == 0 ? 0 : candidates[uniform(0, candidates.length)];
 }
 
 /** 新增或替换一条运行时路由。
@@ -157,69 +193,50 @@ void upsertRoute(ref Route[] routes, ref RouteTree tree, Route route) {
   tree = buildRouteTree(routes);
 }
 
-/** 判断路径是否被给定前缀覆盖。
-
-    前缀 `/` 匹配所有路径；其他前缀只匹配自身或其子路径。这样 `/foo` 不会误匹配
-    `/foobar`，可以避免相邻应用路径互相抢占资源请求。
-*/
-bool matchesRoute(string path, string prefix) {
-  if (prefix == "/") {
-    return true;
-  }
-  return path == prefix || path.startsWith(prefix ~ "/");
-}
-
 void insertRoute(ref RouteTree tree, Route route) {
   auto node = &tree.root;
   if (route.prefix == "/") {
-    node.backends = route.backends.dup;
+    node.ports = route.ports.dup;
     return;
   }
 
-  foreach (segment; route.prefix[1 .. $].split("/")) {
+  foreach (segment; PathSegments(route.prefix)) {
     auto existing = segment in node.children;
     if (existing is null) {
-      node.children[segment] = RouteNode(segment);
+      RouteNode child;
+      child.name = segment;
+      child.prefix = node.prefix.length == 0 || node.prefix == "/" ? "/" ~ segment : node.prefix ~ "/" ~ segment;
+      node.children[segment] = child;
       node = segment in node.children;
     } else {
       node = existing;
     }
   }
-  node.backends = route.backends.dup;
+  node.ports = route.ports.dup;
 }
 
-Nullable!Route findRoute(string path, RouteNode node, string prefix) {
-  Backend[] bestBackends;
-  auto bestPrefix = prefix.length == 0 ? "/" : prefix;
-  if (node.backends.length > 0) {
-    bestBackends = node.backends.dup;
+/** 返回 path 的最长前缀匹配结果。
+
+    这是路由树唯一的请求路径扫描逻辑。调用方如果只关心路由是否存在，用返回的 `ports`
+    是否为空判断；如果还需要展示命中的前缀，可以使用返回的 `prefix`。
+*/
+RouteMatch matchRoute(RouteTree tree, string path) {
+  auto node = &tree.root;
+  RouteMatch best;
+  if (node.ports.length > 0) {
+    best = RouteMatch("/", node.ports.dup);
   }
 
-  size_t pos;
-  while (pos < path.length) {
-    while (pos < path.length && path[pos] == '/') {
-      ++pos;
-    }
-    if (pos >= path.length) {
-      break;
-    }
-
-    auto start = pos;
-    while (pos < path.length && path[pos] != '/') {
-      ++pos;
-    }
-    auto segment = path[start .. pos];
+  foreach (segment; PathSegments(path)) {
     auto child = segment in node.children;
     if (child is null) {
       break;
     }
 
-    prefix = prefix == "" || prefix == "/" ? "/" ~ segment : prefix ~ "/" ~ segment;
-    node = *child;
-    if (node.backends.length > 0) {
-      bestPrefix = prefix;
-      bestBackends = node.backends.dup;
+    node = child;
+    if (node.ports.length > 0) {
+      best = RouteMatch(node.prefix, node.ports.dup);
     }
   }
-  return bestBackends.length == 0 ? Nullable!Route.init : nullable(Route(bestPrefix, bestBackends));
+  return best;
 }
