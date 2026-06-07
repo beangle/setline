@@ -17,7 +17,7 @@
 module setline.http;
 
 import std.array : appender;
-import std.conv : to;
+import std.conv : ConvException, to;
 import std.json;
 import std.string : indexOf, strip;
 
@@ -53,19 +53,18 @@ struct HttpHead {
   /// `Host` 头字段原值，可能包含端口，例如 `example.com:8080`。
   string host;
 
-  /// 是否出现了 `Content-Length` 头字段。
-  bool hasContentLength;
+  /// `Content-Length` 的数值；小于 0 表示没有可用的固定长度。
+  long contentLength = -1;
 
-  /// `Content-Length` 的数值；只有 `hasContentLength` 为 true 时才有意义。
-  size_t contentLength;
+  /// 是否有可用的非负 `Content-Length`。
+  @property bool hasContentLength() const {
+    return contentLength >= 0;
+  }
 
   /// `Transfer-Encoding` 是否包含 `chunked`。
   bool transferChunked;
 
-  /// `Connection` 是否包含 `upgrade`。
-  bool connectionUpgrade;
-
-  /// `Upgrade` 是否为 `websocket`。
+  /// 是否同时满足 `Connection: upgrade` 和 `Upgrade: websocket`。
   bool upgradeWebSocket;
 
 }
@@ -140,7 +139,7 @@ string readHttpRequest(TCPConnection socket) {
 string completeHttpRequest(TCPConnection socket, HttpHead request) {
   auto body = appender!string();
   body.put(cast(string) request.bufferedBody);
-  auto contentLength = request.hasContentLength ? request.contentLength : parseContentLength(request.head);
+  auto contentLength = request.hasContentLength ? cast(size_t) request.contentLength : 0;
   if (contentLength > request.bufferedBody.length) {
     ubyte[8192] buffer;
     auto remaining = contentLength - request.bufferedBody.length;
@@ -155,27 +154,6 @@ string completeHttpRequest(TCPConnection socket, HttpHead request) {
     }
   }
   return request.head ~ body.data;
-}
-
-/** 从 HTTP 头部中解析 `Content-Length`。
-
-    参数可以是完整请求、完整响应，或只包含头部的字符串；函数会按 CRLF 分行并忽略
-    字段名大小写。未找到时返回 0，调用者需要结合实际场景区分“没有 body”和“长度为 0”。
-*/
-size_t parseContentLength(string headers) {
-  size_t contentLength;
-  foreachHeaderLine(headers, delegate bool(string line) {
-    auto pos = line.indexOf(":");
-    if (pos < 0) {
-      return true;
-    }
-    if (line[0 .. pos].strip.toLowerAscii == "content-length") {
-      contentLength = line[pos + 1 .. $].strip.to!size_t;
-      return false;
-    }
-    return true;
-  });
-  return contentLength;
 }
 
 /** 返回用于路由匹配的路径部分。
@@ -282,6 +260,9 @@ private int parseStatusCode(string line) {
 }
 
 private void parseHeaderFields(ref HttpHead result) {
+  bool connectionUpgrade;
+  bool websocketUpgrade;
+
   foreachHeaderLine(result.head, delegate bool(string line) {
     auto pos = line.indexOf(":");
     if (pos < 0) {
@@ -295,23 +276,32 @@ private void parseHeaderFields(ref HttpHead result) {
         result.host = value;
         break;
       case "content-length":
-        result.hasContentLength = true;
-        result.contentLength = value.to!size_t;
+        parseContentLengthValue(value, result.contentLength);
         break;
       case "transfer-encoding":
         result.transferChunked = headerValueContains(value, "chunked");
         break;
       case "connection":
-        result.connectionUpgrade = headerValueContains(value, "upgrade");
+        connectionUpgrade = connectionUpgrade || headerValueContains(value, "upgrade");
         break;
       case "upgrade":
-        result.upgradeWebSocket = value.toLowerAscii == "websocket";
+        websocketUpgrade = websocketUpgrade || value.toLowerAscii == "websocket";
         break;
       default:
         break;
     }
     return true;
   });
+  result.upgradeWebSocket = connectionUpgrade && websocketUpgrade;
+}
+
+private bool parseContentLengthValue(string value, ref long length) {
+  try {
+    length = value.to!long;
+  } catch (ConvException) {
+    return false;
+  }
+  return true;
 }
 
 /** 从完整 HTTP 消息中取出 body 字符串。

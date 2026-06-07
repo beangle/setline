@@ -95,7 +95,7 @@ void forward(TCPConnection client, HttpHead request, ushort port) {
   }
 
   if (response.hasContentLength) {
-    auto contentLength = response.contentLength;
+    auto contentLength = cast(size_t) response.contentLength;
     auto bodySize = response.bufferedBody.length;
     relayBytes(upstream, client, contentLength > bodySize ? contentLength - bodySize : 0);
   } else if (response.transferChunked) {
@@ -209,8 +209,8 @@ void relayRequestBody(
   HttpHead request
 ) {
   if (request.hasContentLength) {
-    relayBytes(source, target,
-      request.contentLength > request.bufferedBody.length ? request.contentLength - request.bufferedBody.length : 0);
+    auto contentLength = cast(size_t) request.contentLength;
+    relayBytes(source, target, contentLength > request.bufferedBody.length ? contentLength - request.bufferedBody.length : 0);
   } else if (request.transferChunked) {
     relayChunked(source, target, request.bufferedBody);
   }

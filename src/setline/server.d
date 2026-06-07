@@ -143,7 +143,7 @@ void handleClient(TCPConnection client) {
         return;
       }
       try {
-        if (request.connectionUpgrade && request.upgradeWebSocket) {
+        if (request.upgradeWebSocket) {
           forwardWebSocket(client, request, port);
           return;
         }

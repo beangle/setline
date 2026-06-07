@@ -34,7 +34,6 @@ import setline.http;
   assert(head.target == "/m/edu/learning/@vite/client");
   assert(head.path == "/m/edu/learning/@vite/client");
   assert(head.host == "127.0.0.1:8080");
-  assert(head.connectionUpgrade);
   assert(head.upgradeWebSocket);
 }
 
@@ -47,12 +46,40 @@ import setline.http;
     "Host: body";
   auto head = parseHttpHead(request);
   assert(head.host == "LOCAL.EXAMPLE.COM:8080");
-  assert(head.connectionUpgrade);
+  assert(!head.upgradeWebSocket);
   assert(head.hasContentLength);
   assert(head.contentLength == 5);
   assert(headerValue(request, "host") == "LOCAL.EXAMPLE.COM:8080");
   assert(headerContains(request, "Connection", "upgrade"));
-  assert(parseContentLength(request) == 5);
+}
+
+@("http ignores invalid content length") unittest {
+  auto request =
+    "POST /api HTTP/1.1\r\n" ~
+    "Host: local.example.com\r\n" ~
+    "Content-Length: abc\r\n\r\n";
+  auto head = parseHttpHead(request);
+  assert(!head.hasContentLength);
+  assert(head.contentLength < 0);
+}
+
+@("http handles content length bounds") unittest {
+  auto valid =
+    "POST /api HTTP/1.1\r\n" ~
+    "Content-Length: 00000000000000000005\r\n\r\n";
+  assert(parseHttpHead(valid).contentLength == 5);
+
+  auto tooLarge =
+    "POST /api HTTP/1.1\r\n" ~
+    "Content-Length: 9223372036854775808\r\n\r\n";
+  assert(parseHttpHead(tooLarge).contentLength < 0);
+
+  auto negative =
+    "POST /api HTTP/1.1\r\n" ~
+    "Content-Length: -1\r\n\r\n";
+  auto negativeHead = parseHttpHead(negative);
+  assert(!negativeHead.hasContentLength);
+  assert(negativeHead.contentLength < 0);
 }
 
 @("http parses switching protocols response") unittest {
