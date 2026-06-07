@@ -61,10 +61,9 @@ private class EmptyTraceInfo : Throwable.TraceInfo {
 
 /** 将一个普通 HTTP 请求转发到匹配到的后端。
 
-    这个函数是 setline 的核心透明代理路径：请求头按原始字节顺序发送给上游，只在没有
-    任何上游代理身份头时补充 `Forwarded` / `X-Forwarded-*`，请求体和响应体都采用流式
-    透传。这里不做 URL 改写、不缓存、不压缩、不解释业务内容，目标是让浏览器与上游服务
-    之间的 HTTP 语义尽量保持一致。
+    这个函数是 setline 的核心透明代理路径：请求头按原始字节顺序发送给上游，请求体和
+    响应体都采用流式透传。这里不做 URL 改写、不缓存、不压缩、不解释业务内容，目标是
+    让浏览器与上游服务之间的 HTTP 语义尽量保持一致。
 
     响应体的转发策略由响应头决定：有 `Content-Length` 时按长度补齐，chunked 响应按
     chunk 边界转发，没有明确长度时一直转发到上游关闭连接。
@@ -75,8 +74,7 @@ void forward(TCPConnection client, HttpHead request, ushort port) {
     upstream.close();
   }
 
-  auto forwarded = withProxyHeaders(client, request);
-  sendPrepared(upstream, forwarded);
+  sendPrepared(upstream, request.head);
   if (request.bufferedBody.length > 0) {
     sendPrepared(upstream, request.bufferedBody);
   }
@@ -118,8 +116,7 @@ void forward(TCPConnection client, HttpHead request, ushort port) {
 void forwardWebSocket(TCPConnection client, HttpHead request, ushort port) {
   auto upstream = connectPort(port);
 
-  auto forwarded = withProxyHeaders(client, request);
-  sendPrepared(upstream, forwarded);
+  sendPrepared(upstream, request.head);
   if (request.bufferedBody.length > 0) {
     sendPrepared(upstream, request.bufferedBody);
   }
@@ -410,49 +407,6 @@ private void enforceByte(char actual, char expected, string message) {
   if (actual != expected) {
     throw new Exception(message);
   }
-}
-
-/** 在没有既有代理身份头时补充标准代理头。
-
-    项目里的“透明”指浏览器和 backend 之间的 HTTP 行为尽量透明，不再等同于绝对不改头。
-    如果请求已经包含 `Forwarded` 或 `X-Forwarded-For`，说明 setline 前面可能已经有 HAProxy、
-    Nginx 或其他第一线代理，setline 会完全保留这些头，避免覆盖真实链路信息。只有浏览器
-    直接访问 setline、请求中没有代理身份头时，才根据当前连接补充客户端 IP、scheme、host
-    和 port，便于 backend 获得真实访问上下文。
-*/
-string withProxyHeaders(TCPConnection client, HttpHead request) {
-  if (request.hasProxyHeaders) {
-    return request.head;
-  }
-
-  auto headerEnd = request.head.indexOf("\r\n\r\n");
-  if (headerEnd < 0) {
-    return request.head;
-  }
-
-  auto clientAddress = client.remoteAddress.toAddressString();
-  auto host = request.host;
-  auto port = forwardedPort(client, host);
-  return request.head[0 .. headerEnd] ~ "\r\n" ~
-    "Forwarded: for=" ~ clientAddress ~ ";proto=http;host=" ~ host ~ "\r\n" ~
-    "X-Forwarded-For: " ~ clientAddress ~ "\r\n" ~
-    "X-Forwarded-Proto: http\r\n" ~
-    "X-Forwarded-Host: " ~ host ~ "\r\n" ~
-    "X-Forwarded-Port: " ~ port ~ request.head[headerEnd .. $];
-}
-
-/** 推导写入 `X-Forwarded-Port` 的端口。
-
-    优先使用浏览器请求里的 Host 端口，因为它代表用户显式访问的代理服务地址；Host 没有
-    端口时退回到当前监听连接的本地端口。当前项目只处理明文 HTTP 入口，因此 proto 固定为
-    `http`，未来如果在 setline 本身终止 TLS，再统一扩展 scheme 判断。
-*/
-string forwardedPort(TCPConnection client, string host) {
-  auto colon = host.indexOf(":");
-  if (colon >= 0) {
-    return host[colon + 1 .. $];
-  }
-  return client.localAddress.port.to!string;
 }
 
 /** 判断响应状态是否按 HTTP 规则没有响应体。

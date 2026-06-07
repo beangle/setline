@@ -153,8 +153,8 @@ ss -tan '( sport >= :10000 )' | wc -l
 ## What Not To Tune First
 
 Do not start with DSR, TPROXY, TCP splicing, or broad TCP buffer changes for the
-normal setline workload. The project routes by HTTP URL and may add
-`Forwarded`/`X-Forwarded-*` headers, so it must read and sometimes rewrite HTTP
+normal setline workload. The project routes by HTTP URL, so it must read HTTP
+heads even though it does not rewrite request paths or add proxy identity
 headers. The first practical bottlenecks are usually file descriptors, backend
 connect timeout, listen queue limits, and short-lived upstream connections.
 

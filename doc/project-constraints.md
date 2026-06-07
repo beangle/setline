@@ -25,8 +25,7 @@ For normal backend routes, `setline` is a transparent path router:
 - Do not strip or add path prefixes.
 - Do not rewrite `Host`.
 - Do not rewrite `Connection`.
-- Preserve existing proxy headers from a trusted upstream, such as HAProxy.
-- Add proxy headers when no upstream proxy identity is present.
+- Do not add `Forwarded` or `X-Forwarded-*` headers.
 - Do not cache.
 - Do not inspect request body content.
 - Do not buffer full request bodies.
@@ -35,10 +34,10 @@ For normal backend routes, `setline` is a transparent path router:
 Only HTTP framing is interpreted, so the proxy knows when to stop streaming a
 request or response.
 
-Backends see `setline` as their TCP peer. Original browser-facing client IP,
-scheme, host, and port are communicated through `Forwarded` and
-`X-Forwarded-*` headers. Existing trusted upstream values are preserved; direct
-browser-to-setline requests are annotated by `setline`.
+Backends see `setline` as their TCP peer. If applications need original
+browser-facing client IP, scheme, host, or port, an upstream proxy such as
+HAProxy must add `Forwarded` or `X-Forwarded-*` before traffic reaches setline.
+Direct browser-to-setline requests are not annotated by setline.
 
 ## Unsupported Features
 
@@ -71,7 +70,7 @@ These are intentionally out of scope unless the project goal changes:
   for each request.
 - Parse the HTTP head once into `HttpHead` and use its fields on the proxy hot
   path. Do not repeatedly scan raw header strings for host, body framing,
-  WebSocket, response status, or proxy identity decisions.
+  WebSocket, or response status decisions.
 - Keep request and response bodies streaming. For chunked bodies, track only
   chunk boundaries and do not accumulate full body content.
 - Runtime route changes must build the next route set and route tree first,
@@ -86,8 +85,8 @@ These are intentionally out of scope unless the project goal changes:
   traffic to buffer request bodies.
 - Do not add kernel-level transparent proxying for the current explicit-proxy
   deployment model.
-- Do not overwrite existing `Forwarded` or `X-Forwarded-For` values. Their
-  presence means upstream proxy identity has already been established.
+- Do not synthesize proxy identity headers. Existing proxy headers pass through
+  only because the request head is otherwise forwarded unchanged.
 - Do not track every active client connection just to silence Ctrl+C shutdown
   warnings. Avoid adding hot-path global synchronization unless it protects
   normal proxy correctness.

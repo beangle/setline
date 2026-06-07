@@ -6,9 +6,8 @@ local backend with minimal interference.
 
 The client explicitly connects to the `setline` listen address, such as
 `http://127.0.0.1:8080/...`. Transparency means application-layer passthrough:
-headers and bodies are streamed without URL rewriting or caching, while backend
-applications can still recover the browser-facing client IP, scheme, host, and
-port from proxy identity headers.
+headers and bodies are streamed without URL rewriting, proxy identity header
+injection, or caching.
 
 ## Goals
 
@@ -33,7 +32,6 @@ fields used by the hot path once:
 - path used for route matching
 - WebSocket upgrade headers
 - request body framing headers
-- existing proxy identity headers
 
 The request `Host` header is normalized by removing the port and lowercasing
 the host name. That value selects a host-specific route tree; if that tree has
@@ -42,19 +40,13 @@ matching route but no healthy port, fallback is not used. The proxy then
 forwards the request head to the backend without URL rewriting,
 `Host` rewriting, `Connection` rewriting, or cache handling.
 
-Proxy identity headers are conditional:
-
-- If `Forwarded` or `X-Forwarded-For` is already present, `setline` assumes a
-  trusted upstream proxy such as HAProxy has supplied proxy identity and leaves
-  those headers unchanged.
-- If no proxy identity header is present, `setline` is the browser-facing
-  proxy and adds `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Proto`,
-  `X-Forwarded-Host`, and `X-Forwarded-Port`.
-
-The backend's TCP peer address is still the `setline` to backend connection
-address, usually `127.0.0.1`. Backend applications should use the proxy
-identity headers to recover the browser-facing client IP, scheme, host, and
-port.
+`setline` does not add `Forwarded` or `X-Forwarded-*` headers. If backend
+applications need browser-facing client IP, scheme, host, or port, a front
+proxy such as HAProxy should add those headers before traffic reaches setline.
+When such headers are already present, setline forwards them unchanged as part
+of the original request head. If the browser connects to setline directly, the
+backend will see setline as the TCP peer and will not receive extra proxy
+identity headers from setline.
 
 If the socket read that found the header boundary also read some request body
 bytes, those bytes are immediately forwarded to the backend before the proxy

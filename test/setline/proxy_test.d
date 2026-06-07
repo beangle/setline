@@ -39,12 +39,6 @@ import setline.proxy;
   assert(!responseHasNoBody(parseHttpHead("HTTP/1.1 200 OK\r\n\r\n")));
 }
 
-@("proxy detects existing proxy headers") unittest {
-  assert(parseHttpHead("GET / HTTP/1.1\r\nForwarded: for=127.0.0.1\r\n\r\n").hasProxyHeaders);
-  assert(parseHttpHead("GET / HTTP/1.1\r\nX-Forwarded-For: 127.0.0.1\r\n\r\n").hasProxyHeaders);
-  assert(!parseHttpHead("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").hasProxyHeaders);
-}
-
 @("proxy suppresses port connect exception trace") unittest {
   auto e = new PortConnectException(9001, "refused");
   assert(e.info !is null);

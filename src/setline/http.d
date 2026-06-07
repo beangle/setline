@@ -68,8 +68,6 @@ struct HttpHead {
   /// `Upgrade` 是否为 `websocket`。
   bool upgradeWebSocket;
 
-  /// 是否已有 `Forwarded` 或 `X-Forwarded-For`，用于决定是否补充代理身份头。
-  bool hasProxyHeaders;
 }
 
 /** 读取 HTTP 头，并保留已经到达的 body 前缀。
@@ -308,10 +306,6 @@ private void parseHeaderFields(ref HttpHead result) {
         break;
       case "upgrade":
         result.upgradeWebSocket = value.toLowerAscii == "websocket";
-        break;
-      case "forwarded":
-      case "x-forwarded-for":
-        result.hasProxyHeaders = true;
         break;
       default:
         break;
