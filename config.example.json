@@ -8,6 +8,11 @@
     "unhealthyThreshold": 2,
     "healthyThreshold": 1
   },
+  "agent": {
+    "type": "haproxy",
+    "remote": "file:///tmp/setline-agent/latest.json",
+    "workDir": "/tmp/setline-agent"
+  },
   "routes": {
     "*": {
       "/api/edu": [9002, 9003],

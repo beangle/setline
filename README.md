@@ -52,6 +52,11 @@ dub run -- -c -f config.example.json
     "unhealthyThreshold": 2,
     "healthyThreshold": 1
   },
+  "agent": {
+    "type": "haproxy",
+    "remote": "https://registry.example.com/proxy/prod/latest.json",
+    "workDir": "/var/lib/setline-agent"
+  },
   "routes": {
     "local1.example.com": {
       "/api/edu": [9002, 9003],
@@ -77,6 +82,12 @@ Top-level fields:
 - `maxConnections`: active client connection limit, default `65535`.
 - `healthCheck`: TCP connect health check tuning; health checks are always
   enabled and run on a fixed background interval.
+- `agent.type`: optional render target; accepts `haproxy` or `nginx`. When set,
+  `setline -f` runs in agent render mode instead of starting the local proxy.
+- `agent.remote`: optional manifest URL or local file path used by proxy config
+  rendering.
+- `agent.workDir`: local directory for downloaded bundles and extracted
+  releases, default `/tmp/setline-agent`.
 - `routes`: object mapping host names to URL path prefixes, then to a local
   port or a list of local ports. Each port maps to `127.0.0.1:<port>`. Route
   host names do not include a port. Host `*` is the fallback route namespace.
@@ -85,6 +96,59 @@ Routes are first selected by the request `Host` header after removing its port
 and lowercasing it. Within that host, routes are indexed by path segment with
 longest-prefix priority, so `/api/edu` wins over `/api`. If the request host has
 no matching route for the requested path, setline tries `*`.
+
+## Remote Proxy Rendering
+
+`setline` can render HAProxy or Nginx config from a remote manifest and bundle.
+This is an agent-style helper for edge proxy machines; it does not change the
+normal transparent proxy behavior.
+
+```bash
+setline -f setline.json > haproxy.cfg
+```
+
+`agent.remote` points to a manifest:
+
+```json
+{
+  "version": "2026.06.08.001",
+  "bundleUrl": "bundles/2026.06.08.001.tar.gz",
+  "sha256": "..."
+}
+```
+
+The bundle is a `.tar.gz` archive. It must contain `backends.json` at its root;
+certificates and keys can be shipped beside it for proxy TLS rendering:
+
+```text
+backends.json
+certs/
+  www.example.com/
+    fullchain.pem
+    privkey.pem
+```
+
+`backends.json` can use either `services` or `backends` as the top-level list:
+
+```json
+{
+  "services": [
+    {
+      "name": "edu-learning",
+      "host": "www.example.com",
+      "contentPath": "/m/edu/learning",
+      "healthPath": "/health",
+      "instances": [
+        { "host": "10.0.1.10", "port": 18001 },
+        { "host": "10.0.1.11", "port": 18002 }
+      ]
+    }
+  ]
+}
+```
+
+`content_path`, `health_path`, and instance `ip` are also accepted for existing
+registry payloads.
 
 ## Runtime Route Management
 

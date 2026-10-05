@@ -121,6 +121,9 @@ Config parseConfigFile(string path) {
   if ("healthCheck" in root.object) {
     config.healthCheck = parseHealthConfig(root["healthCheck"]);
   }
+  if ("agent" in root.object) {
+    config.agent = parseAgentConfig(root["agent"]);
+  }
   if ("routes" in root.object) {
     config.routes = parseHostRoutes(root["routes"]);
   }
@@ -272,9 +275,37 @@ HealthConfig parseHealthConfig(JSONValue value) {
   return config;
 }
 
+/** 解析边缘代理渲染配置。 */
+AgentConfig parseAgentConfig(JSONValue value) {
+  enforce(value.type == JSONType.object, "agent must be object");
+  auto obj = value.object;
+  AgentConfig config;
+  if ("type" in obj) {
+    enforce(obj["type"].type == JSONType.string, "agent.type must be string");
+    config.type = normalizeAgentType(obj["type"].str);
+  }
+  enforce("remote" in obj, "agent.remote is required");
+  enforce(obj["remote"].type == JSONType.string, "agent.remote must be string");
+  config.url = obj["remote"].str;
+  enforce(config.url.length > 0, "agent.remote must not be empty");
+  if ("workDir" in obj) {
+    enforce(obj["workDir"].type == JSONType.string, "agent.workDir must be string");
+    config.workDir = obj["workDir"].str;
+    enforce(config.workDir.length > 0, "agent.workDir must not be empty");
+  }
+  return config;
+}
+
 /** 解析字符串端口并校验范围。 */
 ushort parsePort(string value, string name) {
   return parsePort(value.to!long, name);
+}
+
+/** 规范化 agent 类型。 */
+string normalizeAgentType(string value) {
+  if (value == "nginux") return "nginx";
+  enforce(value == "haproxy" || value == "nginx", "agent.type must be haproxy or nginx");
+  return value;
 }
 
 /** 校验并转换端口号。 */

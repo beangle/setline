@@ -58,7 +58,6 @@ These are intentionally out of scope unless the project goal changes:
 - Linux TPROXY or other kernel traffic interception
 - HTTP pipelining
 - setline-to-backend keep-alive or backend connection pooling
-- HAProxy/Nginx config generation or dynamic synchronization
 
 ## Implementation Constraints
 
@@ -94,9 +93,9 @@ These are intentionally out of scope unless the project goal changes:
   traffic to buffer request bodies.
 - Do not add kernel-level transparent proxying for the current explicit-proxy
   deployment model.
-- Do not generate or synchronize external proxy configuration. setline only
-  knows this machine's local route-to-port view; external proxies need a
-  global cross-machine service topology.
+- Do not let normal proxy mode generate or synchronize external proxy
+  configuration. In normal proxy mode, setline only knows this machine's local
+  route-to-port view.
 - Do not synthesize proxy identity headers. Existing proxy headers pass through
   only because the request head is otherwise forwarded unchanged.
 - Do not track every active client connection just to silence Ctrl+C shutdown
@@ -130,6 +129,27 @@ Health state is refreshed after successful route changes. Existing backend
 ports keep their current health counters and online/offline state; newly
 introduced ports start healthy; ports that are no longer referenced by any
 route are removed from the health table.
+
+## Remote Proxy Rendering
+
+`agent.remote` is an agent-side helper, not part of the normal setline routing
+hot path. It points to a manifest owned by an external registry system. The
+manifest names one versioned `.tar.gz` bundle and its SHA-256 checksum. When
+`agent.type` is set, `setline -f` downloads the bundle, verifies it, reads its
+root `backends.json`, and renders proxy configuration text for an edge proxy
+machine.
+
+This rendering mode may describe remote machine IPs and ports because it is
+generating HAProxy/Nginx configuration, not selecting setline backends. It must
+stay separate from `routes`, which remain local-port-only for the setline proxy.
+
+The bundle keeps `backends.json`, certificates, private keys, and other proxy
+inputs at one version boundary. The agent must not combine a newly downloaded
+route table with certificates from another bundle version.
+
+The renderer does not own service discovery, liveness, deployment ordering, or
+firewall policy. Those decisions stay in the registry/deployment system and in
+the target proxy's own health checks.
 
 ## Technology Selection
 

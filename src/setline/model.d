@@ -59,6 +59,13 @@ struct HealthConfig {
   int healthyThreshold = 1;
 }
 
+/** 边缘代理渲染配置。 */
+struct AgentConfig {
+  string type;
+  string url;
+  string workDir = "/tmp/setline-agent";
+}
+
 /** 完整运行配置。
 
     配置只描述监听地址、管理 token 和路由表。代理行为本身保持固定：按 URL 找路由、连接
@@ -70,5 +77,6 @@ struct Config {
   int connectTimeoutMillis = 3000;
   size_t maxConnections = 65535;
   HealthConfig healthCheck;
+  AgentConfig agent;
   HostRoutes[] routes;
 }

@@ -99,6 +99,19 @@ import setline.model;
   assert(config.healthCheck.healthyThreshold == 2);
 }
 
+@("config parses agent settings") unittest {
+  auto path = "/tmp/setline-config-agent-test.json";
+  write(path,
+    `{"agent":{"type":"nginux","remote":"https://registry.example.com/latest.json","workDir":"/var/lib/setline-agent"},` ~
+    `"routes":{}}`);
+  scope (exit) remove(path);
+
+  auto config = loadConfig(path);
+  assert(config.agent.type == "nginx");
+  assert(config.agent.url == "https://registry.example.com/latest.json");
+  assert(config.agent.workDir == "/var/lib/setline-agent");
+}
+
 @("config parses route ports") unittest {
   auto path = "/tmp/setline-config-routes-test.json";
   write(path, `{"routes":{"local.example.com":{"/api":9001,"/api/edu":[9002,9003]}}}`);

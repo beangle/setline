@@ -20,6 +20,7 @@ import std.getopt : defaultGetoptPrinter, getopt;
 import std.stdio : stderr, stdout;
 
 import setline.config;
+import setline.edge;
 import setline.server;
 import setline.state;
 import setline.util : defaultConfigPath;
@@ -52,6 +53,14 @@ int main(string[] args) {
     }
 
     auto config = loadConfig(configPath);
+    if (config.agent.type.length > 0) {
+      if (config.agent.url.length == 0) {
+        throw new Exception("agent.remote is required");
+      }
+      stdout.write(renderProxyConfig(parseBackends(loadBackendsJson(config.agent)), config.agent.type));
+      return 0;
+    }
+
     initialize(config, configPath);
 
     stdout.writefln("setline listening on http://%s:%s", config.listen.host, config.listen.port);

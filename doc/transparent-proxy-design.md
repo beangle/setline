@@ -217,8 +217,8 @@ Keep the default architecture as user-space HTTP proxying with `vibe-core`.
 
 ## External Proxy Integration Decision
 
-`setline` does not generate HAProxy/Nginx configuration and does not push route
-updates to external proxies.
+Normal `setline` proxy mode does not generate HAProxy/Nginx configuration and
+does not push route updates to external proxies.
 
 The route table inside one setline process is a local-machine view:
 `host + path prefix -> 127.0.0.1:<port>`. External proxies usually need a
@@ -234,3 +234,11 @@ Keep the boundary simple:
   entry policies.
 - Any external proxy configuration should be owned by deployment tooling that
   has the complete service topology, not by a single setline instance.
+
+When `agent.type` is configured, `setline -f` is a separate agent-style helper
+for that deployment tooling boundary. It reads a declared remote manifest,
+downloads the referenced versioned bundle, verifies its checksum, reads
+`backends.json` from the bundle root, and renders proxy configuration text for
+an edge proxy machine. Certificates and keys are shipped in the same bundle so
+the rendered proxy config and TLS files share one version boundary. This mode
+does not change the normal local transparent proxy route model.
