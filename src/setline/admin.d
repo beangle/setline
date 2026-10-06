@@ -35,6 +35,14 @@ import setline.util : adminPrefix, escapeHtml;
 
 /** 处理 `__setline` 管理接口请求。
 
+    管理接口分两类，安全边界不同：
+
+    - **写**（`PUT` / `DELETE` 路由）：只接受 TCP 对端是本机的请求，**不需要 token**。改路由等于
+      改流量走向，不对外开放，判断依据是 TCP 对端地址而不是可伪造的 `Forwarded` 头。
+    - **读**（`GET` 路由表、状态页）：用 `adminToken` 保护，**不限来源**。将来同网段的服务进程
+      （例如把路由同步成 haproxy / nginx 配置的 agent）要读这份路由表，token 就是那条路径的凭据；
+      token 为空时按开发模式放行，生产上 `listen` 绑 `*` 时必须设置。
+
     管理接口是当前少数需要完整读取 request body 的路径：GET 返回内存路由表快照，PUT 用
     JSON body 新增或替换一条路由。普通业务代理请求不会进入这里，因此不会因为管理接口的
     body 解析策略影响透明代理的流式转发。
@@ -119,7 +127,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   sendResponse(client, 404, "Not Found", "unknown admin endpoint");
 }
 
-/** 判断当前连接是否允许执行本地路由更新。 */
+/** 判断当前连接是否允许执行本地路由更新（写接口只认本机，与 token 无关）。 */
 bool isLocalRouteUpdateAllowed(TCPConnection client) {
   if (isLocalhost(client)) {
     return true;
@@ -137,8 +145,9 @@ string routeHostFromTarget(string target) {
 
 /** 校验管理接口 token。
 
-    未配置 token 时默认允许本机管理，方便开发场景；一旦配置 `adminToken`，请求必须携带
-    `X-Setline-Token`。该校验只保护管理 API，不参与普通代理请求。
+    只保护**读**接口（`GET` 路由表）：将来同网段的服务进程（例如同步 haproxy 的 agent）要读
+    路由表，token 就是这条路径的凭据。未配置 token 时放行，方便开发场景；生产上 `listen` 绑
+    `*` 时必须设置，否则路由表对外可读。写接口不走这里，它只认 TCP 对端是本机。
 */
 bool isAuthorized(string request) {
   auto token = adminToken();
@@ -183,7 +192,8 @@ string queryValue(string target, string name) {
 /** 校验 status 页面使用的 Basic Auth。
 
     status 页面面向浏览器访问，使用 Basic Auth 比自定义 token 头更方便。用户名固定为
-    `setline`，密码复用 `adminToken`；未配置 token 时按开发模式放行。
+    `setline`，密码复用 `adminToken`；未配置 token 时按开发模式放行。与读接口同一套凭据，
+    因此同网段的服务进程也能取到状态 JSON。
 */
 bool isBasicAuthorized(string request) {
   return isBasicAuthorized(request, adminToken());

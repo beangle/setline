@@ -68,11 +68,16 @@ struct AgentConfig {
 
 /** 完整运行配置。
 
-    配置只描述监听地址、管理 token 和路由表。代理行为本身保持固定：按 URL 找路由、连接
+    配置描述监听地址、管理 token 和路由表。代理行为本身保持固定：按 URL 找路由、连接
     本机后端、透明透传请求和响应，不提供缓存、URL 改写或复杂负载均衡策略。
+
+    `adminToken` 只保护**读**（`GET /__setline/routes` 与状态页），因为路由表将来要开放给同
+    网段的服务进程（例如同步 haproxy / nginx 的 agent）读取；**写**接口不认这条凭据，只接受
+    TCP 对端是本机的请求——改路由等于改流量走向，不对外开放。
 */
 struct Config {
   ListenAddress listen;
+  /** 读接口凭据；为空表示开发模式放行（生产绑 `*` 时必须设置）。 */
   string adminToken;
   int connectTimeoutMillis = 3000;
   size_t maxConnections = 65535;

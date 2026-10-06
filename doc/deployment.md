@@ -91,8 +91,14 @@ Supported runtime operations are:
 - replace routes for one host
 
 All route-changing calls must come from localhost and must specify the target
-route host. They do not require the admin token. Keep these endpoints bound to
-trusted local automation such as service startup scripts or deployment hooks.
+route host. They do not require the admin token: the localhost check is the
+whole access control for writes. Keep these endpoints bound to trusted local
+automation such as service startup scripts or deployment hooks.
+
+Reads take a different path. `GET /__setline/routes` and the status page require
+`adminToken` and are not limited to localhost, because same-network services
+(for example a haproxy/nginx config synchronization agent) are expected to read
+the route table. Set `adminToken` whenever `listen` binds `*`.
 
 When routes change, setline rebuilds the next host route trees, writes the new
 `routes` field to disk, and then swaps it into runtime state. Port health

@@ -155,6 +155,11 @@ but they must specify the route host. The localhost check uses the TCP peer
 address because proxy headers are user-controlled input at this security
 boundary.
 
+Read operations (`GET` routes and the status page) sit on the other side of the
+boundary: they keep the `adminToken` credential and stay reachable from other
+hosts, because the route table is meant to be read later by same-network
+services such as a haproxy/nginx config synchronization agent.
+
 Route updates rebuild a complete runtime snapshot and then replace the current
 state:
 

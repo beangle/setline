@@ -77,7 +77,10 @@ Top-level fields:
 
 - `listen`: listen port or address, default `127.0.0.1:8080`; accepts `8080`,
   `"8080"`, `"*:8080"`, or `"127.0.0.1:8080"`.
-- `adminToken`: optional token for `__setline` management APIs.
+- `adminToken`: credential for the **read** side of the `__setline` API
+  (`GET /__setline/routes` and the status page/JSON). Empty means open, which is
+  fine while the listener is bound to loopback. Route **writes** never use this
+  token: they are accepted only from localhost.
 - `connectTimeoutMillis`: backend TCP connect timeout, default `3000`.
 - `maxConnections`: active client connection limit, default `65535`.
 - `healthCheck`: TCP connect health check tuning; health checks are always
@@ -154,6 +157,8 @@ registry payloads.
 
 Runtime route updates are accepted only from localhost. They update the current
 in-memory routes and write the `routes` field back to the JSON config file.
+They do not use `adminToken`: writes are gated by the TCP peer address instead,
+because a route change redirects traffic.
 
 Add or replace one route:
 
@@ -202,6 +207,16 @@ Open the HTML view in a browser:
 ```text
 http://127.0.0.1:8080/__setline/status.html
 ```
+
+### Why reads keep a token
+
+Reads (`GET /__setline/routes`, status page/JSON) are deliberately **not**
+restricted to localhost: they are meant to be consumed later from other hosts on
+the same network, for example an agent that renders the route table into an
+haproxy or nginx config. `adminToken` is that path's credential.
+
+- bound to loopback, an empty token is fine — nothing else can reach the API;
+- bound to `*`, set `adminToken`, otherwise the route table is world-readable.
 
 ## Notes
 

@@ -119,8 +119,11 @@ config file by default. They never change listener, token, timeout,
 health-check, or connection-limit settings.
 
 All route-changing requests must come from localhost and must specify the
-target host. They do not require the admin token. The localhost decision is
-based on the TCP peer address, not on `Forwarded` or `X-Forwarded-*` headers.
+target host. They do not require the admin token: writes are gated by the TCP
+peer address, not by a credential, because a route change redirects traffic.
+The admin token stays on the read side (`GET` routes plus the status page),
+which is the part meant to be consumed from other hosts on the same network
+later, for example by a proxy-config synchronization agent.
 
 The new routes are written to disk before the in-memory route table is swapped.
 If persistence fails, the existing runtime routes remain active.

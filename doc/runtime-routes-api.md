@@ -10,10 +10,26 @@ All write APIs require:
   `::ffff:127.0.0.1`
 
 Write APIs do not require `X-Setline-Token` because they are accepted only from
-localhost. Read APIs still use the normal admin token behavior.
+localhost — a route change redirects traffic, so this side is never exposed.
+Read APIs are the opposite trade: they keep the `adminToken` credential and are
+not restricted to localhost, because the route table is meant to be read from
+other hosts on the same network later (for example an agent that renders it into
+a haproxy or nginx config).
 
 Do not use `Forwarded` or `X-Forwarded-For` to satisfy the localhost
 requirement. The server checks the TCP peer address.
+
+## Who reads, and with what
+
+| Operation | Allowed source | Credential |
+|---|---|---|
+| `GET /__setline/routes` | any | `X-Setline-Token` (empty token = open) |
+| status page / `status.json` | any | HTTP Basic, user `setline`, password `adminToken` |
+| `PUT` / `DELETE` routes | localhost only | none |
+
+An empty `adminToken` is a development convenience: bind `listen` to loopback
+and nothing else can reach the API. If `listen` binds `*`, set `adminToken` or
+the route table becomes world-readable.
 
 ## List Routes
 
