@@ -88,8 +88,8 @@ struct SyncConfig {
 
 /** 边缘代理渲染配置。
 
-    `peers` 非空时走「聚合远端 setline 路由表」这条路；`url` 则保留给更早的
-    registry bundle 模式，两者取其一即可。
+    数据来源二选一：`peers` 聚合远端 setline 的路由表，`url`（`agent.remote`）下载
+    registry bundle，两者不能同时配置。`bind` 留空时片段不写监听段，只出规则和后端。
 */
 struct AgentConfig {
   string type;
@@ -97,8 +97,11 @@ struct AgentConfig {
   string workDir = "/tmp/setline-agent";
   /** 生成片段的落盘路径；为空时写到标准输出。 */
   string output;
-  /** 边缘代理监听串：haproxy 用作 `bind`，nginx 取其端口。 */
-  string bind = "*:80";
+  /** 边缘代理监听串：haproxy 用作 `bind`，nginx 取其端口。
+
+      留空表示「片段不管监听」：只生成规则和后端定义，`bind` / `listen` 归代理主配置。
+  */
+  string bind;
   /** 被聚合的远端 setline 实例。 */
   PeerConfig[] peers;
   SyncConfig sync;

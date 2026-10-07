@@ -145,6 +145,13 @@ proxy's own main config file: the fragment is included (Nginx) or concatenated
 (HAProxy, which has no `include`) by deployment tooling. `agent.sync` chooses
 between a single round (`once`) and a repeating loop (`interval`).
 
+By default (`agent.bind` empty) the fragment carries only rules and backends and
+never a listener, because the listen address, TLS and the rest of the proxy
+config are the deployment's own decisions; a self-contained listener is opt-in
+by setting `agent.bind`. `agent.peers` and `agent.remote` are mutually exclusive:
+one merges live peer route tables, the other unpacks a registry bundle. Wiring
+recipes: `docs/haproxy-integration.md`, `docs/nginx-integration.md`.
+
 `agent.remote` is an agent-side helper, not part of the normal setline routing
 hot path. It points to a manifest owned by an external registry system. The
 manifest names one versioned `.tar.gz` bundle and its SHA-256 checksum. When

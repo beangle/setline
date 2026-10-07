@@ -2,6 +2,8 @@
 
 本文交代 `scripts/package/setline-apply` 与配套 systemd 单元的设计考虑。
 它处理的是「片段已经在磁盘上之后」的那一段：校验、热加载、失败回滚。
+片段本身怎么接到 haproxy/nginx 上（两种模式、文件布局、一次性接线）见
+`docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
 
 ## 职责边界
 
@@ -85,11 +87,27 @@ watch 目录:  CREATE/MODIFY/CLOSE_WRITE out.cfg.tmp, MOVED_FROM/MOVED_TO out.cf
 ```
 OnBootSec=30s
 OnUnitInactiveSec=20s
-Unit=setline-apply@%i.service
 ```
 
-代价是最多一个周期的延迟；配置同步不差这几秒。同时 `setline-apply@.service`
+代价是最多一个周期的延迟；配置同步不差这几秒。同时 `setline-apply.service`
 设 `StartLimitIntervalSec=0`，因为这个 unit 就是被周期触发的，幂等动作不怕重复。
+
+## 处理哪个代理：由 agent.type 决定
+
+timer 只有一个，跑 `setline-apply auto`，代理由配置决定，不需要人工挑实例：
+
+```bash
+setline -f /etc/setline/setline.json --agent-type   # 打印 haproxy / nginx / 空
+```
+
+- `--agent-type` 让 setline 自己解析 JSON（复用同一套配置校验），shell 侧只做字符串
+  比较，避免在 bash 里手写 JSON 解析；
+- `auto` 遍历 `SETLINE_CONFIGS`（默认 `/etc/setline/setline.json`，可在
+  `/etc/setline/apply.conf` 里加多份），把选中的代理解重去重后逐个交给
+  `setline-apply <proxy>` 执行，每个代理各自持锁、各自记录状态；
+- 配置里没有 `agent`（普通代理机器）→ 什么都不做，直接退出 0；
+- 配置的 `agent.type` 指向本机没装的代理 → 打警告跳过，不算失败；
+- 退出码取更严重的那个：片段不合法（1）优先于接线错误（3）。
 
 ## 幂等与防抖
 

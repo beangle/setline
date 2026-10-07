@@ -103,9 +103,11 @@ the route table. Set `adminToken` whenever `listen` binds `*`.
 That read path is what `agent.peers` uses: an edge proxy machine reads each
 peer's route table with `X-Setline-Token`, rewrites the peer's local ports to
 `<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
-a HAProxy/Nginx fragment to `agent.output`. The fragment is included by the
-proxy's own config (Nginx) or loaded as an extra `-f` directory (HAProxy), so
-the proxy's custom content is preserved.
+a HAProxy/Nginx fragment to `agent.output`. `agent.remote` is the alternative
+source (a registry bundle) and cannot be combined with `agent.peers`. By default
+the fragment carries only rules and backends, so the proxy's own config keeps
+the listener; how to wire each proxy is in `docs/haproxy-integration.md` and
+`docs/nginx-integration.md`.
 
 Reloading is separate and privileged. `setline` runs as the unprivileged
 `setline` user and only writes the fragment; `setline-apply` (root, oneshot,

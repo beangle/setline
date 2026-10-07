@@ -122,7 +122,6 @@ custom content in that file stays intact.
 "agent": {
   "type": "nginx",
   "output": "/var/lib/setline/nginx/setline.conf",
-  "bind": "*:80",
   "token": "change-me",
   "sync": { "mode": "once", "intervalMillis": 30000 },
   "peers": [
@@ -134,8 +133,10 @@ custom content in that file stays intact.
 
 - `agent.type`: render target, `haproxy` or `nginx`.
 - `agent.output`: fragment path; leave it empty to print to stdout instead.
-- `agent.bind`: listener for the fragment; HAProxy uses it as `bind`, Nginx uses
-  its port.
+- `agent.bind`: leave it empty (recommended) and the fragment carries only rules
+  and backends, so the proxy's own config keeps the listener; set it (for
+  example `*:80`) and the fragment becomes self-contained with its own
+  `bind`/`listen`.
 - `agent.token`: default `X-Setline-Token` for peers.
 - `agent.peers[]`: remote setline instances. `url` is the peer's base address
   (setline appends `/__setline/routes`); `name` only shapes readable service
@@ -145,6 +146,8 @@ custom content in that file stays intact.
 - `agent.sync.mode`: `once` renders one round and exits (drive it from cron or a
   systemd timer); `interval` keeps running and repeats every `intervalMillis`
   (this needs `agent.output`; without it the agent prints once and exits).
+- `agent.remote`: registry manifest URL or local path, as an alternative source
+  of backends. It is mutually exclusive with `agent.peers`.
 
 Each peer is read through `GET /__setline/routes`, and its local ports are
 rewritten to `<url host>:<port>`. Routes with the same host and path prefix are
@@ -155,23 +158,21 @@ trusted.
 
 ### Wiring the fragment
 
-The generated file is a fragment, not a full config. HAProxy and Nginx wire it
-differently, because HAProxy has no `include` directive:
+The generated files are fragments, never a full config, and the proxy keeps its
+listener, TLS and custom content. What you write once depends on the mode:
 
-- Nginx: include the fragment inside the `http {}` block and leave the rest of
-  the main config alone.
+- Rules mode (`agent.bind` empty): HAProxy gets `<output>` (backends) plus
+  `<stem>.map`, and you add three `map_beg()` lines to your own `frontend`;
+  Nginx gets `<output>` (upstreams, included in `http {}`) plus one
+  `<stem>.<host>.conf` per host, included inside that vhost's `server {}`.
+- Self-contained mode (`agent.bind` set): one file that also owns the listener.
+  Nginx includes it in `http {}`; HAProxy loads it via `-f <dir>` (`-f <dir>`
+  loads only `*.cfg`, and a directory cannot be added by extending `CFGDIR`, so
+  the unit's `ExecStart` has to be overridden —
+  `scripts/package/haproxy-setline-cfgdir.conf.example`).
 
-  ```nginx
-  http {
-    include /var/lib/setline/nginx/*.conf;
-  }
-  ```
-
-- HAProxy: no `include` exists, so the fragment is loaded as an extra `-f`
-  directory. `-f <dir>` loads only files ending in `.cfg`, and a directory
-  cannot be added by extending `CFGDIR` — the unit's `ExecStart` has to be
-  overridden. The fragment holds only `frontend` / `backend` sections; the
-  master config keeps `global` and `defaults`.
+Step-by-step recipes live in `docs/haproxy-integration.md` and
+`docs/nginx-integration.md`.
 
 `agent.output` is written atomically and only when its content changed.
 
@@ -179,8 +180,10 @@ Reloading is a separate, privileged step: an unprivileged `setline` cannot
 write `/etc/nginx`, cannot pass `nginx -t`, and cannot signal a root-owned
 master. The package ships `setline-apply`, a root oneshot that validates,
 reloads via `systemctl reload`, and rolls the whole fragment directory back on
-failure. It is driven by a timer, is idempotent by content hash, and defers
-until the fragment has been stable for a quiet window. See
+failure. One `setline-apply.timer` is enough: it runs `setline-apply auto`, which
+asks the binary (`setline --agent-type`) what `agent.type` says and only then
+touches that proxy. The action is idempotent by content hash and defers until
+the fragment has been stable for a quiet window. See
 `docs/agent-reload.md` for why `-sf`, `-x`, and `SIGHUP` are the wrong tools
 here, and why a timer is used instead of a `systemd.path` unit.
 
@@ -324,3 +327,5 @@ See also:
 - `docs/runtime-routes-api.md`
 - `docs/configuration.md`
 - `docs/agent-reload.md`
+- `docs/haproxy-integration.md`
+- `docs/nginx-integration.md`

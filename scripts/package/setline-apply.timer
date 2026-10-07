@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically apply setline-generated %i config
+Description=Periodically apply setline-generated proxy config
 Documentation=file:///usr/share/doc/setline/agent-reload.md
 
 [Timer]
@@ -9,7 +9,6 @@ Documentation=file:///usr/share/doc/setline/agent-reload.md
 OnBootSec=30s
 OnUnitInactiveSec=20s
 AccuracySec=1s
-Unit=setline-apply@%i.service
 
 [Install]
 WantedBy=timers.target

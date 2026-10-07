@@ -1,21 +1,25 @@
 #!/bin/bash
 # setline-apply: 校验并热加载 setline 生成的边缘代理配置片段。
 #
-# 设计取舍见 docs/agent-reload.md，要点：
+# 设计取舍见 docs/agent-reload.md，接线方式见 docs/haproxy-integration.md /
+# docs/nginx-integration.md，要点：
 #   - 只做「片段已在磁盘上之后」的事，不参与生成；
 #   - 幂等：内容哈希没变就直接退出，重复触发是免费的；
 #   - 防抖用 mtime 静默窗口，不在脚本里 sleep 占住 oneshot；
 #   - 校验/重载一律走 systemctl reload，不自己碰进程和信号；
-#   - 失败整体还原 last-known-good 目录，不留半新半旧状态。
+#   - 失败整体还原 last-known-good 目录，不留半新半旧状态；
+#   - 代理由配置决定：`auto` 从 setline 配置的 `agent.type` 里读，不必手工挑 timer 实例。
 set -euo pipefail
 
-PROXY="${1:-}"
-case "$PROXY" in
-  haproxy|nginx) ;;
-  *) echo "usage: setline-apply <haproxy|nginx>" >&2; exit 2 ;;
+MODE="${1:-}"
+case "$MODE" in
+  haproxy|nginx|auto) ;;
+  *) echo "usage: setline-apply <haproxy|nginx|auto>" >&2; exit 2 ;;
 esac
 
 # 默认值可被环境变量或 /etc/setline/apply.conf 覆盖（文件优先级最高）。
+SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline}"
+SETLINE_CONFIGS="${SETLINE_CONFIGS:-/etc/setline/setline.json}"
 HAPROXY_CONFIGS="${HAPROXY_CONFIGS:-/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy}"
 HAPROXY_FRAGMENT_DIR="${HAPROXY_FRAGMENT_DIR:-/var/lib/setline/haproxy}"
 HAPROXY_SERVICE="${HAPROXY_SERVICE:-haproxy}"
@@ -31,6 +35,63 @@ if [ -r /etc/setline/apply.conf ]; then
   . /etc/setline/apply.conf
 fi
 
+log() { echo "setline-apply[${PROXY:-$MODE}]: $*"; }
+die() { echo "setline-apply[${PROXY:-$MODE}]: $*" >&2; exit 1; }
+# 配置接线错误与「片段本身不合法」要能区分开，方便运维判断该改哪边。
+die_wiring() { echo "setline-apply[${PROXY:-$MODE}]: $*" >&2; exit 3; }
+
+# 从 setline 配置里取 agent.type；配置是唯一事实来源，让 setline 自己解析 JSON，
+# shell 侧只做字符串比较，避免手写 JSON 解析。
+detect_proxies() {
+  local cfg kind proxies=""
+  if ! command -v "$SETLINE_BIN" >/dev/null 2>&1; then
+    log "WARNING: $SETLINE_BIN not found, cannot detect agent.type; nothing to do"
+    return 0
+  fi
+  for cfg in $SETLINE_CONFIGS; do
+    [ -e "$cfg" ] || continue
+    if ! kind=$("$SETLINE_BIN" -f "$cfg" --agent-type 2>/dev/null); then
+      log "WARNING: cannot read agent.type from $cfg, skipping"
+      continue
+    fi
+    case "$kind" in
+      haproxy|nginx) ;;
+      *) continue ;;
+    esac
+    case " $proxies " in
+      *" $kind "*) ;;
+      *) proxies="${proxies:+$proxies }$kind" ;;
+    esac
+  done
+  printf '%s\n' "$proxies"
+}
+
+# auto：谁被 agent.type 选中就处理谁，一个都不选就什么都不做（普通代理机器上
+# timer 会一直空转，这是正常的）。
+if [ "$MODE" = "auto" ]; then
+  proxies=$(detect_proxies)
+  if [ -z "$proxies" ]; then
+    log "no agent.type in ${SETLINE_CONFIGS}, nothing to apply"
+    exit 0
+  fi
+  rc=0
+  for proxy in $proxies; do
+    if ! command -v "$proxy" >/dev/null 2>&1; then
+      log "WARNING: $proxy is not installed, skipping"
+      continue
+    fi
+    log "applying $proxy (agent.type)"
+    child_rc=0
+    "$0" "$proxy" || child_rc=$?
+    # 片段不合法(1)比接线错误(3)更该被看见，取更严重的那个。
+    if [ "$child_rc" -ne 0 ] && { [ "$rc" -eq 0 ] || [ "$child_rc" -eq 1 ]; }; then
+      rc=$child_rc
+    fi
+  done
+  exit "$rc"
+fi
+
+PROXY="$MODE"
 if [ "$PROXY" = "haproxy" ]; then
   FRAG_DIR="$HAPROXY_FRAGMENT_DIR"
   SERVICE="$HAPROXY_SERVICE"
@@ -43,10 +104,6 @@ LASTGOOD="$STATE_DIR/lastgood"
 HASHFILE="$STATE_DIR/applied.sha256"
 LOCKFILE="$SETLINE_APPLY_RUNTIME_DIR/setline-apply-$PROXY.lock"
 
-log() { echo "setline-apply[$PROXY]: $*"; }
-die() { echo "setline-apply[$PROXY]: $*" >&2; exit 1; }
-# 配置接线错误与「片段本身不合法」要能区分开，方便运维判断该改哪边。
-die_wiring() { echo "setline-apply[$PROXY]: $*" >&2; exit 3; }
 
 # FRAG_DIR 会被整体替换，先挡住危险的取值。
 case "$FRAG_DIR" in
@@ -70,13 +127,17 @@ validate() {
 }
 
 # 片段目录必须是服务实际加载的配置的一部分，否则 reload 是静默空转。
+# 规则模式（bind 留空）还会多一层：haproxy 的 *.map、nginx 的每个片段文件都必须真的
+# 被主配置引用，否则配置合法但规则根本没生效。
 check_wiring() {
   if [ "$PROXY" = "haproxy" ]; then
     command -v systemctl >/dev/null 2>&1 || { log "WARNING: systemctl missing, cannot verify wiring"; return 0; }
-    if systemctl show "$SERVICE" -p ExecStart -p Environment 2>/dev/null | grep -qF "$FRAG_DIR"; then
-      return 0
+    if ! systemctl show "$SERVICE" -p ExecStart -p Environment 2>/dev/null | grep -qF "$FRAG_DIR"; then
+      die_wiring "wiring error: $SERVICE does not load $FRAG_DIR (add -f, or point CFGDIR at it);" \
+        "see docs/haproxy-integration.md"
     fi
-    die_wiring "wiring error: $SERVICE does not load $FRAG_DIR (add -f, or point CFGDIR at it); see docs/agent-reload.md"
+    check_haproxy_maps
+    return 0
   fi
   command -v nginx >/dev/null 2>&1 || return 0
   local dump
@@ -85,8 +146,40 @@ check_wiring() {
     log "WARNING: cannot dump nginx config, skipping wiring check"
     return 0
   fi
-  printf '%s\n' "$dump" | grep -qF "$FRAG_DIR" && return 0
-  die_wiring "wiring error: $NGINX_CONFIG does not include $FRAG_DIR (add an include line); see docs/agent-reload.md"
+  check_nginx_includes "$dump"
+}
+
+# 规则模式：*.map 由主配置 frontend 里的 map_beg(...) 引用。
+# 片段目录本身可能出现在 HAPROXY_CONFIGS 里（backend 片段靠 -f <dir> 生效），
+# 但 map 文件里印着自己的路径，从那里搜会自证，所以跳过片段目录、并排除 *.map。
+check_haproxy_maps() {
+  local map f found missing=()
+  while IFS= read -r map; do
+    [ -n "$map" ] || continue
+    found=0
+    for f in $HAPROXY_CONFIGS; do
+      [ "$f" = "$FRAG_DIR" ] && continue
+      if [ -d "$f" ]; then
+        grep -rqsF --exclude='*.map' -- "$map" "$f" && { found=1; break; }
+      elif [ -f "$f" ]; then
+        grep -qsF -- "$map" "$f" && { found=1; break; }
+      fi
+    done
+    [ "$found" = 1 ] || missing+=("$map")
+  done < <(find "$FRAG_DIR" -maxdepth 1 -type f -name '*.map' | LC_ALL=C sort)
+  [ "${#missing[@]}" -eq 0 ] ||
+    die_wiring "wiring error: ${missing[*]} is not referenced by any haproxy config; see docs/haproxy-integration.md"
+}
+
+# nginx 的 include 可以带通配符，所以按「生成的文件是否都出现在 nginx -T 里」判断。
+check_nginx_includes() {
+  local dump="$1" file missing=()
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    printf '%s\n' "$dump" | grep -qF -- "$file" || missing+=("$file")
+  done < <(find "$FRAG_DIR" -type f | LC_ALL=C sort)
+  [ "${#missing[@]}" -eq 0 ] ||
+    die_wiring "wiring error: $NGINX_CONFIG does not include ${missing[*]}; see docs/nginx-integration.md"
 }
 
 reload() {

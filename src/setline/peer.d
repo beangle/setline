@@ -21,11 +21,12 @@ import std.exception : enforce;
 import std.file : exists, mkdirRecurse, readText, rename, write;
 import std.functional : toDelegate;
 import std.json;
-import std.path : dirName;
+import std.path : baseName, buildPath, dirName, stripExtension;
 import std.string : indexOf, stripRight;
 
 import setline.config : normalizeRouteHost, normalizeRoutePrefix, parsePort;
-import setline.edge : BackendInstance, BackendService, fetchText, loadBackendsJson, parseBackends,
+import setline.edge : BackendInstance, BackendService, fetchText, hostsOf, loadBackendsJson,
+  parseBackends, renderHaproxyBackends, renderHaproxyMap, renderNginxLocations, renderNginxUpstreams,
   renderProxyConfig;
 import setline.model : AgentConfig, HostRoutes, PeerConfig, Route;
 import setline.util : adminPrefix;
@@ -184,17 +185,56 @@ BackendService[] sortServices(BackendService[] services) {
   return services;
 }
 
-/** 渲染 agent 片段文本：优先聚合 peers，否则退回 registry bundle。 */
-string renderAgentConfig(AgentConfig agent) {
+/** 一份要写出的片段文件；`path` 为空表示只打印，不落盘。 */
+struct Snippet {
+  string path;
+  string text;
+}
+
+/** 按数据来源取得后端服务：`peers` 合并，或 `remote` registry bundle（二者互斥）。 */
+BackendService[] collectAgentServices(AgentConfig agent) {
+  if (agent.peers.length > 0) return collectPeerServices(agent);
+  enforce(agent.url.length > 0, "agent.remote is required");
+  return parseBackends(loadBackendsJson(agent));
+}
+
+/** 渲染 agent 要写出的全部片段。
+
+    `bind` 非空时只输出一份自包含片段（片段自己持有监听）；`bind` 留空时只输出规则与
+    后端定义，监听段归代理主配置，文件布局见 docs/haproxy-integration.md 与
+    docs/nginx-integration.md。
+*/
+Snippet[] renderAgentSnippets(AgentConfig agent) {
   enforce(agent.type.length > 0, "agent.type is required");
-  BackendService[] services;
-  if (agent.peers.length > 0) {
-    services = collectPeerServices(agent);
-  } else {
-    enforce(agent.url.length > 0, "agent.remote is required");
-    services = parseBackends(loadBackendsJson(agent));
+  return layoutSnippets(collectAgentServices(agent), agent.type, agent.output, agent.bind);
+}
+
+/** 把服务列表排布成片段文件；规则模式下文件名由 `output` 派生。 */
+Snippet[] layoutSnippets(BackendService[] services, string kind, string output, string bind) {
+  if (bind.length > 0) {
+    return [Snippet(output, renderProxyConfig(services, kind, bind))];
   }
-  return renderProxyConfig(services, agent.type, agent.bind);
+  auto stem = output.length > 0 ? stripExtension(baseName(output)) : "setline";
+  auto dir = output.length > 0 ? dirName(output) : "";
+  if (kind == "haproxy") {
+    auto mapPath = joinPath(dir, stem ~ ".map");
+    return [
+      Snippet(output, renderHaproxyBackends(services)),
+      Snippet(mapPath, renderHaproxyMap(services, mapPath)),
+    ];
+  }
+  if (kind != "nginx") throw new Exception("render kind must be haproxy or nginx");
+  Snippet[] snippets = [Snippet(output, renderNginxUpstreams(services))];
+  foreach (host; hostsOf(services)) {
+    auto name = host == "*" ? stem ~ ".default.conf" : stem ~ "." ~ host ~ ".conf";
+    snippets ~= Snippet(joinPath(dir, name), renderNginxLocations(services, host));
+  }
+  return snippets;
+}
+
+/** 拼接片段路径；目录为空时（只打印到标准输出）只用文件名。 */
+string joinPath(string dir, string name) {
+  return dir.length > 0 ? buildPath(dir, name) : name;
 }
 
 /** 原子写出片段；内容未变化时不触碰原文件，返回是否发生写入。 */

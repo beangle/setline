@@ -142,3 +142,42 @@ PeerConfig peerWithUrl(string url) {
   assert(writeSnippet(path, "two\n") == true);
   assert(readText(path) == "two\n");
 }
+
+@("peer renders rules-only snippets without a listener") unittest {
+  BackendService[] services;
+  services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api/edu","port":9002}],` ~
+    `"*":[{"prefix":"/","port":9090}]}`), "10.0.1.10", "app");
+  services = sortServices(services);
+
+  auto haproxy = layoutSnippets(services, "haproxy", "/tmp/setline-conf/haproxy/setline.cfg", "");
+  assert(haproxy.length == 2);
+  assert(haproxy[0].path == "/tmp/setline-conf/haproxy/setline.cfg");
+  assert(haproxy[0].text.canFind("backend be_app_app_example_com_api_edu"));
+  assert(!haproxy[0].text.canFind("\nfrontend "));
+  assert(!haproxy[0].text.canFind("bind "));
+  assert(haproxy[1].path == "/tmp/setline-conf/haproxy/setline.map");
+  assert(haproxy[1].text.canFind("app.example.com~/api/edu be_app_app_example_com_api_edu"));
+  assert(haproxy[1].text.canFind("\n/ be_app__\n"));
+
+  auto nginx = layoutSnippets(services, "nginx", "/tmp/setline-conf/nginx/setline.conf", "");
+  assert(nginx.length == 3);
+  assert(nginx[0].path == "/tmp/setline-conf/nginx/setline.conf");
+  assert(nginx[0].text.canFind("upstream app_app_example_com_api_edu"));
+  assert(!nginx[0].text.canFind("listen "));
+  assert(nginx[1].path == "/tmp/setline-conf/nginx/setline.app.example.com.conf");
+  assert(nginx[1].text.canFind("location /api/edu {"));
+  assert(nginx[2].path == "/tmp/setline-conf/nginx/setline.default.conf");
+  assert(nginx[2].text.canFind("location / {"));
+}
+
+@("peer renders a self-contained snippet when bind is set") unittest {
+  BackendService[] services;
+  services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api","port":9001}]}`),
+    "10.0.1.10", "app");
+  services = sortServices(services);
+
+  auto snippets = layoutSnippets(services, "haproxy", "/tmp/setline-conf/haproxy/setline.cfg", "*:8080");
+  assert(snippets.length == 1);
+  assert(snippets[0].text.canFind("bind *:8080"));
+  assert(!snippets[0].text.canFind("map_beg"));
+}

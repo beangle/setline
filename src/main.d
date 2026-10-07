@@ -19,11 +19,12 @@ module main;
 import core.thread : Thread;
 import core.time : msecs;
 import std.getopt : defaultGetoptPrinter, getopt;
+import std.path : baseName;
 import std.stdio : stderr, stdout;
 
 import setline.config;
 import setline.model : AgentConfig;
-import setline.peer : renderAgentConfig, writeSnippet;
+import setline.peer : renderAgentSnippets, writeSnippet;
 import setline.server;
 import setline.state;
 import setline.util : defaultConfigPath;
@@ -36,19 +37,28 @@ int main(string[] args) {
   }
 
   string configPath = defaultConfigPath;
+  bool agentType;
   bool check;
   bool help;
   auto helpInfo = getopt(args,
     "file|f", "Path to setline JSON config", &configPath,
+    "agent-type", "Print agent.type from the config and exit", &agentType,
     "check|c", "Check config and exit", &check,
     "help|h", "Show this help", &help);
 
   if (help) {
-    defaultGetoptPrinter("Usage: setline [-f setline.json] [-c]", helpInfo.options);
+    defaultGetoptPrinter("Usage: setline [-f setline.json] [--agent-type] [-c]", helpInfo.options);
     return 0;
   }
 
   try {
+    // 给 setline-apply 的自动分派用：只回显 agent.type（没配 agent 就是空行），
+    // 让 shell 侧不必自己解析 JSON。
+    if (agentType) {
+      stdout.writefln("%s", loadConfig(configPath).agent.type);
+      return 0;
+    }
+
     if (check) {
       checkConfig(configPath);
       stdout.writefln("Config %s is valid", configPath);
@@ -87,13 +97,22 @@ int runAgent(AgentConfig agent) {
   return 0;
 }
 
-/** 执行一轮 agent 同步：渲染片段并写入 output，未配置 output 时写到标准输出。 */
+/** 执行一轮 agent 同步：渲染片段并写入 output，未配置 output 时写到标准输出。
+
+    规则模式下会有多个片段文件（例如 haproxy 的 backend 片段加路由 map），
+    全部按内容哈希幂等写出，未变化的文件不会被触碰。
+*/
 void syncAgentOnce(AgentConfig agent) {
-  auto text = renderAgentConfig(agent);
+  auto snippets = renderAgentSnippets(agent);
   if (agent.output.length == 0) {
-    stdout.write(text);
+    foreach (snippet; snippets) {
+      stdout.writefln("# ==== %s ====", baseName(snippet.path));
+      stdout.write(snippet.text);
+    }
     return;
   }
-  auto changed = writeSnippet(agent.output, text);
-  stdout.writefln("setline agent wrote %s (%s)", agent.output, changed ? "updated" : "unchanged");
+  foreach (snippet; snippets) {
+    auto changed = writeSnippet(snippet.path, snippet.text);
+    stdout.writefln("setline agent wrote %s (%s)", snippet.path, changed ? "updated" : "unchanged");
+  }
 }

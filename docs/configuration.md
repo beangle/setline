@@ -136,19 +136,33 @@ token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent
 
 ## agent
 
-配了 `agent.type` 时，`setline -f` 不再启动本地代理，而是渲染一份供边缘代理使用的
-配置片段。两种数据来源，二选一：
+配了 `agent.type` 时，`setline -f` 不再启动本地代理，而是渲染供边缘代理使用的配置片段。
+数据来源二选一（**互斥**）：`peers` 合并对端路由表，`remote` 下载 registry bundle。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `type` | 字符串 | 无 | `haproxy` 或 `nginx`；配 `peers` 时必填 |
 | `peers` | 数组 | `[]` | 被聚合的远端 setline 实例 |
-| `remote` | 字符串 | 无 | registry manifest 的 URL 或本地路径（另一种来源） |
+| `remote` | 字符串 | 无 | registry manifest 的 URL 或本地路径；与 `peers` 互斥 |
 | `output` | 字符串 | 空 | 片段落盘路径；留空打到标准输出 |
-| `bind` | 字符串 | `"*:80"` | haproxy 的 `bind`，nginx 取其端口 |
+| `bind` | 字符串 | 空 | 留空 = 片段不管监听，只出规则和后端；有值 = 片段自己持有监听 |
 | `token` | 字符串 | 空 | peers 未单独设置 token 时的默认值 |
 | `workDir` | 字符串 | `/tmp/setline-agent` | `remote` 模式的下载与解包目录 |
 | `sync` | 对象 | `{"mode":"once"}` | 同步机制，见下 |
+
+`agent.bind` 决定片段形态：
+
+| `bind` | 模式 | 生成内容 | 监听段归属 |
+|---|---|---|---|
+| 留空（推荐） | 规则模式 | 后端定义 + 路由规则（haproxy 是 map，nginx 是每个 host 的 location） | 代理主配置 |
+| 有值（如 `*:80`） | 自包含模式 | 后端定义 + 带 `bind`/`listen` 的监听段 | 片段本身 |
+
+接线步骤（`-f <dir>`、`include`、规则模式需要的一次性配置）见
+`docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
+
+`type` 也是热加载分派的依据：`setline-apply.timer` 只启用一个，`setline-apply auto`
+会对每份配置执行 `setline -f <cfg> --agent-type`，按这里填的 `haproxy`/`nginx` 决定
+校验和 reload 谁。所以改 `type` 之后不需要动 systemd。
 
 ### peers
 
@@ -215,8 +229,18 @@ peer 对象只认这三个字段，写错字段名（例如写一个不存在的
 - haproxy 的 `-f <dir>` **只加载 `.cfg`**，所以片段要叫 `*.cfg`（例如 `setline.cfg`）。
 - nginx 的 `include` 通常写成 `*.conf`，所以片段要叫 `*.conf`（例如 `setline.conf`）。
 
+规则模式（`bind` 留空）会多写几个派生文件，都以 `output` 的文件名为前缀：
+
+| 代理 | 文件 | 作用 |
+|---|---|---|
+| haproxy | `<output>` | 只有 `backend` 段 |
+| haproxy | `<stem>.map` | 路由表，主配置 frontend 用 `map_beg()` 查它 |
+| nginx | `<output>` | 只有 `upstream` 段，在 `http {}` 里 include |
+| nginx | `<stem>.<host>.conf` | 该 host 的 `location`，在对应 `server {}` 里 include；`*` 回退路由是 `<stem>.default.conf` |
+
 写好后还需要一次性接线（nginx 加 `include`，haproxy 加 `-f`），校验与热加载由
-`setline-apply` 负责，见 `docs/agent-reload.md`。
+`setline-apply` 负责，见 `docs/haproxy-integration.md`、`docs/nginx-integration.md`
+和 `docs/agent-reload.md`。
 
 ## 示例
 
@@ -283,14 +307,16 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 改动会写回配置文件顶层 `routes` 字段（其余字段原样保留），重启后仍然生效。
 完整接口见 `docs/runtime-routes-api.md`。
 
-### agent：聚合多台 setline 生成 nginx 片段
+### agent：聚合多台 setline 生成 nginx 片段（规则模式）
+
+不写 `bind`：片段不含 `listen`，监听归你自己的 `server {}`。生成
+`setline.conf`（upstream）加每个 host 一份 location 文件。
 
 ```json
 {
   "agent": {
     "type": "nginx",
     "output": "/var/lib/setline/nginx/setline.conf",
-    "bind": "*:80",
     "token": "shared-token",
     "sync": { "mode": "interval", "intervalMillis": 30000 },
     "peers": [
@@ -301,16 +327,36 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 }
 ```
 
-### agent：生成 haproxy 片段
+### agent：生成 haproxy 片段（规则模式）
+
+生成 `setline.cfg`（backend）加 `setline.map`（路由表），主配置的 frontend 加三行
+`map_beg()` 查询即可，`bind` 仍归主配置。
 
 ```json
 {
   "agent": {
     "type": "haproxy",
     "output": "/var/lib/setline/haproxy/setline.cfg",
-    "bind": "*:80",
     "token": "shared-token",
     "sync": { "mode": "once" },
+    "peers": [
+      { "name": "app1", "url": "http://10.0.1.10:8080" }
+    ]
+  }
+}
+```
+
+### agent：自包含片段（片段自己持有监听）
+
+给 `bind` 一个值，片段就会带上 `frontend`/`server` 的监听段；此时不需要主配置再做
+`map_beg()` 或 `location` 接线。
+
+```json
+{
+  "agent": {
+    "type": "nginx",
+    "output": "/var/lib/setline/nginx/setline.conf",
+    "bind": "*:80",
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" }
     ]
@@ -333,5 +379,8 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 | `route port must be 1..65535` | 端口越界 |
 | `route host must not include port` | host 里写了端口 |
 | `agent.remote or agent.peers is required` | 配了 `agent` 但没有数据来源 |
+| `agent.remote and agent.peers cannot be used together` | 同时配了 bundle 和 peers 两种来源 |
 | `agent.type is required when agent.peers is set` | 用 `peers` 时没写 `type` |
 | `agent.sync.mode must be once or interval` | 同步模式拼错 |
+| `agent.peers[] has unknown field: <key>` | peer 里写了不存在的字段（例如已取消的 `address`） |
+| `cannot derive backend host from agent.peers[].url` | peer 的 `url` 没有主机（`file://`、本地路径） |

@@ -303,7 +303,6 @@ AgentConfig parseAgentConfig(JSONValue value) {
   if ("bind" in obj) {
     enforce(obj["bind"].type == JSONType.string, "agent.bind must be string");
     config.bind = obj["bind"].str;
-    enforce(config.bind.length > 0, "agent.bind must not be empty");
   }
   if ("token" in obj) {
     enforce(obj["token"].type == JSONType.string, "agent.token must be string");
@@ -317,6 +316,9 @@ AgentConfig parseAgentConfig(JSONValue value) {
   }
   enforce(config.url.length > 0 || config.peers.length > 0,
     "agent.remote or agent.peers is required");
+  // remote 是「下载 registry bundle」，peers 是「合并对端路由表」，两种数据来源互斥。
+  enforce(config.url.length == 0 || config.peers.length == 0,
+    "agent.remote and agent.peers cannot be used together");
   enforce(config.peers.length == 0 || config.type.length > 0,
     "agent.type is required when agent.peers is set");
   return config;

@@ -234,3 +234,19 @@ import setline.model;
   scope (exit) remove(path);
   assertThrown!Exception(loadConfig(path));
 }
+
+@("config allows rules-only agent without bind") unittest {
+  auto path = "/tmp/setline-config-agent-nobind-test.json";
+  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline/nginx/setline.conf",` ~
+    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
+  scope (exit) remove(path);
+  assert(loadConfig(path).agent.bind == "");
+}
+
+@("config rejects agent with both remote and peers") unittest {
+  auto path = "/tmp/setline-config-agent-both-test.json";
+  write(path, `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json",` ~
+    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
+  scope (exit) remove(path);
+  assertThrown!Exception(loadConfig(path));
+}

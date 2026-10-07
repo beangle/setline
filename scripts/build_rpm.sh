@@ -76,11 +76,11 @@ cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/sh
 cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
 cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
-cp -f "$SETLINE_HOME/scripts/package/setline-apply@.service" usr/lib/systemd/system/setline-apply@.service
-cp -f "$SETLINE_HOME/scripts/package/setline-apply@.timer" usr/lib/systemd/system/setline-apply@.timer
+cp -f "$SETLINE_HOME/scripts/package/setline-apply.service" usr/lib/systemd/system/setline-apply.service
+cp -f "$SETLINE_HOME/scripts/package/setline-apply.timer" usr/lib/systemd/system/setline-apply.timer
 
 chmod -R 0755 .
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/apply.conf.example usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-apply@.service usr/lib/systemd/system/setline-apply@.timer
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/apply.conf.example usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
 chmod 0755 usr/bin/setline usr/lib/setline/setline-apply
 
 cd ..
@@ -133,7 +133,8 @@ systemctl daemon-reload 2>/dev/null || :
 if [ "\$1" = 0 ]; then
   systemctl stop setline 2>/dev/null || :
   systemctl disable setline 2>/dev/null || :
-  for unit in /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
+  # setline-apply@*.timer 是老版本的按代理模板单元，升级上来的机器可能还开着。
+  for unit in /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
     [ -e "\$unit" ] || continue
     systemctl disable --now "\$(basename "\$unit" .timer)" 2>/dev/null || :
   done
@@ -152,8 +153,8 @@ systemctl daemon-reload 2>/dev/null || :
 %attr(0644,root,root) /usr/share/doc/setline/*.md
 %attr(0755,root,root) /usr/lib/setline/setline-apply
 %attr(0644,root,root) /usr/lib/systemd/system/setline.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-apply@.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-apply@.timer
+%attr(0644,root,root) /usr/lib/systemd/system/setline-apply.service
+%attr(0644,root,root) /usr/lib/systemd/system/setline-apply.timer
 
 %changelog
 $(printf '%b' "$changes")

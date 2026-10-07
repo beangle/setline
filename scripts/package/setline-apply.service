@@ -1,0 +1,16 @@
+[Unit]
+Description=Validate and hot-reload the proxy selected by agent.type
+Documentation=file:///usr/share/doc/setline/agent-reload.md
+Documentation=file:///usr/share/doc/setline/haproxy-integration.md
+Documentation=file:///usr/share/doc/setline/nginx-integration.md
+After=network-online.target
+# 本 unit 由 setline-apply.timer 周期驱动，动作本身幂等（内容没变就直接退出），
+# 所以关掉启动限流：默认 StartLimitBurst=5/10s 会把高频触发挡成 failed。
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# auto 会从 SETLINE_CONFIGS（默认 /etc/setline/setline.json）里读 agent.type，
+# 选中的是 haproxy 还是 nginx 由配置决定，不需要人工挑 timer 实例。
+ExecStart=/usr/lib/setline/setline-apply auto
+TimeoutStartSec=120s

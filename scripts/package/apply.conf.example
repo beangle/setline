@@ -1,5 +1,10 @@
 # setline-apply 的默认值覆盖，复制到 /etc/setline/apply.conf 后生效。
 #
+# 代理由 `setline-apply auto` 从下面的配置里读 agent.type 决定（haproxy / nginx），
+# 不需要按代理启用不同的 timer。
+#SETLINE_BIN="/usr/bin/setline"
+# 可以有多个配置（同一台机器跑多个 setline agent 时），空格分隔：
+#SETLINE_CONFIGS="/etc/setline/setline.json"
 # haproxy 的 -f 列表必须与 haproxy.service 实际加载的完全一致，
 # 否则 setline-apply 校验的不是服务真正读的那份配置。
 #HAPROXY_CONFIGS="/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy"
