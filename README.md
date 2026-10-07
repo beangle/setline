@@ -78,9 +78,12 @@ Top-level fields:
 - `listen`: listen port or address, default `127.0.0.1:8080`; accepts `8080`,
   `"8080"`, `"*:8080"`, or `"127.0.0.1:8080"`.
 - `adminToken`: credential for the **read** side of the `__setline` API
-  (`GET /__setline/routes` and the status page/JSON). Empty means open, which is
-  fine while the listener is bound to loopback. Route **writes** never use this
-  token: they are accepted only from localhost.
+  (`GET /__setline/routes` and the status page/JSON) when the caller is **not**
+  localhost. Localhost callers need no credential, exactly like route writes,
+  which is why a co-located tool can inspect routes without storing anything.
+  Empty means open to everyone, which is fine while the listener is bound to
+  loopback. Route **writes** never use this token: they are accepted only from
+  localhost.
 - `connectTimeoutMillis`: backend TCP connect timeout, default `3000`.
 - `maxConnections`: active client connection limit, default `65535`.
 - `healthCheck`: TCP connect health check tuning; health checks are always
@@ -158,7 +161,8 @@ registry payloads.
 Runtime route updates are accepted only from localhost. They update the current
 in-memory routes and write the `routes` field back to the JSON config file.
 They do not use `adminToken`: writes are gated by the TCP peer address instead,
-because a route change redirects traffic.
+because a route change redirects traffic. Reads from localhost are gated the same
+way (no credential); only reads from other hosts need `adminToken`.
 
 Add or replace one route:
 
@@ -186,20 +190,22 @@ curl -X PUT 'http://127.0.0.1:8080/__setline/routes/all?host=local1.example.com'
   -d '{"routes":{"/api":9001,"/m/edu/learning":5173}}'
 ```
 
-List routes:
+List routes (localhost needs no credential):
 
 ```bash
-curl -H 'X-Setline-Token: change-me' http://127.0.0.1:8080/__setline/routes
+curl http://127.0.0.1:8080/__setline/routes
 ```
 
 ## Status
 
 Status endpoints use HTTP Basic authentication. The username is `setline`; the
-password is `adminToken`. If `adminToken` is empty, status access is open for
-local development.
+password is `adminToken`. From localhost the credential is not required (the same
+door as route writes); from other hosts it is, and an empty `adminToken` leaves
+status open for local development.
 
 ```bash
-curl -u setline:change-me http://127.0.0.1:8080/__setline/status.json
+curl http://127.0.0.1:8080/__setline/status.json
+curl -u setline:change-me http://setline.internal:8080/__setline/status.json
 ```
 
 Open the HTML view in a browser:
@@ -215,8 +221,13 @@ restricted to localhost: they are meant to be consumed later from other hosts on
 the same network, for example an agent that renders the route table into an
 haproxy or nginx config. `adminToken` is that path's credential.
 
+Localhost, on the other hand, is trusted the same way for reads and writes: a
+co-located tool (basctl) reads routes through the same local door it writes them
+through, so it never has to store a credential.
+
 - bound to loopback, an empty token is fine — nothing else can reach the API;
-- bound to `*`, set `adminToken`, otherwise the route table is world-readable.
+- bound to `*`, set `adminToken`, otherwise the route table is readable by any
+  non-localhost caller.
 
 ## Notes
 

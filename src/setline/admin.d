@@ -35,13 +35,14 @@ import setline.util : adminPrefix, escapeHtml;
 
 /** 处理 `__setline` 管理接口请求。
 
-    管理接口分两类，安全边界不同：
+    管理接口的方向不同，安全边界也不同：
 
     - **写**（`PUT` / `DELETE` 路由）：只接受 TCP 对端是本机的请求，**不需要 token**。改路由等于
       改流量走向，不对外开放，判断依据是 TCP 对端地址而不是可伪造的 `Forwarded` 头。
-    - **读**（`GET` 路由表、状态页）：用 `adminToken` 保护，**不限来源**。将来同网段的服务进程
-      （例如把路由同步成 haproxy / nginx 配置的 agent）要读这份路由表，token 就是那条路径的凭据；
-      token 为空时按开发模式放行，生产上 `listen` 绑 `*` 时必须设置。
+    - **读**（`GET` 路由表、状态页）：**本机来源免凭据**（与写接口同一条门，本机的读写不该有两种
+      待遇），非本机来源才看 `adminToken`。将来同网段的服务进程（例如把路由同步成 haproxy /
+      nginx 配置的 agent）要读这份路由表，token 就是那条路径的凭据；token 为空时按开发模式放行，
+      生产上 `listen` 绑 `*` 时必须设置，否则路由表对外可读。
 
     管理接口是当前少数需要完整读取 request body 的路径：GET 返回内存路由表快照，PUT 用
     JSON body 新增或替换一条路由。普通业务代理请求不会进入这里，因此不会因为管理接口的
@@ -50,7 +51,7 @@ import setline.util : adminPrefix, escapeHtml;
 void handleAdmin(TCPConnection client, string method, string target, string request) {
   auto path = requestPath(target);
   if ((path == adminPrefix ~ "/status" || path == adminPrefix ~ "/status.html") && method == "GET") {
-    if (!isBasicAuthorized(request)) {
+    if (!isStatusAllowed(isLocalhost(client), request)) {
       sendBasicChallenge(client);
       return;
     }
@@ -59,7 +60,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/status.json" && method == "GET") {
-    if (!isBasicAuthorized(request)) {
+    if (!isStatusAllowed(isLocalhost(client), request)) {
       sendBasicChallenge(client);
       return;
     }
@@ -68,7 +69,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "GET") {
-    if (!isAuthorized(request)) {
+    if (!isReadAllowed(isLocalhost(client), request)) {
       sendResponse(client, 401, "Unauthorized", "missing or invalid token");
       return;
     }
@@ -143,11 +144,28 @@ string routeHostFromTarget(string target) {
   return normalizeRouteHost(host);
 }
 
+/**
+ * 读接口（`GET /__setline/routes`）的准入：**本机来源免凭据**，非本机才看 token。
+ *
+ * 第一个参数是 `isLocalhost(client)` 的结果——做成纯函数是为了能在单测里覆盖"本机 / 非本机 ×
+ * 有 token / 无 token"四种组合：TCP 对端地址在单测里伪造不了。本机免凭据的理由与写接口同源：
+ * 拨得动 localhost 的本来就在这台机器上，读写不该有两种待遇（basctl 因此不需要存任何凭据）。
+ */
+bool isReadAllowed(bool fromLocalhost, string request) {
+  return fromLocalhost || isAuthorized(request);
+}
+
+/** 状态页 / 状态 JSON 的准入：与 {@link isReadAllowed} 同一条规则，凭据换成 Basic Auth。 */
+bool isStatusAllowed(bool fromLocalhost, string request) {
+  return fromLocalhost || isBasicAuthorized(request);
+}
+
 /** 校验管理接口 token。
 
-    只保护**读**接口（`GET` 路由表）：将来同网段的服务进程（例如同步 haproxy 的 agent）要读
-    路由表，token 就是这条路径的凭据。未配置 token 时放行，方便开发场景；生产上 `listen` 绑
-    `*` 时必须设置，否则路由表对外可读。写接口不走这里，它只认 TCP 对端是本机。
+    只保护**读**接口（`GET` 路由表）的**非本机**来源：本机来源由 {@link isReadAllowed} 直接放行，
+    连 token 都不看；将来同网段的服务进程（例如同步 haproxy 的 agent）要读路由表，token 就是
+    那条路径的凭据。未配置 token 时一律放行，方便开发场景；生产上 `listen` 绑 `*` 时必须设置，
+    否则路由表对外可读。写接口不走这里，它只认 TCP 对端是本机。
 */
 bool isAuthorized(string request) {
   auto token = adminToken();
@@ -192,8 +210,8 @@ string queryValue(string target, string name) {
 /** 校验 status 页面使用的 Basic Auth。
 
     status 页面面向浏览器访问，使用 Basic Auth 比自定义 token 头更方便。用户名固定为
-    `setline`，密码复用 `adminToken`；未配置 token 时按开发模式放行。与读接口同一套凭据，
-    因此同网段的服务进程也能取到状态 JSON。
+    `setline`，密码复用 `adminToken`；本机来源同样免凭据（见 {@link isStatusAllowed}），未配置
+    token 时按开发模式放行。与读接口同一套凭据，因此同网段的服务进程也能取到状态 JSON。
 */
 bool isBasicAuthorized(string request) {
   return isBasicAuthorized(request, adminToken());

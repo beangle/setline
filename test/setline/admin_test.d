@@ -100,6 +100,47 @@ import setline.util : escapeHtml;
   assert(isLocalhostAddress("127.0.0.1"));
 }
 
+@("admin gates reads by source first, token only for non-local callers") unittest {
+  auto request = "GET /__setline/routes HTTP/1.1\r\n\r\n";
+
+  // 本机来源：不管有没有 token、配置了什么 token，一律放行（读写同一条门）
+  assert(isReadAllowed(true, request));
+  assert(isReadAllowed(true, "GET /__setline/routes HTTP/1.1\r\nX-Setline-Token: wrong\r\n\r\n"));
+  assert(isStatusAllowed(true, request));
+
+  // 非本机来源：token 为空按开发模式放行
+  assert(isReadAllowed(false, request));
+  assert(isStatusAllowed(false, request));
+}
+
+@("admin requires the read token only for non-local callers when it is set") unittest {
+  withStateTestLock({
+    Config config;
+    config.adminToken = "secret";
+    initialize(config);
+    try {
+      auto request = "GET /__setline/routes HTTP/1.1\r\n\r\n";
+      // 非本机且没带凭据：拒绝；带对了才放行
+      assert(!isReadAllowed(false, request));
+      assert(isReadAllowed(false, "GET /__setline/routes HTTP/1.1\r\nX-Setline-Token: secret\r\n\r\n"));
+      assert(!isReadAllowed(false, "GET /__setline/routes HTTP/1.1\r\nX-Setline-Token: wrong\r\n\r\n"));
+
+      // 本机来源不受 token 影响：basctl 因此不需要在 server.xml 里存任何凭据
+      assert(isReadAllowed(true, request));
+
+      // 状态页同理：本机免 Basic Auth，非本机要 setline:secret
+      auto encoded = Base64.encode(cast(ubyte[]) "setline:secret").to!string;
+      assert(isStatusAllowed(true, "GET /__setline/status HTTP/1.1\r\n\r\n"));
+      assert(!isStatusAllowed(false, "GET /__setline/status HTTP/1.1\r\n\r\n"));
+      assert(isStatusAllowed(false,
+          "GET /__setline/status HTTP/1.1\r\nAuthorization: Basic " ~ encoded ~ "\r\n\r\n"));
+    } finally {
+      Config empty;
+      initialize(empty);
+    }
+  });
+}
+
 @("admin extracts query value") unittest {
   assert(queryValue("/__setline/routes?prefix=/api", "prefix") == "/api");
   assert(normalizeRoutePrefix(queryValue("/__setline/routes?prefix=/api/", "prefix")) == "/api");

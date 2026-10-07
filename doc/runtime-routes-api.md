@@ -11,10 +11,13 @@ All write APIs require:
 
 Write APIs do not require `X-Setline-Token` because they are accepted only from
 localhost — a route change redirects traffic, so this side is never exposed.
-Read APIs are the opposite trade: they keep the `adminToken` credential and are
-not restricted to localhost, because the route table is meant to be read from
-other hosts on the same network later (for example an agent that renders it into
-a haproxy or nginx config).
+
+Read APIs follow the same door: a **localhost caller needs no credential**, so a
+co-located tool (basctl) can inspect the route table without storing anything.
+For callers from other hosts the read stays open by design — the route table is
+meant to be read from other machines on the same network (for example an agent
+that renders it into a haproxy or nginx config) — and that path is guarded by
+`adminToken`.
 
 Do not use `Forwarded` or `X-Forwarded-For` to satisfy the localhost
 requirement. The server checks the TCP peer address.
@@ -23,26 +26,33 @@ requirement. The server checks the TCP peer address.
 
 | Operation | Allowed source | Credential |
 |---|---|---|
-| `GET /__setline/routes` | any | `X-Setline-Token` (empty token = open) |
-| status page / `status.json` | any | HTTP Basic, user `setline`, password `adminToken` |
+| `GET /__setline/routes` | localhost | none |
+| `GET /__setline/routes` | other hosts | `X-Setline-Token` (empty token = open) |
+| status page / `status.json` | localhost | none |
+| status page / `status.json` | other hosts | HTTP Basic, user `setline`, password `adminToken` (empty = open) |
 | `PUT` / `DELETE` routes | localhost only | none |
 
 An empty `adminToken` is a development convenience: bind `listen` to loopback
 and nothing else can reach the API. If `listen` binds `*`, set `adminToken` or
-the route table becomes world-readable.
+the route table becomes world-readable to any caller that is not localhost.
 
 ## List Routes
 
 ```http
 GET /__setline/routes
-X-Setline-Token: change-me
 ```
 
-Example:
+Example (from localhost no credential is needed):
+
+```bash
+curl http://127.0.0.1:8080/__setline/routes
+```
+
+From another host, present the token:
 
 ```bash
 curl -H 'X-Setline-Token: change-me' \
-  http://127.0.0.1:8080/__setline/routes
+  http://setline.internal:8080/__setline/routes
 ```
 
 Response:
