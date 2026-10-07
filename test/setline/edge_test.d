@@ -61,6 +61,7 @@ import setline.model;
 
   auto rendered = renderHaproxy(services);
   assert(rendered.canFind("frontend http_in"));
+  assert(rendered.canFind("  mode http\n"));
   assert(rendered.canFind("acl path_edu_learning path_beg /m/edu/learning"));
   assert(rendered.canFind("backend be_edu_learning"));
   assert(rendered.canFind("option httpchk GET /health"));

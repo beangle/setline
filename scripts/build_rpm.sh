@@ -65,15 +65,23 @@ rm -rf "$DESTDIR/$PKGDIR"
 mkdir -p "$DESTDIR/$PKGDIR"
 pushd "$DESTDIR/$PKGDIR" >/dev/null
 
-mkdir -p usr/bin usr/share/setline usr/lib/systemd/system
+mkdir -p usr/bin usr/share/setline usr/share/doc/setline usr/lib/setline usr/lib/systemd/system
 cp -f "$SETLINE_HOME/target/setline" usr/bin/setline
 strip --strip-unneeded usr/bin/setline
 cp -f "$SETLINE_HOME/scripts/package/setline.json" usr/share/setline/setline.json.default
+cp -f "$SETLINE_HOME/scripts/package/apply.conf.example" usr/share/setline/apply.conf.example
+cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/share/setline/haproxy-setline-cfgdir.conf.example
+# 用户文档整目录安装：配置参考、reload 设计、部署与 API 说明都在 docs 里，
+# 只装其中一篇会让包内的 Documentation= 指向一份孤零零的文档。
+cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
+cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
+cp -f "$SETLINE_HOME/scripts/package/setline-apply@.service" usr/lib/systemd/system/setline-apply@.service
+cp -f "$SETLINE_HOME/scripts/package/setline-apply@.timer" usr/lib/systemd/system/setline-apply@.timer
 
 chmod -R 0755 .
-chmod 0644 usr/share/setline/setline.json.default usr/lib/systemd/system/setline.service
-chmod 0755 usr/bin/setline
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/apply.conf.example usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-apply@.service usr/lib/systemd/system/setline-apply@.timer
+chmod 0755 usr/bin/setline usr/lib/setline/setline-apply
 
 cd ..
 DATE=$(LC_ALL=C date '+%a %b %d %Y')
@@ -105,7 +113,7 @@ if ! getent passwd setline >/dev/null 2>&1; then
 else
   usermod -g beangle setline 2>/dev/null || :
 fi
-mkdir -p /var/lib/setline /var/log/setline
+mkdir -p /var/lib/setline /var/log/setline /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
 
 %post
 mkdir -p /etc/setline
@@ -118,11 +126,17 @@ chown setline:beangle /etc/setline
 chmod 2775 /etc/setline
 chown -R setline:beangle /var/lib/setline /var/log/setline
 chmod 2775 /var/lib/setline /var/log/setline
+chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
 systemctl daemon-reload 2>/dev/null || :
 
 %preun
 if [ "\$1" = 0 ]; then
   systemctl stop setline 2>/dev/null || :
+  systemctl disable setline 2>/dev/null || :
+  for unit in /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
+    [ -e "\$unit" ] || continue
+    systemctl disable --now "\$(basename "\$unit" .timer)" 2>/dev/null || :
+  done
 fi
 
 %postun
@@ -133,7 +147,13 @@ systemctl daemon-reload 2>/dev/null || :
 %files
 %attr(0755,root,root) /usr/bin/setline
 %attr(0644,root,root) /usr/share/setline/setline.json.default
+%attr(0644,root,root) /usr/share/setline/apply.conf.example
+%attr(0644,root,root) /usr/share/setline/haproxy-setline-cfgdir.conf.example
+%attr(0644,root,root) /usr/share/doc/setline/*.md
+%attr(0755,root,root) /usr/lib/setline/setline-apply
 %attr(0644,root,root) /usr/lib/systemd/system/setline.service
+%attr(0644,root,root) /usr/lib/systemd/system/setline-apply@.service
+%attr(0644,root,root) /usr/lib/systemd/system/setline-apply@.timer
 
 %changelog
 $(printf '%b' "$changes")

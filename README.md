@@ -41,6 +41,9 @@ dub run -- -c -f config.example.json
 
 ## Config
 
+The fields below are the short version; `docs/configuration.md` has the full
+reference with examples, including how `adminToken` does and does not apply.
+
 ```json
 {
   "listen": 8080,
@@ -89,9 +92,14 @@ Top-level fields:
 - `healthCheck`: TCP connect health check tuning; health checks are always
   enabled and run on a fixed background interval.
 - `agent.type`: optional render target; accepts `haproxy` or `nginx`. When set,
-  `setline -f` runs in agent render mode instead of starting the local proxy.
-- `agent.remote`: optional manifest URL or local file path used by proxy config
-  rendering.
+  `setline -f` runs in agent mode instead of starting the local proxy.
+- `agent.peers`: remote setline instances whose route tables are merged into the
+  rendered fragment; see Agent Mode below.
+- `agent.output`: fragment path; empty prints the fragment to stdout.
+- `agent.bind`: fragment listener; HAProxy `bind`, Nginx listen port.
+- `agent.sync`: `once` or `interval` plus `intervalMillis`.
+- `agent.remote`: optional registry manifest URL or local file path, as an
+  alternative to `agent.peers`.
 - `agent.workDir`: local directory for downloaded bundles and extracted
   releases, default `/tmp/setline-agent`.
 - `routes`: object mapping host names to URL path prefixes, then to a local
@@ -103,11 +111,85 @@ and lowercasing it. Within that host, routes are indexed by path segment with
 longest-prefix priority, so `/api/edu` wins over `/api`. If the request host has
 no matching route for the requested path, setline tries `*`.
 
-## Remote Proxy Rendering
+## Agent Mode
 
-`setline` can render HAProxy or Nginx config from a remote manifest and bundle.
-This is an agent-style helper for edge proxy machines; it does not change the
-normal transparent proxy behavior.
+An edge proxy machine can run `setline` as an agent: it reads the route table of
+one or more remote `setline` instances, merges them, and renders a HAProxy or
+Nginx config fragment. It never rewrites the proxy's own config file, so the
+custom content in that file stays intact.
+
+```json
+"agent": {
+  "type": "nginx",
+  "output": "/var/lib/setline/nginx/setline.conf",
+  "bind": "*:80",
+  "token": "change-me",
+  "sync": { "mode": "once", "intervalMillis": 30000 },
+  "peers": [
+    { "name": "app1", "url": "http://10.0.1.10:8080" },
+    { "name": "app2", "url": "http://10.0.1.11:8080", "token": "app2-token" }
+  ]
+}
+```
+
+- `agent.type`: render target, `haproxy` or `nginx`.
+- `agent.output`: fragment path; leave it empty to print to stdout instead.
+- `agent.bind`: listener for the fragment; HAProxy uses it as `bind`, Nginx uses
+  its port.
+- `agent.token`: default `X-Setline-Token` for peers.
+- `agent.peers[]`: remote setline instances. `url` is the peer's base address
+  (setline appends `/__setline/routes`); `name` only shapes readable service
+  names; `token` overrides `agent.token` for that peer. The peer's host in `url`
+  is also the address the edge proxy connects back to, so a peer `url` must
+  carry a host (`file://` and bare paths cannot be peers).
+- `agent.sync.mode`: `once` renders one round and exits (drive it from cron or a
+  systemd timer); `interval` keeps running and repeats every `intervalMillis`
+  (this needs `agent.output`; without it the agent prints once and exits).
+
+Each peer is read through `GET /__setline/routes`, and its local ports are
+rewritten to `<url host>:<port>`. Routes with the same host and path prefix are
+merged into one backend group, so several machines serving `/api/edu` become
+multiple servers of the same upstream. Longest prefixes are emitted first.
+Peer tokens are handed to `curl` as a request header, so keep the agent host
+trusted.
+
+### Wiring the fragment
+
+The generated file is a fragment, not a full config. HAProxy and Nginx wire it
+differently, because HAProxy has no `include` directive:
+
+- Nginx: include the fragment inside the `http {}` block and leave the rest of
+  the main config alone.
+
+  ```nginx
+  http {
+    include /var/lib/setline/nginx/*.conf;
+  }
+  ```
+
+- HAProxy: no `include` exists, so the fragment is loaded as an extra `-f`
+  directory. `-f <dir>` loads only files ending in `.cfg`, and a directory
+  cannot be added by extending `CFGDIR` — the unit's `ExecStart` has to be
+  overridden. The fragment holds only `frontend` / `backend` sections; the
+  master config keeps `global` and `defaults`.
+
+`agent.output` is written atomically and only when its content changed.
+
+Reloading is a separate, privileged step: an unprivileged `setline` cannot
+write `/etc/nginx`, cannot pass `nginx -t`, and cannot signal a root-owned
+master. The package ships `setline-apply`, a root oneshot that validates,
+reloads via `systemctl reload`, and rolls the whole fragment directory back on
+failure. It is driven by a timer, is idempotent by content hash, and defers
+until the fragment has been stable for a quiet window. See
+`docs/agent-reload.md` for why `-sf`, `-x`, and `SIGHUP` are the wrong tools
+here, and why a timer is used instead of a `systemd.path` unit.
+
+## Agent Bundle Mode (registry manifest)
+
+Instead of reading live `setline` peers, `agent.remote` can point at a manifest
+owned by a registry system, and the referenced bundle describes the backends.
+Use this when the service topology is packaged and versioned centrally rather
+than discovered from running instances.
 
 ```bash
 setline -f setline.json > haproxy.cfg
@@ -236,7 +318,9 @@ backend selection, and transparent proxying.
 
 See also:
 
-- `doc/transparent-proxy-design.md`
-- `doc/project-constraints.md`
-- `doc/deployment.md`
-- `doc/runtime-routes-api.md`
+- `docs/transparent-proxy-design.md`
+- `docs/project-constraints.md`
+- `docs/deployment.md`
+- `docs/runtime-routes-api.md`
+- `docs/configuration.md`
+- `docs/agent-reload.md`

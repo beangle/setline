@@ -1,0 +1,14 @@
+# 让 haproxy 的 systemd 单元额外加载 setline 的片段目录。
+# 用法：复制到 /etc/systemd/system/haproxy.service.d/setline.conf
+#      然后 systemctl daemon-reload && systemctl restart haproxy
+#
+# 为什么整段重写 ExecStart/ExecReload：发行版单元的 `-f $CFGDIR` 只能带一个目录，
+# 无法靠 Environment=CFGDIR="a b" 追加第二个 -f —— systemd 的词拆分只会产出
+# `-f a b`，而 haproxy 会把 b 当成多余参数直接报错（实测 exit 1）。
+# 换了发行版后请重新核对本文件与 haproxy.service 的一致性。
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/haproxy -Ws -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d -f /var/lib/setline/haproxy -p /run/haproxy.pid $OPTIONS
+ExecReload=
+ExecReload=/usr/sbin/haproxy -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d -f /var/lib/setline/haproxy -c -q $OPTIONS
+ExecReload=/bin/kill -USR2 $MAINPID

@@ -1,0 +1,171 @@
+#!/bin/bash
+# setline-apply: 校验并热加载 setline 生成的边缘代理配置片段。
+#
+# 设计取舍见 docs/agent-reload.md，要点：
+#   - 只做「片段已在磁盘上之后」的事，不参与生成；
+#   - 幂等：内容哈希没变就直接退出，重复触发是免费的；
+#   - 防抖用 mtime 静默窗口，不在脚本里 sleep 占住 oneshot；
+#   - 校验/重载一律走 systemctl reload，不自己碰进程和信号；
+#   - 失败整体还原 last-known-good 目录，不留半新半旧状态。
+set -euo pipefail
+
+PROXY="${1:-}"
+case "$PROXY" in
+  haproxy|nginx) ;;
+  *) echo "usage: setline-apply <haproxy|nginx>" >&2; exit 2 ;;
+esac
+
+# 默认值可被环境变量或 /etc/setline/apply.conf 覆盖（文件优先级最高）。
+HAPROXY_CONFIGS="${HAPROXY_CONFIGS:-/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy}"
+HAPROXY_FRAGMENT_DIR="${HAPROXY_FRAGMENT_DIR:-/var/lib/setline/haproxy}"
+HAPROXY_SERVICE="${HAPROXY_SERVICE:-haproxy}"
+NGINX_CONFIG="${NGINX_CONFIG:-/etc/nginx/nginx.conf}"
+NGINX_FRAGMENT_DIR="${NGINX_FRAGMENT_DIR:-/var/lib/setline/nginx}"
+NGINX_SERVICE="${NGINX_SERVICE:-nginx}"
+SETLINE_APPLY_QUIET_SECONDS="${SETLINE_APPLY_QUIET_SECONDS:-15}"
+SETLINE_APPLY_STATE_DIR="${SETLINE_APPLY_STATE_DIR:-/var/lib/setline/apply}"
+SETLINE_APPLY_RUNTIME_DIR="${SETLINE_APPLY_RUNTIME_DIR:-/run}"
+
+if [ -r /etc/setline/apply.conf ]; then
+  # shellcheck disable=SC1091
+  . /etc/setline/apply.conf
+fi
+
+if [ "$PROXY" = "haproxy" ]; then
+  FRAG_DIR="$HAPROXY_FRAGMENT_DIR"
+  SERVICE="$HAPROXY_SERVICE"
+else
+  FRAG_DIR="$NGINX_FRAGMENT_DIR"
+  SERVICE="$NGINX_SERVICE"
+fi
+STATE_DIR="$SETLINE_APPLY_STATE_DIR/$PROXY"
+LASTGOOD="$STATE_DIR/lastgood"
+HASHFILE="$STATE_DIR/applied.sha256"
+LOCKFILE="$SETLINE_APPLY_RUNTIME_DIR/setline-apply-$PROXY.lock"
+
+log() { echo "setline-apply[$PROXY]: $*"; }
+die() { echo "setline-apply[$PROXY]: $*" >&2; exit 1; }
+# 配置接线错误与「片段本身不合法」要能区分开，方便运维判断该改哪边。
+die_wiring() { echo "setline-apply[$PROXY]: $*" >&2; exit 3; }
+
+# FRAG_DIR 会被整体替换，先挡住危险的取值。
+case "$FRAG_DIR" in
+  /*) ;;
+  *) die "fragment dir must be an absolute path: $FRAG_DIR" ;;
+esac
+[ "$FRAG_DIR" != "/" ] || die "refusing to operate on /"
+
+dir_hash() {
+  ( cd "$1" && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1 )
+}
+
+validate() {
+  if [ "$PROXY" = "haproxy" ]; then
+    local args=() f
+    for f in $HAPROXY_CONFIGS; do args+=(-f "$f"); done
+    haproxy "${args[@]}" -c -q
+  else
+    nginx -t -c "$NGINX_CONFIG"
+  fi
+}
+
+# 片段目录必须是服务实际加载的配置的一部分，否则 reload 是静默空转。
+check_wiring() {
+  if [ "$PROXY" = "haproxy" ]; then
+    command -v systemctl >/dev/null 2>&1 || { log "WARNING: systemctl missing, cannot verify wiring"; return 0; }
+    if systemctl show "$SERVICE" -p ExecStart -p Environment 2>/dev/null | grep -qF "$FRAG_DIR"; then
+      return 0
+    fi
+    die_wiring "wiring error: $SERVICE does not load $FRAG_DIR (add -f, or point CFGDIR at it); see docs/agent-reload.md"
+  fi
+  command -v nginx >/dev/null 2>&1 || return 0
+  local dump
+  # nginx -T 也会解析片段；校验通过后它仍可能因其它原因失败，那种情况只告警不拦截。
+  if ! dump=$(nginx -T -c "$NGINX_CONFIG" 2>/dev/null); then
+    log "WARNING: cannot dump nginx config, skipping wiring check"
+    return 0
+  fi
+  printf '%s\n' "$dump" | grep -qF "$FRAG_DIR" && return 0
+  die_wiring "wiring error: $NGINX_CONFIG does not include $FRAG_DIR (add an include line); see docs/agent-reload.md"
+}
+
+reload() {
+  systemctl reload "$SERVICE"
+}
+
+snapshot_lastgood() {
+  rm -rf "$LASTGOOD"
+  mkdir -p "$LASTGOOD"
+  cp -a "$FRAG_DIR"/. "$LASTGOOD"/ 2>/dev/null || true
+}
+
+# 只有在存在上一份 good 快照时才可回滚，避免把目录清空。
+restore_lastgood() {
+  [ -d "$LASTGOOD" ] || return 1
+  rm -rf "$FRAG_DIR"
+  mkdir -p "$(dirname "$FRAG_DIR")"
+  cp -a "$LASTGOOD" "$FRAG_DIR"
+}
+
+mkdir -p "$STATE_DIR" "$FRAG_DIR" "$SETLINE_APPLY_RUNTIME_DIR"
+
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+  log "another run is in progress, skipping"
+  exit 0
+fi
+
+if [ -z "$(find "$FRAG_DIR" -type f -print -quit)" ]; then
+  log "no fragment in $FRAG_DIR, nothing to apply"
+  exit 0
+fi
+
+# 静默窗口：等到片段不再变化再动手，避免滚动发布期间按中间态反复 reload。
+newest=$(find "$FRAG_DIR" -type f -printf '%T@\n' | sort -n | tail -1)
+age=$(( $(date +%s) - ${newest%.*} ))
+if [ "$age" -lt "$SETLINE_APPLY_QUIET_SECONDS" ]; then
+  log "fragment changed ${age}s ago (< ${SETLINE_APPLY_QUIET_SECONDS}s), deferring"
+  exit 0
+fi
+
+current_hash=$(dir_hash "$FRAG_DIR")
+if [ -f "$HASHFILE" ] && [ "$(cat "$HASHFILE")" = "$current_hash" ]; then
+  log "fragment unchanged, nothing to do"
+  exit 0
+fi
+
+if ! validate; then
+  log "validation FAILED for the new fragment"
+  if restore_lastgood; then
+    log "restored last known good config"
+  else
+    log "no last known good snapshot, leaving $FRAG_DIR in place"
+  fi
+  exit 1
+fi
+
+# 先校验后查接线：片段本身不合法时 nginx -T 也会失败，若先查接线会被误判成
+# 接线错误，从而跳过回滚，把坏片段留在磁盘上。
+check_wiring
+
+if ! systemctl is-active --quiet "$SERVICE"; then
+  log "$SERVICE is not active; keeping validated fragment, skipping reload"
+  snapshot_lastgood
+  echo "$current_hash" >"$HASHFILE"
+  exit 0
+fi
+
+if reload; then
+  snapshot_lastgood
+  echo "$current_hash" >"$HASHFILE"
+  log "reloaded $SERVICE"
+  exit 0
+fi
+
+log "reload FAILED, rolling back"
+if restore_lastgood; then
+  reload || log "rollback reload also failed"
+  exit 1
+fi
+log "no last known good snapshot, cannot roll back"
+exit 1

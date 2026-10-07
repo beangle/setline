@@ -59,11 +59,51 @@ struct HealthConfig {
   int healthyThreshold = 1;
 }
 
-/** 边缘代理渲染配置。 */
+/** 一台被聚合的远端 setline 实例。
+
+    agent 读取它的 `GET /__setline/routes` 路由表，把 `url` 里的主机和每条路由自带的
+    本机端口拼成 `<主机>:<port>`，再和其他实例的同前缀路由合并成一份边缘代理配置。
+
+    - `url` 同时决定读端和数据面：`http://10.0.1.10:8080` 表示去 `10.0.1.10:8080` 读
+      路由表，边缘代理回源的目标主机也是 `10.0.1.10`（URL 端口只是管理入口，业务端口
+      由每条路由自带）。因此 `url` 必须带主机，`file://` 这类没有主机的来源不能当 peer。
+    - `name` 只用于生成可读的服务名；留空时从 `url` 的主机推导。
+    - `token` 是该实例的 `X-Setline-Token`；留空时回退到 agent 级 `token`。
+*/
+struct PeerConfig {
+  string name;
+  string url;
+  string token;
+}
+
+/** agent 的同步机制。
+
+    `once` 只跑一轮就退出，适合交给 cron / systemd timer 周期调用；`interval` 按
+    `intervalMillis` 常驻重复，避免依赖外部调度器。
+*/
+struct SyncConfig {
+  string mode = "once";
+  int intervalMillis = 30000;
+}
+
+/** 边缘代理渲染配置。
+
+    `peers` 非空时走「聚合远端 setline 路由表」这条路；`url` 则保留给更早的
+    registry bundle 模式，两者取其一即可。
+*/
 struct AgentConfig {
   string type;
   string url;
   string workDir = "/tmp/setline-agent";
+  /** 生成片段的落盘路径；为空时写到标准输出。 */
+  string output;
+  /** 边缘代理监听串：haproxy 用作 `bind`，nginx 取其端口。 */
+  string bind = "*:80";
+  /** 被聚合的远端 setline 实例。 */
+  PeerConfig[] peers;
+  SyncConfig sync;
+  /** peers 未单独设置 token 时的默认 `X-Setline-Token`。 */
+  string token;
 }
 
 /** 完整运行配置。

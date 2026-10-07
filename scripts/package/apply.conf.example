@@ -1,0 +1,10 @@
+# setline-apply 的默认值覆盖，复制到 /etc/setline/apply.conf 后生效。
+#
+# haproxy 的 -f 列表必须与 haproxy.service 实际加载的完全一致，
+# 否则 setline-apply 校验的不是服务真正读的那份配置。
+#HAPROXY_CONFIGS="/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy"
+#HAPROXY_FRAGMENT_DIR="/var/lib/setline/haproxy"
+#NGINX_CONFIG="/etc/nginx/nginx.conf"
+#NGINX_FRAGMENT_DIR="/var/lib/setline/nginx"
+# 片段最后一次修改后静默多少秒才允许应用，用于滚动发布期间防抖。
+#SETLINE_APPLY_QUIET_SECONDS=15

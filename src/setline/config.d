@@ -25,6 +25,7 @@ import std.stdio : stderr;
 import std.string : indexOf, stripRight;
 
 import setline.model;
+import setline.peer : peerAddress;
 import setline.router : sortRoutes, validateRoute;
 import setline.util : toLowerAscii;
 
@@ -284,16 +285,91 @@ AgentConfig parseAgentConfig(JSONValue value) {
     enforce(obj["type"].type == JSONType.string, "agent.type must be string");
     config.type = normalizeAgentType(obj["type"].str);
   }
-  enforce("remote" in obj, "agent.remote is required");
-  enforce(obj["remote"].type == JSONType.string, "agent.remote must be string");
-  config.url = obj["remote"].str;
-  enforce(config.url.length > 0, "agent.remote must not be empty");
+  if ("remote" in obj) {
+    enforce(obj["remote"].type == JSONType.string, "agent.remote must be string");
+    config.url = obj["remote"].str;
+    enforce(config.url.length > 0, "agent.remote must not be empty");
+  }
   if ("workDir" in obj) {
     enforce(obj["workDir"].type == JSONType.string, "agent.workDir must be string");
     config.workDir = obj["workDir"].str;
     enforce(config.workDir.length > 0, "agent.workDir must not be empty");
   }
+  if ("output" in obj) {
+    enforce(obj["output"].type == JSONType.string, "agent.output must be string");
+    config.output = obj["output"].str;
+    enforce(config.output.length > 0, "agent.output must not be empty");
+  }
+  if ("bind" in obj) {
+    enforce(obj["bind"].type == JSONType.string, "agent.bind must be string");
+    config.bind = obj["bind"].str;
+    enforce(config.bind.length > 0, "agent.bind must not be empty");
+  }
+  if ("token" in obj) {
+    enforce(obj["token"].type == JSONType.string, "agent.token must be string");
+    config.token = obj["token"].str;
+  }
+  if ("peers" in obj) {
+    config.peers = parsePeerConfigs(obj["peers"]);
+  }
+  if ("sync" in obj) {
+    config.sync = parseSyncConfig(obj["sync"]);
+  }
+  enforce(config.url.length > 0 || config.peers.length > 0,
+    "agent.remote or agent.peers is required");
+  enforce(config.peers.length == 0 || config.type.length > 0,
+    "agent.type is required when agent.peers is set");
   return config;
+}
+
+/** 解析被聚合的远端 setline 实例列表。 */
+PeerConfig[] parsePeerConfigs(JSONValue value) {
+  enforce(value.type == JSONType.array, "agent.peers must be array");
+  enforce(value.array.length > 0, "agent.peers must not be empty");
+  PeerConfig[] peers;
+  foreach (item; value.array) {
+    enforce(item.type == JSONType.object, "agent.peers item must be object");
+    PeerConfig peer;
+    peer.url = optionalPeerString(item, "url");
+    enforce(peer.url.length > 0, "agent.peers[].url is required");
+    peer.name = optionalPeerString(item, "name");
+    peer.token = optionalPeerString(item, "token");
+    // 回源主机完全由 url 推导；推导不出来（例如 file:// 没有主机）要在这里就报错，
+    // 而不是等 agent 跑起来才失败，那时 `setline -c` 已经宣布配置合法了。
+    peerAddress(peer);
+    // peers 只认 url/name/token 三个字段：写错字段名要立刻报错，不能默默忽略。
+    foreach (key, _; item.object) {
+      enforce(key == "url" || key == "name" || key == "token",
+        "agent.peers[] has unknown field: " ~ key);
+    }
+    peers ~= peer;
+  }
+  return peers;
+}
+
+/** 读取 peer 对象的可选字符串字段。 */
+string optionalPeerString(JSONValue item, string key) {
+  if (!(key in item.object)) return "";
+  enforce(item[key].type == JSONType.string, "agent.peers[]." ~ key ~ " must be string");
+  return item[key].str;
+}
+
+/** 解析 agent 同步机制。 */
+SyncConfig parseSyncConfig(JSONValue value) {
+  enforce(value.type == JSONType.object, "agent.sync must be object");
+  auto obj = value.object;
+  SyncConfig sync;
+  if ("mode" in obj) {
+    enforce(obj["mode"].type == JSONType.string, "agent.sync.mode must be string");
+    sync.mode = obj["mode"].str;
+  }
+  enforce(sync.mode == "once" || sync.mode == "interval",
+    "agent.sync.mode must be once or interval");
+  if ("intervalMillis" in obj) {
+    sync.intervalMillis = cast(int) obj["intervalMillis"].integer;
+  }
+  enforce(sync.intervalMillis > 0, "agent.sync.intervalMillis must be positive");
+  return sync;
 }
 
 /** 解析字符串端口并校验范围。 */
@@ -303,7 +379,6 @@ ushort parsePort(string value, string name) {
 
 /** 规范化 agent 类型。 */
 string normalizeAgentType(string value) {
-  if (value == "nginux") return "nginx";
   enforce(value == "haproxy" || value == "nginx", "agent.type must be haproxy or nginx");
   return value;
 }

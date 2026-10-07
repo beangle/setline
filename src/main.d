@@ -16,11 +16,14 @@
 
 module main;
 
+import core.thread : Thread;
+import core.time : msecs;
 import std.getopt : defaultGetoptPrinter, getopt;
 import std.stdio : stderr, stdout;
 
 import setline.config;
-import setline.edge;
+import setline.model : AgentConfig;
+import setline.peer : renderAgentConfig, writeSnippet;
 import setline.server;
 import setline.state;
 import setline.util : defaultConfigPath;
@@ -54,11 +57,7 @@ int main(string[] args) {
 
     auto config = loadConfig(configPath);
     if (config.agent.type.length > 0) {
-      if (config.agent.url.length == 0) {
-        throw new Exception("agent.remote is required");
-      }
-      stdout.write(renderProxyConfig(parseBackends(loadBackendsJson(config.agent)), config.agent.type));
-      return 0;
+      return runAgent(config.agent);
     }
 
     initialize(config, configPath);
@@ -70,4 +69,31 @@ int main(string[] args) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
     return 1;
   }
+}
+
+/** 运行 agent 模式：渲染片段并按 `agent.sync` 决定跑一轮还是常驻重复。 */
+int runAgent(AgentConfig agent) {
+  if (agent.sync.mode == "interval" && agent.output.length > 0) {
+    while (true) {
+      try {
+        syncAgentOnce(agent);
+      } catch (Exception e) {
+        stderr.writefln("setline agent sync failed: %s", e.msg);
+      }
+      Thread.sleep(agent.sync.intervalMillis.msecs);
+    }
+  }
+  syncAgentOnce(agent);
+  return 0;
+}
+
+/** 执行一轮 agent 同步：渲染片段并写入 output，未配置 output 时写到标准输出。 */
+void syncAgentOnce(AgentConfig agent) {
+  auto text = renderAgentConfig(agent);
+  if (agent.output.length == 0) {
+    stdout.write(text);
+    return;
+  }
+  auto changed = writeSnippet(agent.output, text);
+  stdout.writefln("setline agent wrote %s (%s)", agent.output, changed ? "updated" : "unchanged");
 }

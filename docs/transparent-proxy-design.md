@@ -247,3 +247,8 @@ downloads the referenced versioned bundle, verifies its checksum, reads
 an edge proxy machine. Certificates and keys are shipped in the same bundle so
 the rendered proxy config and TLS files share one version boundary. This mode
 does not change the normal local transparent proxy route model.
+
+The same helper can instead read live peers: `agent.peers` lists remote setline
+instances, and `setline -f` aggregates their `GET /__setline/routes` tables into
+one HAProxy or Nginx fragment. This is a rendered fragment, not a full config,
+so the edge proxy keeps owning its own `global`/`defaults`/`http` content.

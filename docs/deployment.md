@@ -100,6 +100,18 @@ Reads take a different path. `GET /__setline/routes` and the status page require
 (for example a haproxy/nginx config synchronization agent) are expected to read
 the route table. Set `adminToken` whenever `listen` binds `*`.
 
+That read path is what `agent.peers` uses: an edge proxy machine reads each
+peer's route table with `X-Setline-Token`, rewrites the peer's local ports to
+`<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
+a HAProxy/Nginx fragment to `agent.output`. The fragment is included by the
+proxy's own config (Nginx) or loaded as an extra `-f` directory (HAProxy), so
+the proxy's custom content is preserved.
+
+Reloading is separate and privileged. `setline` runs as the unprivileged
+`setline` user and only writes the fragment; `setline-apply` (root, oneshot,
+timer-driven) validates it, runs `systemctl reload`, and rolls the fragment
+directory back if either step fails. See `docs/agent-reload.md`.
+
 When routes change, setline rebuilds the next host route trees, writes the new
 `routes` field to disk, and then swaps it into runtime state. Port health
 information is preserved for ports that remain referenced by the new route set.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodically apply setline-generated %i config
+Documentation=file:///usr/share/doc/setline/agent-reload.md
+
+[Timer]
+# 为什么用 timer 而不是 path 单元：path 会被单次写入引发的一串 inotify 事件
+# 重复触发，还要额外调 TriggerLimit*；幂等动作 + 定时轮询没有触发风暴，
+# 代价只是最多一个周期的延迟。详见 docs/agent-reload.md。
+OnBootSec=30s
+OnUnitInactiveSec=20s
+AccuracySec=1s
+Unit=setline-apply@%i.service
+
+[Install]
+WantedBy=timers.target

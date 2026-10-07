@@ -9,9 +9,25 @@
     "healthyThreshold": 1
   },
   "agent": {
-    "type": "haproxy",
-    "remote": "file:///tmp/setline-agent/latest.json",
-    "workDir": "/tmp/setline-agent"
+    "type": "nginx",
+    "output": "/var/lib/setline/nginx/setline.conf",
+    "bind": "*:80",
+    "token": "change-me",
+    "sync": {
+      "mode": "once",
+      "intervalMillis": 30000
+    },
+    "peers": [
+      {
+        "name": "app1",
+        "url": "http://10.0.1.10:8080"
+      },
+      {
+        "name": "app2",
+        "url": "http://10.0.1.11:8080",
+        "token": "app2-token"
+      }
+    ]
   },
   "routes": {
     "*": {

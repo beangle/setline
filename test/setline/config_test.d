@@ -102,7 +102,7 @@ import setline.model;
 @("config parses agent settings") unittest {
   auto path = "/tmp/setline-config-agent-test.json";
   write(path,
-    `{"agent":{"type":"nginux","remote":"https://registry.example.com/latest.json","workDir":"/var/lib/setline-agent"},` ~
+    `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json","workDir":"/var/lib/setline-agent"},` ~
     `"routes":{}}`);
   scope (exit) remove(path);
 
@@ -167,4 +167,70 @@ import setline.model;
   assert(normalizeRequestHost("LOCAL1.EXAMPLE.COM:8080") == "local1.example.com");
   assert(normalizeRequestHost("") == "*");
   assertThrown!Exception(normalizeRouteHost("local1.example.com:8080"));
+}
+
+@("config parses agent peers and sync") unittest {
+  auto path = "/tmp/setline-config-agent-peers-test.json";
+  write(path,
+    `{"agent":{"type":"haproxy","output":"/etc/haproxy/setline.cfg","bind":"*:8080",` ~
+    `"token":"shared","sync":{"mode":"interval","intervalMillis":15000},` ~
+    `"peers":[{"name":"app1","url":"http://10.0.1.10:8080"},` ~
+    `{"url":"http://10.0.1.11:8080","token":"peer2"}]},"routes":{}}`);
+  scope (exit) remove(path);
+
+  auto config = loadConfig(path);
+  assert(config.agent.type == "haproxy");
+  assert(config.agent.output == "/etc/haproxy/setline.cfg");
+  assert(config.agent.bind == "*:8080");
+  assert(config.agent.token == "shared");
+  assert(config.agent.sync.mode == "interval");
+  assert(config.agent.sync.intervalMillis == 15000);
+  assert(config.agent.peers.length == 2);
+  assert(config.agent.peers[0].name == "app1");
+  assert(config.agent.peers[0].url == "http://10.0.1.10:8080");
+  assert(config.agent.peers[1].token == "peer2");
+}
+
+@("config rejects bad agent sync mode") unittest {
+  auto path = "/tmp/setline-config-agent-badsync-test.json";
+  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080"}],` ~
+    `"sync":{"mode":"sometimes"}},"routes":{}}`);
+  scope (exit) remove(path);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config rejects peer url without derivable address") unittest {
+  auto path = "/tmp/setline-config-agent-noaddress-test.json";
+  write(path, `{"agent":{"type":"nginx","peers":[{"url":"file:///tmp/peer"}]},"routes":{}}`);
+  scope (exit) remove(path);
+  assertThrown!Exception(loadConfig(path));
+
+  write(path, `{"agent":{"type":"nginx","peers":[{"url":"/tmp/peer"}]},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config rejects unknown peer fields") unittest {
+  auto path = "/tmp/setline-config-agent-badpeer-test.json";
+  // 曾经的 address 字段已经取消：回源主机只从 url 推导，写了必须报错而不是被忽略。
+  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080","address":"10.0.1.10"}]},` ~
+    `"routes":{}}`);
+  scope (exit) remove(path);
+  assertThrown!Exception(loadConfig(path));
+
+  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080","port":80}]},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config rejects agent without remote or peers") unittest {
+  auto path = "/tmp/setline-config-agent-nosource-test.json";
+  write(path, `{"agent":{"type":"nginx"},"routes":{}}`);
+  scope (exit) remove(path);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config rejects misspelled agent type") unittest {
+  auto path = "/tmp/setline-config-agent-badtype-test.json";
+  write(path, `{"agent":{"type":"nginux","remote":"https://registry.example.com/latest.json"},"routes":{}}`);
+  scope (exit) remove(path);
+  assertThrown!Exception(loadConfig(path));
 }

@@ -135,6 +135,16 @@ route are removed from the health table.
 
 ## Remote Proxy Rendering
 
+`agent.peers` is the discovery form of the same agent-side helper. Each peer is
+a remote setline instance read through `GET /__setline/routes`; its local ports
+are rewritten to `<peer url host>:<port>`, and routes sharing a host and path prefix
+are merged into one backend group so several machines serving the same prefix
+become multiple servers of one upstream. The result is rendered as a HAProxy or
+Nginx fragment, written atomically to `agent.output`, and never merged into the
+proxy's own main config file: the fragment is included (Nginx) or concatenated
+(HAProxy, which has no `include`) by deployment tooling. `agent.sync` chooses
+between a single round (`once`) and a repeating loop (`interval`).
+
 `agent.remote` is an agent-side helper, not part of the normal setline routing
 hot path. It points to a manifest owned by an external registry system. The
 manifest names one versioned `.tar.gz` bundle and its SHA-256 checksum. When
