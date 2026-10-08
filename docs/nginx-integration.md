@@ -154,6 +154,23 @@ setline -c -f /etc/setline/setline.json
 
 ## 接线（一次性）
 
+### 1. 找到主配置
+
+nginx 的 include 要加进**服务实际加载的那个**配置文件，先确认是哪个：
+
+```bash
+systemctl cat nginx | grep -E 'ExecStart|ExecReload'   # 单元有没有用 -c 指定路径
+nginx -V 2>&1 | tr ' ' '\n' | grep -- --conf-path=     # 编译进去的默认路径
+```
+
+多数发行版不带 `-c`，用编译进去的默认值（通常是 `/etc/nginx/nginx.conf`，也就是
+`setline-apply` 里 `NGINX_CONFIG` 的默认值）。单元自己指定了 `-c` 时以单元为准，
+`NGINX_CONFIG` 也要跟着改（见 `docs/agent-reload.md` 的「启用与使用」）。
+
+### 2. 加 include
+
+在它的 `http {}` 里：
+
 ```nginx
 http {
   # 后端定义（规则模式与自包含模式都是这一行）
@@ -197,6 +214,8 @@ include，和上面示例一致。
 6. 任一步失败就把整个片段目录回滚到 last-known-good。
 
 退出码：`1` 片段不合法（已回滚），`3` 接线错误（片段留在磁盘，等修接线），`2` 用法错误。
+**timer 装完不会自动启用**，要 `sudo systemctl enable --now setline-apply.timer`；手工
+执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
 
 ## 权限
 

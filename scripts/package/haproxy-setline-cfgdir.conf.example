@@ -1,11 +1,27 @@
 # 让 haproxy 的 systemd 单元额外加载 setline 的片段目录。
-# 用法：复制到 /etc/systemd/system/haproxy.service.d/setline.conf
-#      然后 systemctl daemon-reload && systemctl restart haproxy
+#
+# 用法：
+#   1) 先看清发行版单元，别凭印象（每个发行版不一样）：
+#        systemctl cat haproxy
+#        systemctl show -p FragmentPath -p DropInPaths haproxy
+#      带 FragmentPath 的那个文件（RHEL/Fedora: /usr/lib/systemd/system/haproxy.service，
+#      Debian: /lib/systemd/system/haproxy.service）不要直接改，包升级会覆盖。
+#   2) 用 drop-in 覆盖：
+#        sudo install -d /etc/systemd/system/haproxy.service.d
+#        sudo cp <本文件> /etc/systemd/system/haproxy.service.d/setline.conf
+#        sudo systemctl daemon-reload && sudo systemctl restart haproxy
+#      等价的交互式写法是 `sudo systemctl edit haproxy`（落到同目录的 override.conf）。
+#   3) 验证（第二条就是 setline-apply 接线自检读的东西）：
+#        systemctl cat haproxy | grep setline
+#        systemctl show -p ExecStart -p ExecReload haproxy | grep -F /var/lib/setline/haproxy
 #
 # 为什么整段重写 ExecStart/ExecReload：发行版单元的 `-f $CFGDIR` 只能带一个目录，
 # 无法靠 Environment=CFGDIR="a b" 追加第二个 -f —— systemd 的词拆分只会产出
 # `-f a b`，而 haproxy 会把 b 当成多余参数直接报错（实测 exit 1）。
-# 换了发行版后请重新核对本文件与 haproxy.service 的一致性。
+#
+# 下面几行以 Fedora/RHEL 的单元为准（-Ws、-p $PIDFILE、$OPTIONS 照抄原行，只在中间插
+# 一个 -f）。换了发行版请用 `systemctl cat haproxy` 重新核对一致性；对不上时
+# setline-apply 的接线自检会以退出码 3 报错。
 [Service]
 ExecStart=
 ExecStart=/usr/sbin/haproxy -Ws -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d -f /var/lib/setline/haproxy -p /run/haproxy.pid $OPTIONS

@@ -213,9 +213,11 @@ reloads via `systemctl reload`, and rolls the whole fragment directory back on
 failure. One `setline-apply.timer` is enough: it runs `setline-apply auto`, which
 asks the binary (`setline --agent-type`) what `agent.type` says and only then
 touches that proxy. The action is idempotent by content hash and defers until
-the fragment has been stable for a quiet window. See
-`docs/agent-reload.md` for why `-sf`, `-x`, and `SIGHUP` are the wrong tools
-here, and why a timer is used instead of a `systemd.path` unit.
+the fragment has been stable for a quiet window. The timer is **not enabled by
+the package**: turn it on with `sudo systemctl enable --now setline-apply.timer`
+on any machine whose config carries an `agent` block. See `docs/agent-reload.md`
+for why `-sf`, `-x`, and `SIGHUP` are the wrong tools here, why a timer is used
+instead of a `systemd.path` unit, and how to run `setline-apply` by hand.
 
 ## Agent Bundle Mode (registry manifest)
 

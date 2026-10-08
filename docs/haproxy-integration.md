@@ -151,10 +151,40 @@ setline -c -f /etc/setline/setline.json
 
 ### 1. 让 haproxy 加载片段目录
 
-HAProxy 没有 `include`，只能用额外的 `-f`。发行版单元里的 `-f $CFGDIR` 无法通过
-`Environment=CFGDIR="a b"` 追加目录（systemd 只会拆成 `-f a b`，haproxy 直接报错），
-所以要整段覆盖 `ExecStart`/`ExecReload`，见
-`scripts/package/haproxy-setline-cfgdir.conf.example`：
+HAProxy 没有 `include`，只能用额外的 `-f`。先看清发行版单元长什么样，别凭印象
+（RHEL/Fedora、Debian、容器镜像都不一样）：
+
+```bash
+systemctl cat haproxy                                  # 主文件 + 所有 drop-in，每段前有 # 路径
+systemctl show -p FragmentPath -p DropInPaths haproxy  # 只要路径
+systemctl status haproxy | head -3                     # Loaded: 行也会带路径
+rpm -ql haproxy | grep /systemd/system/                # rpm 系（deb 系换 dpkg -L haproxy）
+```
+
+`FragmentPath` 就是那个「systemd 的 haproxy 文件」：RHEL/Fedora 上是
+`/usr/lib/systemd/system/haproxy.service`，Debian 上是
+`/lib/systemd/system/haproxy.service`。**不要直接改它**——包升级会覆盖，`rpm -V` 也会
+一直报文件被改动。要改就在 `/etc/systemd/system/haproxy.service.d/` 放 drop-in，
+它优先于发行版文件，升级不动。
+
+为什么必须整段覆盖 `ExecStart`/`ExecReload`：单元里的 `-f $CFGDIR` 只能带**一个**目录，
+`Environment=CFGDIR="a b"` 只会被 systemd 拆成 `-f a b`，haproxy 把 `b` 当多余参数报错
+（实测 exit 1）。所以只能把两个 `-f` 都写进命令行。包里的模板
+`/usr/share/setline/haproxy-setline-cfgdir.conf.example` 就是给这一步用的：
+
+```bash
+sudo install -d /etc/systemd/system/haproxy.service.d
+sudo cp /usr/share/setline/haproxy-setline-cfgdir.conf.example \
+        /etc/systemd/system/haproxy.service.d/setline.conf
+sudo systemctl daemon-reload && sudo systemctl restart haproxy
+```
+
+等价的手工写法是 `sudo systemctl edit haproxy`（默认落到
+`/etc/systemd/system/haproxy.service.d/override.conf`，可以和上面的 `setline.conf` 并存），
+把下面两段贴进去。注意**先写空的 `ExecStart=` / `ExecReload=`**（空行就是把发行版那份
+清掉），漏了就变成一条命令写两次，systemd 直接拒绝：
+`Service has more than one ExecStart= setting, which is only allowed for Type=oneshot
+services. Refusing.`
 
 ```ini
 [Service]
@@ -164,6 +194,28 @@ ExecReload=
 ExecReload=/usr/sbin/haproxy -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d -f /var/lib/setline/haproxy -c -q $OPTIONS
 ExecReload=/bin/kill -USR2 $MAINPID
 ```
+
+**照抄发行版单元**：上面这几行要以 `systemctl cat haproxy` 输出的原行为准（`-Ws`、
+`-p <pidfile>`、`$OPTIONS` 一个都不能少；`$CONFIG`/`$PIDFILE`/`$CFGDIR`/`$OPTIONS` 由
+单元自己定义，照抄变量名即可），只在中间插一个 `-f <片段目录>`。
+发行版升级后如果原行变了，`setline-apply` 的接线自检会以退出码 3 提醒（见「校验与
+热加载」）。
+
+改完验证两件事：
+
+```bash
+systemctl cat haproxy | grep setline                       # drop-in 被读到了
+systemctl show -p ExecStart -p ExecReload haproxy | grep -F /var/lib/setline/haproxy
+```
+
+第二条正是 `setline-apply` 接线自检做的事（它 grep `systemctl show -p ExecStart -p
+Environment`），命令能搜到就说明自检能过。
+
+RHEL/Fedora 的单元把额外参数交给 `/etc/sysconfig/haproxy` 的 `OPTIONS`（Debian 是
+`/etc/default/haproxy` 的 `EXTRAOPTS`），写 `OPTIONS="-f /var/lib/setline/haproxy"`
+haproxy 也会接受；但那来自 `EnvironmentFile`，不出现在 `systemctl show` 的
+`Environment`/`ExecStart` 里，接线自检看不见它会误报 wiring error，所以本文统一用
+drop-in。
 
 `-f <目录>` **只加载 `*.cfg`**，所以 backend 片段必须叫 `*.cfg`；同目录的 `.map` 是数据
 文件，不会被当成配置解析，两者可以放在一起。
@@ -211,7 +263,8 @@ backend 名由服务名转换而来，不要手写 backend 段；map 文件与 b
 
 退出码：`1` 片段本身不合法（已回滚），`3` 接线错误（片段留在磁盘上，等修接线），
 `2` 用法错误。为什么用 `systemctl reload` 而不是 `-sf`/`-x`/`SIGHUP`，见
-`docs/agent-reload.md`。
+`docs/agent-reload.md`。**timer 装完不会自动启用**，要 `sudo systemctl enable --now
+setline-apply.timer`；手工执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
 
 ## 权限
 
@@ -223,7 +276,7 @@ backend 名由服务名转换而来，不要手写 backend 段；map 文件与 b
 
 | 现象 | 原因 |
 |---|---|
-| `wiring error: ... does not load /var/lib/setline/haproxy` | 单元没加 `-f <片段目录>`，或 `apply.conf` 的 `HAPROXY_CONFIGS` 与实际单元不一致 |
+| `wiring error: ... does not load <片段目录>` | 单元没给 `-f` 片段目录（见「接线（一次性）」），或 `HAPROXY_CONFIGS` 与实际单元不一致 |
 | `wiring error: .../setline.map is not referenced` | 主配置 frontend 缺 `map_beg(...)` 那几行（规则模式） |
 | `Configuration file has no error but will not start (no listener)` | 自包含片段里 `bind` 为空；规则模式不会出现，因为监听段归主配置 |
 | `/api/xxx` 返回 503 且日志无异常 | map 命中了 backend，但 backend 里 `server` 健康检查失败（对端不可达） |

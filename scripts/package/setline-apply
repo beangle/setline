@@ -36,6 +36,9 @@ if [ -r /etc/setline/apply.conf ]; then
 fi
 
 log() { echo "setline-apply[${PROXY:-$MODE}]: $*"; }
+# 告警一律走 stderr：detect_proxies 的 stdout 是「代理列表」，被 $(...) 捕获，
+# 混进去的行会被当成代理名。
+warn() { echo "setline-apply[${PROXY:-$MODE}]: WARNING: $*" >&2; }
 die() { echo "setline-apply[${PROXY:-$MODE}]: $*" >&2; exit 1; }
 # 配置接线错误与「片段本身不合法」要能区分开，方便运维判断该改哪边。
 die_wiring() { echo "setline-apply[${PROXY:-$MODE}]: $*" >&2; exit 3; }
@@ -45,13 +48,13 @@ die_wiring() { echo "setline-apply[${PROXY:-$MODE}]: $*" >&2; exit 3; }
 detect_proxies() {
   local cfg kind proxies=""
   if ! command -v "$SETLINE_BIN" >/dev/null 2>&1; then
-    log "WARNING: $SETLINE_BIN not found, cannot detect agent.type; nothing to do"
+    warn "$SETLINE_BIN not found, cannot detect agent.type; nothing to do"
     return 0
   fi
   for cfg in $SETLINE_CONFIGS; do
     [ -e "$cfg" ] || continue
     if ! kind=$("$SETLINE_BIN" -f "$cfg" --agent-type 2>/dev/null); then
-      log "WARNING: cannot read agent.type from $cfg, skipping"
+      warn "cannot read agent.type from $cfg, skipping"
       continue
     fi
     case "$kind" in
@@ -77,7 +80,7 @@ if [ "$MODE" = "auto" ]; then
   rc=0
   for proxy in $proxies; do
     if ! command -v "$proxy" >/dev/null 2>&1; then
-      log "WARNING: $proxy is not installed, skipping"
+      warn "$proxy is not installed, skipping"
       continue
     fi
     log "applying $proxy (agent.type)"
@@ -131,7 +134,7 @@ validate() {
 # 被主配置引用，否则配置合法但规则根本没生效。
 check_wiring() {
   if [ "$PROXY" = "haproxy" ]; then
-    command -v systemctl >/dev/null 2>&1 || { log "WARNING: systemctl missing, cannot verify wiring"; return 0; }
+    command -v systemctl >/dev/null 2>&1 || { warn "systemctl missing, cannot verify wiring"; return 0; }
     if ! systemctl show "$SERVICE" -p ExecStart -p Environment 2>/dev/null | grep -qF "$FRAG_DIR"; then
       die_wiring "wiring error: $SERVICE does not load $FRAG_DIR (add -f, or point CFGDIR at it);" \
         "see docs/haproxy-integration.md"
@@ -143,7 +146,7 @@ check_wiring() {
   local dump
   # nginx -T 也会解析片段；校验通过后它仍可能因其它原因失败，那种情况只告警不拦截。
   if ! dump=$(nginx -T -c "$NGINX_CONFIG" 2>/dev/null); then
-    log "WARNING: cannot dump nginx config, skipping wiring check"
+    warn "cannot dump nginx config, skipping wiring check"
     return 0
   fi
   check_nginx_includes "$dump"

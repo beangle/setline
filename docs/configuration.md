@@ -180,7 +180,9 @@ token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent
 
 `type` 也是热加载分派的依据：`setline-apply.timer` 只启用一个，`setline-apply auto`
 会对每份配置执行 `setline -f <cfg> --agent-type`，按这里填的 `haproxy`/`nginx` 决定
-校验和 reload 谁。所以改 `type` 之后不需要动 systemd。
+校验和 reload 谁。所以改 `type` 之后不需要动 systemd。timer 装完不会自动启用：
+`sudo systemctl enable --now setline-apply.timer`（启用、手工执行与参数见
+`docs/agent-reload.md` 的「启用与使用」）。
 
 ### peers
 

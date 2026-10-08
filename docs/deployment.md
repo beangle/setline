@@ -32,8 +32,22 @@ The binary package installs:
 
 - `/usr/bin/setline`
 - `/usr/share/setline/setline.json.default`
+- `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
 - `/usr/lib/systemd/system/setline.service`
+- `/usr/lib/systemd/system/setline-apply.service` + `setline-apply.timer`
 - `/etc/setline/setline.json`
+
+Only `setline.service` is started by the user; the packages install the
+`setline-apply` units but never enable them. Machines whose config has an
+`agent` block need
+
+```bash
+sudo systemctl enable --now setline-apply.timer
+```
+
+otherwise the generated fragment is never validated or reloaded. How to run it
+by hand, its exit codes and the `/etc/setline/apply.conf` overrides are in
+`docs/agent-reload.md`.
 
 The systemd service runs:
 

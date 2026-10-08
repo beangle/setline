@@ -15,6 +15,72 @@
 
 `setline` 监听网络，不应持有 root。特权只留在 `setline-apply` 这一个短命进程里。
 
+## 启用与使用
+
+包只**安装**这三件东西（`/usr/lib/setline/setline-apply`、`setline-apply.service`、
+`setline-apply.timer`），**不会**替你 enable。写了 `agent` 的机器装完后要自己把 timer
+拉起来，否则片段写出去了没人校验、没人 reload：
+
+```bash
+# 1. 启用：开机自启 + 立刻跑第一轮
+sudo systemctl enable --now setline-apply.timer
+
+# 2. 确认它在转：下次触发时间、上一次的结果
+systemctl list-timers setline-apply.timer
+systemctl status setline-apply.service --no-pager -l
+
+# 3. 看日志：oneshot 的输出都进 journal
+journalctl -u setline-apply -n 30 -o cat     # 最近一轮
+journalctl -u setline-apply -f               # 盯下一轮
+```
+
+普通代理机器（配置里没有 `agent`）不需要启用它；就算开着也只是一轮打一行
+`no agent.type in ..., nothing to apply` 后退出 0，没有别的副作用。单机部署（`agent`
+只有 `type`/`output`，没有 `peers`）同样需要它——setline 负责写片段，reload 仍由它做。
+
+### 手工执行
+
+timer 跑的就是这条命令；排查时手动跑同一套逻辑即可：
+
+```bash
+sudo setline-apply auto       # 按配置里的 agent.type 挑代理（timer 用的就是它）
+sudo setline-apply haproxy    # 只处理 haproxy，跳过探测
+sudo setline-apply nginx      # 只处理 nginx
+```
+
+日志前缀是 `setline-apply[<proxy>]: `，常见几行：
+
+| 日志 | 含义 |
+|---|---|
+| `fragment unchanged, nothing to do` | 内容哈希与上次应用相同，幂等跳过 |
+| `fragment changed Ns ago (< 15s), deferring` | 还在静默窗口内，等下一拍自己会来 |
+| `no fragment in <dir>, nothing to apply` | setline 还没写出片段（agent 没跑起来或没写出） |
+| `reloaded haproxy` | 校验、接线检查、reload 全部成功 |
+| `validation FAILED for the new fragment` + `restored last known good config` | 片段不合法，已整体回滚 |
+| `wiring error: ...` | 片段没被代理真正加载/引用，片段留在磁盘上等修接线 |
+| `<service> is not active; keeping validated fragment, skipping reload` | 代理没在跑，只记录不 reload |
+
+退出码（`sudo setline-apply haproxy; echo $?`）：`0` 无事可做或成功；`1` 片段不合法、
+reload 失败（已回滚）或片段目录取值本身有问题；`2` 用法错误（参数不是
+`haproxy`/`nginx`/`auto`）；`3` 接线错误。
+
+### 频率与参数
+
+timer 的节奏：开机 30s 后第一轮，之后每轮**结束后** 20s 再跑
+（`OnBootSec=30s` + `OnUnitInactiveSec=20s` + `AccuracySec=1s`）。改周期别直接改包里的
+unit（升级会被覆盖），用 drop-in：
+
+```bash
+sudo systemctl edit setline-apply.timer      # 写 [Timer] 段覆盖 OnUnitInactiveSec 等
+```
+
+`setline-apply` 自己的默认值都在 `/etc/setline/apply.conf`（模板见
+`/usr/share/setline/apply.conf.example`）：片段目录、`HAPROXY_CONFIGS` 的 `-f` 列表、
+`HAPROXY_SERVICE`/`NGINX_SERVICE`、静默窗口 `SETLINE_APPLY_QUIET_SECONDS`（默认 15s）。
+注意 `HAPROXY_CONFIGS` 必须和 `haproxy.service` 实际加载的完全一致，否则校验的不是服务
+真正读的那份配置。周期与静默窗口没有硬性大小关系，但周期小于窗口时，片段写入后要多等
+几拍才应用；片段被持续改写（滚动发布）则一直推到稳定为止。
+
 ## 为什么 reload 不能由 setline 做
 
 以本机发行版单元为例（Fedora 的 `haproxy.service`）：
@@ -61,6 +127,21 @@ HAProxy 有两种 reload 模型，容易混：
   「先 `-c -q` 校验，再 `kill -USR2 $MAINPID`」，校验不过就不会重载。
 - nginx 单元的 `ExecReload=/usr/sbin/nginx -s reload` **没有**前置校验，所以
   `setline-apply` 自己先跑 `nginx -t`。
+
+归纳一下「谁发信号」：`setline-apply` 自己**从不发信号、不碰 pid 文件**，只调用
+`systemctl reload <service>`；发什么信号由单元的 `ExecReload=` 决定，由 root 的 systemd
+代发（脚本里的 `reload()` 就一行 `systemctl reload "$SERVICE"`）：
+
+| 代理 | 单元的 `ExecReload=` | systemd 实际发出的信号 |
+|---|---|---|
+| haproxy（RHEL/Fedora） | `-c -q $OPTIONS` 校验，然后 `/bin/kill -USR2 $MAINPID` | `SIGUSR2` 给 master |
+| nginx | `/usr/sbin/nginx -s reload` | 由 nginx 自己发 `SIGHUP` 给 master |
+
+haproxy 收到 `SIGUSR2` 后 master 重读配置、给老 worker 发软退出（man 页：
+`In master-worker mode, reloads the configuration and sends a soft-stop signal to old
+processes.`）；nginx 收到 `SIGHUP` 后重读配置、起新 worker、老 worker 优雅退出。
+haproxy 那条 `-c -q` 排在 `kill` 之前，systemd 按顺序执行、前一条失败就不执行后一条
+（实测：reload 返回 1，后面的 `ExecReload` 确实没跑），所以坏配置走不到发信号那一步。
 
 ## 为什么用 timer 而不是 path 单元
 
@@ -153,7 +234,8 @@ setline -f /etc/setline/setline.json --agent-type   # 打印 haproxy / nginx / �
   扩展名的文件）。发行版单元的 `-f $CFGDIR` 只能带一个目录，**无法**用
   `Environment=CFGDIR="a b"` 追加第二个：systemd 的词拆分只产出 `-f a b`，haproxy
   会把 `b` 当多余参数报错（实测 exit 1）。所以要整段重写 `ExecStart`/`ExecReload`，
-  见 `haproxy-setline-cfgdir.conf.example`。
+  用 drop-in 覆盖（不要改发行版文件），做法与验证见 `haproxy-integration.md` 的
+  「接线（一次性）」第 1 步与 `haproxy-setline-cfgdir.conf.example`。
 
 ## 权限模型
 
