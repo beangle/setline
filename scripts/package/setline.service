@@ -7,8 +7,11 @@ Type=simple
 ExecStart=/usr/bin/setline -f /etc/setline/setline.json
 Restart=on-failure
 RestartPreventExitStatus=2
+# StartLimit* 用 [Service] + 无 Sec 后缀的旧拼写：CentOS 7 的 systemd 219 只认这一种，
+# [Unit] StartLimitIntervalSec= 是 229 才有的，219 上会报 Unknown lvalue 并忽略；
+# 旧拼写在新 systemd（实测 259）上仍然生效且无告警，两边共用一份 unit。
 StartLimitBurst=5
-StartLimitIntervalSec=120
+StartLimitInterval=120
 StandardOutput=journal
 StandardError=journal
 User=setline

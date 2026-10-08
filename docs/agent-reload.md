@@ -90,7 +90,9 @@ OnUnitInactiveSec=20s
 ```
 
 代价是最多一个周期的延迟；配置同步不差这几秒。同时 `setline-apply.service`
-设 `StartLimitIntervalSec=0`，因为这个 unit 就是被周期触发的，幂等动作不怕重复。
+设 `StartLimitInterval=0`，因为这个 unit 就是被周期触发的，幂等动作不怕重复
+（为什么不是 `StartLimitIntervalSec=`，见 [deployment.md](deployment.md) 的
+「systemd 版本兼容」）。
 
 ## 处理哪个代理：由 agent.type 决定
 

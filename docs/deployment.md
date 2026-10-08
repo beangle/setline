@@ -46,6 +46,66 @@ scripts make `/etc/setline/setline.json` writable by the `setline` service user.
 The config file is generated on first install and is not tracked as a package
 file, so removing the package preserves `/etc/setline/setline.json`.
 
+### systemd 版本兼容
+
+unit 里的启动限流写成 `[Service]` 段的旧拼写 `StartLimitInterval=` / `StartLimitBurst=`
+（没有 `Sec` 后缀），这是为了同时兼容两端：
+
+- CentOS 7 / RHEL 7 带的是 systemd 219，只认这种写法；`StartLimitIntervalSec=`（`[Unit]`
+  段）是 systemd 229 才加的，219 上会打
+  `Unknown lvalue 'StartLimitIntervalSec' in section 'Service'` 并把它忽略掉；
+- 旧拼写在 systemd ≥ 229 里**依然生效**（`systemctl show -p StartLimitIntervalUSec <unit>`
+  能读到配置值，只是不再写进 `systemd.service(5)`），不产生告警。
+
+所以一份 unit 在 219 和 259 上都不报警、限流都真的生效。unit 里其余设置的最低版本都在
+219 之前（`RestartPreventExitStatus=` 189、`AccuracySec=` 197、`OnUnitInactiveSec=` 212，
+`StartLimitIntervalSec=` 229 是唯一越界的），没有别的 CentOS 7 兼容问题。
+
+### 启动即失败（status=1）怎么查
+
+`systemctl status`/`journalctl` 里那几行 `main process exited, code=exited,
+status=1/FAILURE`、`start request repeated too quickly` 都不是原因：前者是 systemd 对
+**退出码**的转述，后者只是重启限流挡下了第 6 次尝试。真正的原因在进程自己写进 journal 的
+**上一行** stderr 里，`-o cat` 可以滤掉 systemd 的 `-- Subject:` 样板：
+
+```bash
+journalctl -u setline -b -o cat | tail -20
+systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
+```
+
+那行只有两种形态：
+
+1. `Config /etc/setline/setline.json is invalid: <原因>` —— JSON 语法或字段问题（未知字段、
+   `agent.peers` 与 `agent.remote` 同时出现、`routes` 结构不对……）。用 `-c` 单独校验，
+   不需要起服务、不需要 root：
+
+   ```bash
+   setline -c -f /etc/setline/setline.json
+   ```
+
+2. 监听失败也走同一个 catch-all，所以端口被占、无权限绑低端口会伪装成
+   `Config ... is invalid: <bind 的错误>`。`listen` 写 `*:8080` 时先看端口是不是被占了
+   （`ss -ltnp | grep 8080`）；要绑 1024 以下端口得让服务有 root 或
+   `AmbientCapabilities=CAP_NET_BIND_SERVICE`。
+
+前台手工复现最直接，注意用服务账号，才和 unit 里的权限一致：
+
+```bash
+sudo -u setline /usr/bin/setline -f /etc/setline/setline.json
+```
+
+修好之后必须清掉限流计数，否则 systemd 还在「repeated too quickly」状态里拒绝启动：
+
+```bash
+sudo systemctl reset-failed setline && sudo systemctl start setline
+```
+
+注意目前 setline 对所有启动期失败都返回 `1`，所以 unit 里的 `RestartPreventExitStatus=2`
+挡不住配置错误，只会重启 5 次后停在 failed —— 看到的就是上面那串日志。
+
+如果 journal 里出现的是 `error while loading shared libraries` 或 `GLIBC_2.xx not found`，
+那是二进制与发行版不匹配（例如在 Fedora 上打的包拿到 CentOS 7 上装），跟配置无关。
+
 ## Application Config
 
 Use `connectTimeoutMillis` to limit how long setline waits when opening a TCP
