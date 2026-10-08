@@ -75,6 +75,13 @@ unit 里的启动限流写成 `[Service]` 段的旧拼写 `StartLimitInterval=` 
 219 之前（`RestartPreventExitStatus=` 189、`AccuracySec=` 197、`OnUnitInactiveSec=` 212，
 `StartLimitIntervalSec=` 229 是唯一越界的），没有别的 CentOS 7 兼容问题。
 
+不过 haproxy 这一侧有独立的最低版本要求：**HAProxy ≥ 2.0**（`-f <目录>` 从 1.7 起才有，
+本项目基线取 2.0；规则模式和自包含模式在 2.0 以上通用，已在 2.0.33、2.2.9、3.0.25
+实测）。CentOS 7 自带的 **1.5.18 低于这个门槛**（它不认 `-f <目录>`，CentOS 7 也没有
+`/etc/haproxy/conf.d`），要在这类机器上用 haproxy 集成得先升级，或换用 nginx。版本门槛
+和替代方案见 `docs/haproxy-integration.md` 的「版本要求」。nginx 集成不受影响（接线自检
+用 `nginx -T`，那是 nginx 1.9.3 就有的开关，CentOS 7 能装到的 nginx 都满足）。
+
 ### 启动即失败（status=1）怎么查
 
 `systemctl status`/`journalctl` 里那几行 `main process exited, code=exited,

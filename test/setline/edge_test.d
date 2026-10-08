@@ -66,6 +66,32 @@ import setline.model;
   assert(rendered.canFind("backend be_edu_learning"));
   assert(rendered.canFind("option httpchk GET /health"));
   assert(rendered.canFind("server edu_learning_0 10.0.1.10:18001 check"));
+  assert(rendered.canFind("http-request del-header X-Setline-Route"));
+}
+
+@("edge renders haproxy routing map usable from 2.0") unittest {
+  auto services = parseBackends(`{
+    "services": [
+      {"name": "app", "host": "APP.Example.COM", "contentPath": "/api/edu",
+       "instances": [{"host": "10.0.1.10", "port": 18001}]},
+      {"name": "fallback", "contentPath": "/",
+       "instances": [{"host": "10.0.1.20", "port": 18002}]}
+    ]
+  }`);
+
+  auto map = renderHaproxyMap(services, "/var/lib/setline/haproxy/setline.map");
+  assert(map.canFind("#   http-request set-header X-Setline-Route %[req.hdr(host),lower]~%[path]"));
+  assert(map.canFind("use_backend %[req.hdr(X-Setline-Route),map_beg(" ~
+    "/var/lib/setline/haproxy/setline.map)] if { req.hdr(X-Setline-Route),map_beg(" ~
+    "/var/lib/setline/haproxy/setline.map) -m found }"));
+  assert(map.canFind("app.example.com~/api/edu be_app"));
+  assert(map.canFind("/ be_fallback"));
+  // set-var-fmt 是 2.6 才有的动作，规则模式只用 2.0 起就有的 set-header 组合。
+  assert(!map.canFind("set-var-fmt"));
+
+  auto backends = renderHaproxyBackends(services);
+  assert(backends.canFind("backend be_app"));
+  assert(backends.canFind("http-request del-header X-Setline-Route"));
 }
 
 @("edge renders nginx config") unittest {

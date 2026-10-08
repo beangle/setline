@@ -3,6 +3,32 @@
 本文交代 setline agent 生成的 HAProxy 片段怎么接到 HAProxy 上：生成什么、不生成什么、
 两种模式的差别、一次性接线步骤，以及校验/热加载和排错。
 
+## 版本要求
+
+**最低要求 HAProxy ≥ 2.0**，2.0 以上任意版本都能跑（本仓库在 2.0.33、2.2.9、3.0.25 上
+实测过）。低于 2.0 的版本（CentOS 7 自带的 1.5.18 就是）不在支持范围内。先跑
+`haproxy -v` 对一下。下面这些门槛来自官方手册和源码（不是经验值），低版本会以各种
+「配置打不开 / 未知关键字」的面目失败：
+
+| 能力 | 需要 | 依据 |
+|---|---|---|
+| `-f <目录>`（加载片段目录） | ≥ 1.7，本项目基线取 2.0 | 1.6 手册写 `-f <cfgfile>`，1.7 起写 `-f <cfgfile\|cfgdir>`；1.8.30 源码即 `cfgfiles_expand_directories()` |
+| `-W` / `-Ws`（master-worker，`kill -USR2` 重载） | ≥ 1.8 | 1.6 手册没有 `-W`，1.8 起才有 |
+| **规则模式**的三行 map（`set-header` + `req.hdr` + `map_beg`） | ≥ 2.0 | 用的都是 1.5 起就有的指令和转换器，没有新关键字；已在 2.0.33、2.2.9、3.0.25 实测 |
+| 自包含模式（`acl` + `use_backend`） | ≥ 2.0 | 同样都是老指令 |
+
+所以门槛就是 **HAProxy ≥ 2.0**：两种模式（规则模式 / 自包含模式）在这条线以上通用，
+不需要 2.6+，也不需要为不同版本准备两套写法。老平台要么升 haproxy，要么换 nginx。
+
+CentOS 7 上还有两个坑，报错时很容易误判成「配置写错」：
+
+- CentOS 7 **没有** `/etc/haproxy/conf.d`（那是 Fedora/RHEL 更新的单元才有的 `CFGDIR`），
+  照抄本文的 `-f` 列表会直接报
+  `[ALERT] ... Could not open configuration file /etc/haproxy/conf.d : No such file or directory`；
+- CentOS 7 自带的 **1.5.18 也不认目录**，把目录传给 `-f` 同样是上面那句（1.5 把它当普通
+  文件打开）。它低于最低要求，只能用自包含模式 + 单个 `-f <文件>` 硬撑，或者直接换
+  nginx。
+
 ## 生成范围：部分生成，不接管主配置
 
 setline **只生成片段**，不生成也不改动 `/etc/haproxy/haproxy.cfg`：
@@ -227,16 +253,26 @@ drop-in。
 ```
 frontend http_in
   bind *:80
-  http-request set-var-fmt(txn.hp) %[req.hdr(host),lower]~%[path]
-  use_backend %[var(txn.hp),map_beg(/var/lib/setline/haproxy/setline.map)] if { var(txn.hp),map_beg(/var/lib/setline/haproxy/setline.map) -m found }
+  http-request set-header X-Setline-Route %[req.hdr(host),lower]~%[path]
+  use_backend %[req.hdr(X-Setline-Route),map_beg(/var/lib/setline/haproxy/setline.map)] if { req.hdr(X-Setline-Route),map_beg(/var/lib/setline/haproxy/setline.map) -m found }
   use_backend %[path,map_beg(/var/lib/setline/haproxy/setline.map)] if { path,map_beg(/var/lib/setline/haproxy/setline.map) -m found }
 ```
 
-- 第一行把 `host` 和 `path` 拼成 `host~path` 作为 map 的查询键。
+- 第一行把 host 和 path 拼成 `host~path` 作为 map 的查询键：`req.hdr(host)` 原样保留
+  大小写，所以先 `lower`；`path` 是大小写敏感的，不能跟着一起 lower。
 - 第二行处理精确 host 的路由（map_beg 取最长前缀匹配）。
 - 第三行处理 `*` 回退路由：setline 的 `*` 命名空间落到这里，所以它必须排在第二行之后。
 - 三行中的路径就是上面那份 `.map`，setline 也会把这三行以注释形式写在 map 文件头部，
   方便直接复制。
+- **为什么用 `set-header` 而不是 `set-var-fmt`**：`set-var-fmt` 是 2.6 才加的动作，
+  2.0–2.5 上会以 `invalid variable 'set-var-fmt(txn.hp)'` 直接拒绝启动；而
+  `set-header` 的 log-format、`req.hdr`、`map_beg` 加动态 `use_backend` 这套组合 1.5
+  起就存在，2.0 以上通用，所以规则模式只保留这一种写法。Map 查询、`*` 回退、host 大小写
+  三条语义都不变。
+- 代价是请求里多了一个内部头。**setline 生成的 backend 会自己加
+  `http-request del-header X-Setline-Route` 把它删掉**（已实测 2.0/2.2/3.0 都不会传给
+  应用）；如果你把 map 的某条路由指到 setline 之外的 backend，需要自己补一行
+  `del-header`。
 
 setline 生成的 map 形如：
 
@@ -279,5 +315,7 @@ setline-apply.timer`；手工执行、日志与参数覆盖见 `docs/agent-reloa
 | `wiring error: ... does not load <片段目录>` | 单元没给 `-f` 片段目录（见「接线（一次性）」），或 `HAPROXY_CONFIGS` 与实际单元不一致 |
 | `wiring error: .../setline.map is not referenced` | 主配置 frontend 缺 `map_beg(...)` 那几行（规则模式） |
 | `Configuration file has no error but will not start (no listener)` | 自包含片段里 `bind` 为空；规则模式不会出现，因为监听段归主配置 |
+| `Could not open configuration file <目录>` | 目录不存在（老发行版没有 `conf.d`），或 HAProxy < 1.7 根本不认 `-f <目录>`（本项目最低要求 2.0，见「版本要求」） |
+| `invalid variable 'set-var-fmt(txn.hp)'` | 用了 2.6+ 才有的写法；换成上面的 `set-header` 三行（2.0 起通用） |
 | `/api/xxx` 返回 503 且日志无异常 | map 命中了 backend，但 backend 里 `server` 健康检查失败（对端不可达） |
 | 改了路由但流量没变 | 片段没写出（agent 未运行/未同步）、静默窗口还没过，或 `*.map` 未被引用 |
