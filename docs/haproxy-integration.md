@@ -46,6 +46,107 @@ setline **只生成片段**，不生成也不改动 `/etc/haproxy/haproxy.cfg`�
 `stem` 是 `agent.output` 去掉扩展名的文件名，例如
 `output=/var/lib/setline/haproxy/setline.cfg` 会写出 `setline.cfg` 和 `setline.map`。
 
+## setline 配置示例
+
+先选数据来源：**边缘机聚合多台 setline** 用 `peers`（下面第一个例子）；haproxy 与
+setline、basctl **同机**时不配 `peers`/`remote`，setline 边当本机代理边渲染片段
+（见「单机部署」）。
+
+### 聚合多台 setline（peers）
+
+跑 haproxy 这台机器上，`/etc/setline/setline.json` 只有 `agent` 一段，**没有 `listen`、
+没有 `routes`**：配了 `agent` 就不再启动本地代理，它只负责渲染片段。
+
+```json
+{
+  "agent": {
+    "type": "haproxy",
+    "output": "/var/lib/setline/haproxy/setline.cfg",
+    "bind": "",
+    "token": "shared-token",
+    "peers": [
+      { "name": "app1", "url": "http://10.0.1.10:8080" },
+      { "name": "app2", "url": "http://10.0.1.11:8080", "token": "app2-token" }
+    ],
+    "sync": { "mode": "interval", "intervalMillis": 10000 }
+  }
+}
+```
+
+各字段在这里的作用：
+
+| 字段 | 值 | 说明 |
+|---|---|---|
+| `type` | `haproxy` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
+| `output` | `.../setline.cfg` | 片段落盘路径，**必须是 `.cfg`**（`-f <dir>` 只加载 `*.cfg`），同目录派生 `setline.map` |
+| `bind` | `""` | 留空 = 规则模式（监听段归主配置）；写 `"*:80"` = 自包含模式 |
+| `token` | `shared-token` | 所有 peer 的默认 `X-Setline-Token`，单个 peer 可用自己的 `token` 覆盖 |
+| `peers[].url` | `http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
+| `sync` | `interval` / 10000 | 常驻，每 10s 重渲染一次；缺省 `once` 是跑一轮就退出 |
+
+自包含模式只改 `bind`，其余不动：
+
+```json
+{
+  "agent": {
+    "type": "haproxy",
+    "output": "/var/lib/setline/haproxy/setline.cfg",
+    "bind": "*:80",
+    "peers": [
+      { "name": "app1", "url": "http://10.0.1.10:8080" }
+    ]
+  }
+}
+```
+
+`sync.mode` 怎么选：
+
+- `interval`（推荐给边缘机）：`setline.service` 常驻，某一台 peer 暂时读不到只会打一行
+  `setline agent sync failed: ...`，下一轮自动重试，片段保持上一轮的内容；
+- `once`（缺省，用 `output` 才有效）：跑一轮就退出 0，需要外层周期驱动 —— 要么自己写
+  `Type=oneshot` 的 timer，要么按 `setline-apply.timer` 那种「周期 + 幂等」的套路来。
+
+### 单机部署（haproxy 与 setline 同机）
+
+haproxy、setline、basctl 装在同一台机器上时，回源目标和 setline 调度的后端是同一批
+进程，不配 `peers` 也**不需要** `remote`：setline 照常监听 `listen` 接收 basctl 推的
+路由，同时把本机路由表渲染成片段（回源主机固定 `127.0.0.1`）。
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "agent": {
+    "type": "haproxy",
+    "output": "/var/lib/setline/haproxy/setline.cfg",
+    "bind": ""
+  },
+  "routes": {
+    "app.example.com": {
+      "/api/edu": [9002, 9003]
+    }
+  }
+}
+```
+
+与上面 peers 模式的差别：
+
+| 项 | peers 模式 | 单机模式 |
+|---|---|---|
+| `listen` / `routes` | 不配（纯渲染机，不监听） | 配（本机代理，basctl 推到这里） |
+| 服务名前缀 | peer 的 `name` | `local` |
+| 回源主机 | 各 peer 的 `url` 主机 | `127.0.0.1` |
+| 重渲染时机 | `sync` 周期 / 外层 timer | 启动一次 + 每次管理接口改路由 |
+
+`setline-apply.timer` 仍然照用：片段变了才 reload（见「校验与热加载」）。
+
+写完先校验，这一步不需要 peer 在线：
+
+```bash
+setline -c -f /etc/setline/setline.json
+```
+
+片段落盘后的校验与热加载见「校验与热加载」一节。
+
 ## 接线（一次性）
 
 ### 1. 让 haproxy 加载片段目录

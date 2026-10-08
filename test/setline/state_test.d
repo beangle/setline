@@ -90,3 +90,28 @@ import setline.test_lock;
     assert(selectPort("missing.example.com", "/api/users") == 9090);
   });
 }
+
+@("state notifies route changes to the hook") unittest {
+  withStateTestLock({
+    Config config;
+    config.routes = [HostRoutes("local.example.com", [Route("/old", [9000])])];
+    initialize(config);
+
+    HostRoutes[] last;
+    setRoutesChangedHook((HostRoutes[] routes) { last = routes; });
+    scope (exit) setRoutesChangedHook(null);
+
+    // 回调拿到的是写入后的新表，而不是旧状态。
+    replaceRoutes("local.example.com", [Route("/new", [9001])]);
+    assert(last.length == 1);
+    assert(last[0].routes.length == 1);
+    assert(last[0].routes[0].prefix == "/new");
+    assert(last[0].routes[0].ports == [9001]);
+
+    // 取消订阅后不再触发。
+    last = [];
+    setRoutesChangedHook(null);
+    replaceRoutes("local.example.com", [Route("/again", [9002])]);
+    assert(last.length == 0);
+  });
+}

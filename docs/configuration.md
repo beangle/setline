@@ -25,7 +25,7 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 | `connectTimeoutMillis` | 整数 > 0 | `3000` | 连接后端的 TCP 超时 |
 | `maxConnections` | 整数 > 0 | `65535` | 并发客户端连接上限，超出返回 `503` |
 | `healthCheck` | 对象 | 见下 | 后端健康检查（始终开启，只调参数） |
-| `agent` | 对象 | 无 | 边缘代理片段渲染模式，配了就不启动本地代理 |
+| `agent` | 对象 | 无 | 边缘代理片段渲染模式，见「agent」一节（配了 `peers`/`remote` 才是纯渲染机） |
 | `routes` | 对象 | `{}` | host → 路径前缀 → 端口，见「routes」一节 |
 
 ### healthCheck
@@ -136,19 +136,37 @@ token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent
 
 ## agent
 
-配了 `agent.type` 时，`setline -f` 不再启动本地代理，而是渲染供边缘代理使用的配置片段。
-数据来源二选一（**互斥**）：`peers` 合并对端路由表，`remote` 下载 registry bundle。
+`agent` 让 setline 渲染供边缘代理（haproxy / nginx）使用的配置片段。数据来源有三种，
+由是否配置 `peers` / `remote` 决定：
+
+| 配置 | 形态 | setline 自身 | 触发重渲染的时机 |
+|---|---|---|---|
+| `peers`（与 `remote` 互斥） | 纯渲染机：合并多台对端 setline 的路由表 | **不监听**，按 `sync` 拉取 | `sync` 周期，或外层 timer 跑一轮 |
+| `remote`（与 `peers` 互斥） | 纯渲染机：下载 registry bundle | **不监听**，按 `sync` 拉取 | `sync` 周期，或外层 timer 跑一轮 |
+| 都不配（**单机部署**） | haproxy/nginx、setline、basctl 同机 | **照常监听**本机代理 | 启动时渲染一次，之后每次经管理接口改路由立即重渲染 |
+
+单机部署下 setline 既是被 basctl 推路由的本机代理，又把自己的路由表渲染成片段，因此
+不需要 `peers`（不要求边缘代理和管理入口互相访问），也不需要轮询 timer —— 路由一变
+片段就重渲染。此时 `output` 必填。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `type` | 字符串 | 无 | `haproxy` 或 `nginx`；配 `peers` 时必填 |
-| `peers` | 数组 | `[]` | 被聚合的远端 setline 实例 |
+| `type` | 字符串 | 无 | `haproxy` 或 `nginx`，**必填** |
+| `peers` | 数组 | `[]` | 被聚合的远端 setline 实例；与 `remote` 互斥 |
 | `remote` | 字符串 | 无 | registry manifest 的 URL 或本地路径；与 `peers` 互斥 |
-| `output` | 字符串 | 空 | 片段落盘路径；留空打到标准输出 |
+| `output` | 字符串 | 空 | 片段落盘路径；留空打到标准输出（**单机部署必填**） |
 | `bind` | 字符串 | 空 | 留空 = 片段不管监听，只出规则和后端；有值 = 片段自己持有监听 |
 | `token` | 字符串 | 空 | peers 未单独设置 token 时的默认值 |
 | `workDir` | 字符串 | `/tmp/setline-agent` | `remote` 模式的下载与解包目录 |
 | `sync` | 对象 | `{"mode":"once"}` | 同步机制，见下 |
+
+`peers`/`remote`/单机三种形态的边界：同时配 `peers` 与 `remote` 报
+`agent.remote and agent.peers cannot be used together`；单机形态漏写 `output` 报
+`agent.output is required when agent.peers and agent.remote are not set`；`"peers": []`
+（空数组）报 `agent.peers must not be empty`。都靠 `setline -c -f <cfg>` 就能看到，
+不用起服务。
+完整可跑的 agent 配置见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`
+的「setline 配置示例」。
 
 `agent.bind` 决定片段形态：
 
@@ -212,6 +230,43 @@ peer 对象只认这三个字段，写错字段名（例如写一个不存在的
 代理能连到业务主机的那个地址：读路由表和管理入口共用同一条通路即可。
 
 `name` 留空时也取这个主机，只影响生成的服务名，便于人工阅读。
+
+### 单机部署（不配 peers / remote）
+
+haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回源的后端和 setline 要
+调度的后端是同一批进程，没有必要让 setline 绕一圈去拉自己的路由表。`agent` 里只写
+`type` 和 `output`，不写 `peers` 也不写 `remote`，setline 就进入单机模式：
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "agent": {
+    "type": "haproxy",
+    "output": "/var/lib/setline/haproxy/setline.cfg",
+    "bind": ""
+  },
+  "routes": {
+    "app.example.com": {
+      "/api/edu": [9002, 9003]
+    }
+  }
+}
+```
+
+和纯渲染机（配了 `peers`/`remote`）的三点区别：
+
+- setline **照常监听** `listen`，既是本机代理，也是 basctl 推路由的登记处；
+- 片段在**启动时渲染一次**，之后每次经管理接口（`PUT` / `DELETE /__setline/routes*`）
+  改路由就**立即重渲染**，不需要 `sync` 定时器，也不依赖外面再跑一个 `setline -f`；
+- `output` **必填**：没有外部驱动，留空只会把片段反复打到标准输出。
+
+写片段失败（目录不存在、权限不足）只打一行 `setline agent sync failed: ...`，本机代理
+照常运行，下次改路由会再试——不会因为边缘代理的片段写不出去而让业务断掉。
+
+回源主机固定为 `127.0.0.1` —— 单机部署下路由端口都在本机。生成的服务名用 `local`
+前缀（例如 `local_app_example_com_api_edu`），与 peer 模式的服务名区分开。
+
+单机模式下 `setline-apply.timer` 仍然有用：片段变了就 reload 代理，片段没变则无动作。
 
 ### sync
 
@@ -346,6 +401,28 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 }
 ```
 
+### agent：单机部署（同机 haproxy + setline + basctl）
+
+边缘代理和 setline 同机时省掉 `peers`：setline 仍监听本机代理，路由一变就重渲染片段。
+本例绑回环，管理接口也只对本机开放。
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "agent": {
+    "type": "haproxy",
+    "output": "/var/lib/setline/haproxy/setline.cfg",
+    "bind": ""
+  },
+  "routes": {
+    "app.example.com": {
+      "/api/edu": [9002, 9003],
+      "/": 9090
+    }
+  }
+}
+```
+
 ### agent：自包含片段（片段自己持有监听）
 
 给 `bind` 一个值，片段就会带上 `frontend`/`server` 的监听段；此时不需要主配置再做
@@ -378,9 +455,10 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 | `route value must be port or ports` | 路由值不是整数也不是数组 |
 | `route port must be 1..65535` | 端口越界 |
 | `route host must not include port` | host 里写了端口 |
-| `agent.remote or agent.peers is required` | 配了 `agent` 但没有数据来源 |
 | `agent.remote and agent.peers cannot be used together` | 同时配了 bundle 和 peers 两种来源 |
-| `agent.type is required when agent.peers is set` | 用 `peers` 时没写 `type` |
+| `agent.type is required: haproxy or nginx` | 配了 `agent` 但没写 `type`（或写错） |
+| `agent.output is required when agent.peers and agent.remote are not set` | 单机模式没写 `output` |
+| `agent.peers must not be empty` | 写了 `"peers": []` |
 | `agent.sync.mode must be once or interval` | 同步模式拼错 |
 | `agent.peers[] has unknown field: <key>` | peer 里写了不存在的字段（例如已取消的 `address`） |
 | `cannot derive backend host from agent.peers[].url` | peer 的 `url` 没有主机（`file://`、本地路径） |

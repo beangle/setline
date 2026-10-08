@@ -31,6 +31,7 @@ __gshared private ListenAddress gListenAddress;
 __gshared private int gConnectTimeoutMillis = 3000;
 shared private size_t gMaxConnections = 65535;
 shared private size_t gActiveConnections;
+__gshared private void delegate(HostRoutes[]) gRoutesChangedHook;
 
 /** 初始化运行时状态。
 
@@ -48,6 +49,7 @@ void initialize(Config config, string configPath = "") {
   initializeHealth(config);
   atomicStore(gMaxConnections, config.maxConnections);
   atomicStore(gActiveConnections, 0);
+  gRoutesChangedHook = null;
 }
 
 /** 返回管理接口使用的 token。 */
@@ -213,11 +215,22 @@ HostRoutes[] routesSnapshot() {
   return cloneHostRoutes(gRoutes);
 }
 
+/** 注册路由表变更回调，传 null 取消。
+
+    单机部署（边缘代理与 setline 同机）用它把最新路由表渲染成片段：管理接口每次写入都会
+    触发一次。回调拿到的是**新**表，而且调用发生在内存状态更新之前，所以回调里不要读
+    {@link routesSnapshot}，直接用参数；参数就是随后生效的运行时状态，只读，不要改它。
+*/
+void setRoutesChangedHook(void delegate(HostRoutes[]) hook) {
+  gRoutesChangedHook = hook;
+}
+
 private void persistRoutes(HostRoutes[] routes) {
   auto path = configPath();
   if (path.length > 0) {
     saveRoutes(path, routes);
   }
+  if (gRoutesChangedHook !is null) gRoutesChangedHook(routes);
 }
 
 private RouteTree[string] buildRouteTrees(HostRoutes[] groups) {

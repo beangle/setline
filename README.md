@@ -57,8 +57,7 @@ reference with examples, including how `adminToken` does and does not apply.
   },
   "agent": {
     "type": "haproxy",
-    "remote": "https://registry.example.com/proxy/prod/latest.json",
-    "workDir": "/var/lib/setline-agent"
+    "output": "/var/lib/setline/haproxy/setline.cfg"
   },
   "routes": {
     "local1.example.com": {
@@ -91,8 +90,11 @@ Top-level fields:
 - `maxConnections`: active client connection limit, default `65535`.
 - `healthCheck`: TCP connect health check tuning; health checks are always
   enabled and run on a fixed background interval.
-- `agent.type`: optional render target; accepts `haproxy` or `nginx`. When set,
-  `setline -f` runs in agent mode instead of starting the local proxy.
+- `agent.type`: optional render target; accepts `haproxy` or `nginx`. Together
+  with `agent.output` only, `setline` keeps proxying locally **and** renders its
+  own route table into a fragment (proxy, setline and basctl on one machine).
+  Adding `agent.peers` or `agent.remote` turns it into a render-only agent that
+  does not listen at all; see Agent Mode below.
 - `agent.peers`: remote setline instances whose route tables are merged into the
   rendered fragment; see Agent Mode below.
 - `agent.output`: fragment path; empty prints the fragment to stdout.
@@ -113,10 +115,33 @@ no matching route for the requested path, setline tries `*`.
 
 ## Agent Mode
 
-An edge proxy machine can run `setline` as an agent: it reads the route table of
-one or more remote `setline` instances, merges them, and renders a HAProxy or
-Nginx config fragment. It never rewrites the proxy's own config file, so the
-custom content in that file stays intact.
+`setline` can render a HAProxy or Nginx config fragment from a route table. It
+never rewrites the proxy's own config file, so the custom content in that file
+stays intact. There are three data sources:
+
+- **Single host** (no `peers`, no `remote`): proxy, setline and basctl run on
+  one machine; setline keeps listening as the local proxy and re-renders the
+  fragment whenever its route table changes through the admin API.
+- **`agent.peers`**: an edge machine merges the route tables of several remote
+  `setline` instances.
+- **`agent.remote`**: an edge machine downloads a registry manifest bundle
+  instead of reading peers.
+
+Single-host agent, the simplest deployment:
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "agent": {
+    "type": "haproxy",
+    "output": "/var/lib/setline/haproxy/setline.cfg"
+  },
+  "routes": { "app.example.com": { "/api/edu": [9002, 9003] } }
+}
+```
+
+Aggregating several machines (`agent.peers`); this one does not listen, so
+`listen` and `routes` are not used:
 
 ```json
 "agent": {
@@ -132,7 +157,12 @@ custom content in that file stays intact.
 ```
 
 - `agent.type`: render target, `haproxy` or `nginx`.
-- `agent.output`: fragment path; leave it empty to print to stdout instead.
+- Single-host mode: omit `agent.peers` and `agent.remote`. `agent.output` is
+  then required, `agent.sync` is unused, backends come from the local route
+  table (host `127.0.0.1`) and the fragment is re-rendered on every route
+  change.
+- `agent.output`: fragment path. In peers/remote mode leaving it empty prints
+  to stdout instead; single-host mode requires it.
 - `agent.bind`: leave it empty (recommended) and the fragment carries only rules
   and backends, so the proxy's own config keeps the listener; set it (for
   example `*:80`) and the fragment becomes self-contained with its own

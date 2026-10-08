@@ -19,12 +19,11 @@ module main;
 import core.thread : Thread;
 import core.time : msecs;
 import std.getopt : defaultGetoptPrinter, getopt;
-import std.path : baseName;
 import std.stdio : stderr, stdout;
 
 import setline.config;
-import setline.model : AgentConfig;
-import setline.peer : renderAgentSnippets, writeSnippet;
+import setline.model : AgentConfig, HostRoutes;
+import setline.peer : renderAgentSnippets, writeSnippets;
 import setline.server;
 import setline.state;
 import setline.util : defaultConfigPath;
@@ -66,11 +65,26 @@ int main(string[] args) {
     }
 
     auto config = loadConfig(configPath);
-    if (config.agent.type.length > 0) {
+    // 配了 peers/remote 的机器是「纯渲染机」：不监听，按 sync 拉对端路由表。
+    if (config.agent.type.length > 0 && !usesLocalRoutes(config.agent)) {
       return runAgent(config.agent);
     }
 
     initialize(config, configPath);
+    // 单机部署：既当本机代理（也是 basctl 推路由的登记处），又把自己的路由表渲染成片段。
+    // 片段在启动时出一版，之后每次管理接口改路由都重渲染，不需要 peers，也不需要轮询。
+    if (config.agent.type.length > 0) {
+      auto agent = config.agent;
+      void renderLocal(HostRoutes[] routes) {
+        try {
+          renderLocalAgent(agent, routes);
+        } catch (Exception e) {
+          stderr.writefln("setline agent sync failed: %s", e.msg);
+        }
+      }
+      setRoutesChangedHook(&renderLocal);
+      renderLocal(routesSnapshot());
+    }
 
     stdout.writefln("setline listening on http://%s:%s", config.listen.host, config.listen.port);
     serve(config.listen);
@@ -79,6 +93,11 @@ int main(string[] args) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
     return 1;
   }
+}
+
+/** 单机部署：把本机路由表渲染成边缘代理片段（agent.output 由配置校验保证非空）。 */
+private void renderLocalAgent(AgentConfig agent, HostRoutes[] routes) {
+  writeSnippets(renderAgentSnippets(agent, routes), agent.output);
 }
 
 /** 运行 agent 模式：渲染片段并按 `agent.sync` 决定跑一轮还是常驻重复。 */
@@ -103,16 +122,5 @@ int runAgent(AgentConfig agent) {
     全部按内容哈希幂等写出，未变化的文件不会被触碰。
 */
 void syncAgentOnce(AgentConfig agent) {
-  auto snippets = renderAgentSnippets(agent);
-  if (agent.output.length == 0) {
-    foreach (snippet; snippets) {
-      stdout.writefln("# ==== %s ====", baseName(snippet.path));
-      stdout.write(snippet.text);
-    }
-    return;
-  }
-  foreach (snippet; snippets) {
-    auto changed = writeSnippet(snippet.path, snippet.text);
-    stdout.writefln("setline agent wrote %s (%s)", snippet.path, changed ? "updated" : "unchanged");
-  }
+  writeSnippets(renderAgentSnippets(agent), agent.output);
 }

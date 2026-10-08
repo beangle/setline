@@ -143,6 +143,29 @@ PeerConfig peerWithUrl(string url) {
   assert(readText(path) == "two\n");
 }
 
+@("peer renders local routes for a single-host agent") unittest {
+  auto routes = parsePeerRoutes(`{"localhost":[{"prefix":"/tools","port":20000}],` ~
+    `"*":[{"prefix":"/","port":9090}]}`);
+
+  // 单机部署：路由表里的端口就在本机，回源主机固定 127.0.0.1。
+  auto services = collectLocalServices(routes);
+  assert(services.length == 2);
+  auto tools = services[0].contentPath == "/tools" ? services[0] : services[1];
+  assert(tools.instances.length == 1);
+  assert(tools.instances[0].host == localBackendHost);
+  assert(tools.instances[0].port == 20000);
+
+  AgentConfig agent;
+  agent.type = "haproxy";
+  agent.output = "/tmp/setline-conf/local/setline.cfg";
+  auto snippets = renderAgentSnippets(agent, routes);
+  assert(snippets.length == 2);
+  assert(snippets[0].path == "/tmp/setline-conf/local/setline.cfg");
+  assert(snippets[0].text.canFind("backend be_local_localhost_tools"));
+  assert(snippets[0].text.canFind("server local_localhost_tools_0 127.0.0.1:20000 check"));
+  assert(snippets[1].text.canFind("localhost~/tools be_local_localhost_tools"));
+}
+
 @("peer renders rules-only snippets without a listener") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api/edu","port":9002}],` ~

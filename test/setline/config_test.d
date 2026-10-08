@@ -221,10 +221,29 @@ import setline.model;
   assertThrown!Exception(loadConfig(path));
 }
 
-@("config rejects agent without remote or peers") unittest {
-  auto path = "/tmp/setline-config-agent-nosource-test.json";
-  write(path, `{"agent":{"type":"nginx"},"routes":{}}`);
+@("config allows single-host agent without peers") unittest {
+  auto path = "/tmp/setline-config-agent-local-test.json";
+  write(path, `{"listen":"127.0.0.1:8080","agent":{"type":"haproxy",` ~
+    `"output":"/var/lib/setline/haproxy/setline.cfg"},"routes":{}}`);
   scope (exit) remove(path);
+
+  auto config = loadConfig(path);
+  assert(config.agent.type == "haproxy");
+  assert(config.agent.output == "/var/lib/setline/haproxy/setline.cfg");
+  assert(config.agent.peers.length == 0);
+  assert(usesLocalRoutes(config.agent));
+}
+
+@("config rejects single-host agent without output or type") unittest {
+  auto path = "/tmp/setline-config-agent-local-bad-test.json";
+  scope (exit) remove(path);
+
+  // 单机模式必须有 output：否则每次改路由都会把片段重新打到标准输出。
+  write(path, `{"agent":{"type":"nginx"},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // 有 output 也不能省 type：由它决定渲染 haproxy 还是 nginx。
+  write(path, `{"agent":{"output":"/tmp/setline.conf"},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
 

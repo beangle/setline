@@ -22,6 +22,7 @@ import std.file : exists, mkdirRecurse, readText, rename, write;
 import std.functional : toDelegate;
 import std.json;
 import std.path : baseName, buildPath, dirName, stripExtension;
+import std.stdio : stdout;
 import std.string : indexOf, stripRight;
 
 import setline.config : normalizeRouteHost, normalizeRoutePrefix, parsePort;
@@ -191,22 +192,37 @@ struct Snippet {
   string text;
 }
 
-/** 按数据来源取得后端服务：`peers` 合并，或 `remote` registry bundle（二者互斥）。 */
-BackendService[] collectAgentServices(AgentConfig agent) {
+/** 单机部署时本机后端的回源主机：路由表里的端口都在这台机器上。 */
+enum localBackendHost = "127.0.0.1";
+
+/** 本机服务的名字前缀，用来和 peer 名区分开。 */
+private enum localServicePrefix = "local";
+
+/** 把本机路由表转成服务列表（单机部署形态）。 */
+BackendService[] collectLocalServices(HostRoutes[] routes) {
+  return sortServices(mergePeerTable([], routes, localBackendHost, localServicePrefix));
+}
+
+/** 按数据来源取得后端服务：`peers` 合并、`remote` registry bundle（二者互斥），
+    或本机路由表（单机部署，见 {@link collectLocalServices}）。 */
+BackendService[] collectAgentServices(AgentConfig agent, HostRoutes[] localRoutes = []) {
   if (agent.peers.length > 0) return collectPeerServices(agent);
-  enforce(agent.url.length > 0, "agent.remote is required");
+  if (agent.url.length == 0) return collectLocalServices(localRoutes);
   return parseBackends(loadBackendsJson(agent));
 }
 
 /** 渲染 agent 要写出的全部片段。
 
+    数据来源是远端（`peers`/`remote`）时 `localRoutes` 用不上；单机部署时由调用方把
+    本进程的路由表传进来。
+
     `bind` 非空时只输出一份自包含片段（片段自己持有监听）；`bind` 留空时只输出规则与
     后端定义，监听段归代理主配置，文件布局见 docs/haproxy-integration.md 与
     docs/nginx-integration.md。
 */
-Snippet[] renderAgentSnippets(AgentConfig agent) {
+Snippet[] renderAgentSnippets(AgentConfig agent, HostRoutes[] localRoutes = []) {
   enforce(agent.type.length > 0, "agent.type is required");
-  return layoutSnippets(collectAgentServices(agent), agent.type, agent.output, agent.bind);
+  return layoutSnippets(collectAgentServices(agent, localRoutes), agent.type, agent.output, agent.bind);
 }
 
 /** 把服务列表排布成片段文件；规则模式下文件名由 `output` 派生。 */
@@ -247,4 +263,23 @@ bool writeSnippet(string path, string text) {
   write(tmpPath, text);
   rename(tmpPath, path);
   return true;
+}
+
+/** 写出一批片段；`output` 为空时打到标准输出（每个文件前加一行标题）。
+
+    单机部署与 `sync` 轮询共用这里：每个文件按内容哈希幂等写出，日志里逐个文件报告
+    updated / unchanged。
+*/
+void writeSnippets(Snippet[] snippets, string output) {
+  if (output.length == 0) {
+    foreach (snippet; snippets) {
+      stdout.writefln("# ==== %s ====", baseName(snippet.path));
+      stdout.write(snippet.text);
+    }
+    return;
+  }
+  foreach (snippet; snippets) {
+    auto changed = writeSnippet(snippet.path, snippet.text);
+    stdout.writefln("setline agent wrote %s (%s)", snippet.path, changed ? "updated" : "unchanged");
+  }
 }

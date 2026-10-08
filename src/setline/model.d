@@ -88,8 +88,10 @@ struct SyncConfig {
 
 /** 边缘代理渲染配置。
 
-    数据来源二选一：`peers` 聚合远端 setline 的路由表，`url`（`agent.remote`）下载
-    registry bundle，两者不能同时配置。`bind` 留空时片段不写监听段，只出规则和后端。
+    数据来源三种：`peers` 聚合远端 setline 的路由表，`url`（`agent.remote`）下载
+    registry bundle，两者都不能同时配置；**两个都不配**时渲染本进程的路由表，也就是
+    haproxy/nginx 与 setline、basctl 同机的单机部署，此时必须有 `output`。
+    `bind` 留空时片段不写监听段，只出规则和后端。
 */
 struct AgentConfig {
   string type;

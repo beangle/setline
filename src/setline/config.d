@@ -314,14 +314,24 @@ AgentConfig parseAgentConfig(JSONValue value) {
   if ("sync" in obj) {
     config.sync = parseSyncConfig(obj["sync"]);
   }
-  enforce(config.url.length > 0 || config.peers.length > 0,
-    "agent.remote or agent.peers is required");
   // remote 是「下载 registry bundle」，peers 是「合并对端路由表」，两种数据来源互斥。
   enforce(config.url.length == 0 || config.peers.length == 0,
     "agent.remote and agent.peers cannot be used together");
-  enforce(config.peers.length == 0 || config.type.length > 0,
-    "agent.type is required when agent.peers is set");
+  enforce(config.type.length > 0, "agent.type is required: haproxy or nginx");
+  // 两个来源都不配 = 单机部署（渲染本机路由表），此时必须有 output：路由一变就重渲染，
+  // 没有 output 只会把片段反复打到标准输出。
+  enforce(!usesLocalRoutes(config) || config.output.length > 0,
+    "agent.output is required when agent.peers and agent.remote are not set");
   return config;
+}
+
+/** agent 是否渲染**本机**路由表，也就是 `peers` 和 `remote` 都没配的单机部署形态。
+
+    `peers` 要求边缘代理和管理入口能互相访问，haproxy/nginx 与 setline、basctl 同机时
+    没必要绕这一圈：路由表就在本进程里，直接渲染即可。
+*/
+bool usesLocalRoutes(const AgentConfig agent) {
+  return agent.peers.length == 0 && agent.url.length == 0;
 }
 
 /** 解析被聚合的远端 setline 实例列表。 */
