@@ -55,11 +55,8 @@ PKGDIR="setline-${VERSION}-${REVISION}.${ARCH}"
 RPMFILE="setline-${VERSION}-${REVISION}.${ARCH}.rpm"
 RPMDIR="$DESTDIR/rpmbuild"
 
-if [ -f "$DESTDIR/$RPMFILE" ] && rpm -qip "$DESTDIR/$RPMFILE" >/dev/null 2>&1 && [ "$1" != "-f" ]; then
-  echo "$RPMFILE - already exist"
-  exit 0
-fi
-
+# 不跳过已存在的产物：包名里的版本来自 dub.json，开发期一个版本对应多次源码改动，
+# 「已存在就退出 0」会让人以为重建过，手里却还是旧包。每次全量重建（与 micdn 一致）。
 rm -f "$DESTDIR/$RPMFILE"
 rm -rf "$DESTDIR/$PKGDIR"
 mkdir -p "$DESTDIR/$PKGDIR"

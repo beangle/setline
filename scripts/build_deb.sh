@@ -34,21 +34,18 @@ fi
 MAINTAINER="duantihua <duantihua@163.com>"
 VERSION=$(awk -F'"' '/"version"/{print $4; exit}' "$SETLINE_HOME/dub.json")
 REVISION="1"
-if [ "$1" = "-f" ]; then
-  FORCE=1
-elif [ -n "$1" ]; then
-  REVISION="$1"
+if [ -n "$1" ]; then
+  case "$1" in
+    -*) ferror "Unknown option: $1" "Usage: $(basename "$0") [revision]";;
+    *) REVISION="$1";;
+  esac
 fi
 DESTDIR="$SETLINE_HOME/target"
 ARCH="amd64"
 DEBFILE="setline_${VERSION}-${REVISION}_${ARCH}.deb"
 PKGDIR="$DESTDIR/setline_${VERSION}-${REVISION}_${ARCH}"
 
-if [ -f "$DESTDIR/$DEBFILE" ] && [ "$FORCE" != "1" ]; then
-  echo "$DEBFILE - already exist"
-  exit 0
-fi
-
+# 不跳过已存在的产物，默认全量重建，理由见 build_rpm.sh。
 rm -f "$DESTDIR/$DEBFILE"
 rm -rf "$PKGDIR"
 

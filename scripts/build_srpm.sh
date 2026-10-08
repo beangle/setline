@@ -48,14 +48,9 @@ sys_release_version
 DESTDIR="$SETLINE_HOME/target"
 RPMDIR="$DESTDIR/rpmbuild-src"
 SRPMFILE="setline-${VERSION_RPM}-${REVISION}.src.rpm"
-FORCE=0
-[ "$1" = "-f" ] && FORCE=1
 
-if [ -f "$DESTDIR/$SRPMFILE" ] && [ "$FORCE" != "1" ]; then
-  echo "$SRPMFILE - already exist (use -f to rebuild)"
-  exit 0
-fi
-
+# 不跳过已存在的产物，默认全量重建，理由见 build_rpm.sh。
+rm -f "$DESTDIR/$SRPMFILE"
 rm -rf "$RPMDIR"
 mkdir -p "$RPMDIR"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
