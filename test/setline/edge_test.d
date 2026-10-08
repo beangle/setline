@@ -80,7 +80,8 @@ import setline.model;
   }`);
 
   auto map = renderHaproxyMap(services, "/var/lib/setline/haproxy/setline.map");
-  assert(map.canFind("#   http-request set-header X-Setline-Route %[req.hdr(host),lower]~%[path]"));
+  // 键里的 host 要小写并去掉端口，才和 setline 自己的 normalizeRequestHost 一致。
+  assert(map.canFind("#   http-request set-header X-Setline-Route %[req.hdr(host),lower,field(1,:)]~%[path]"));
   assert(map.canFind("use_backend %[req.hdr(X-Setline-Route),map_beg(" ~
     "/var/lib/setline/haproxy/setline.map)] if { req.hdr(X-Setline-Route),map_beg(" ~
     "/var/lib/setline/haproxy/setline.map) -m found }"));

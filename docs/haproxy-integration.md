@@ -253,13 +253,16 @@ drop-in。
 ```
 frontend http_in
   bind *:80
-  http-request set-header X-Setline-Route %[req.hdr(host),lower]~%[path]
+  http-request set-header X-Setline-Route %[req.hdr(host),lower,field(1,:)]~%[path]
   use_backend %[req.hdr(X-Setline-Route),map_beg(/var/lib/setline/haproxy/setline.map)] if { req.hdr(X-Setline-Route),map_beg(/var/lib/setline/haproxy/setline.map) -m found }
   use_backend %[path,map_beg(/var/lib/setline/haproxy/setline.map)] if { path,map_beg(/var/lib/setline/haproxy/setline.map) -m found }
 ```
 
 - 第一行把 host 和 path 拼成 `host~path` 作为 map 的查询键：`req.hdr(host)` 原样保留
-  大小写，所以先 `lower`；`path` 是大小写敏感的，不能跟着一起 lower。
+  大小写，所以先 `lower`；`field(1,:)` 去掉 Host 里的端口（浏览器/curl 访问
+  `http://localhost:8080/...` 时 Host 是 `localhost:8080`，不剥就永远对不上 map 里的
+  `localhost`——setline 自己匹配时也剥端口，这里必须一致）；`path` 是大小写敏感的，
+  不能跟着一起 lower。
 - 第二行处理精确 host 的路由（map_beg 取最长前缀匹配）。
 - 第三行处理 `*` 回退路由：setline 的 `*` 命名空间落到这里，所以它必须排在第二行之后。
 - 三行中的路径就是上面那份 `.map`，setline 也会把这三行以注释形式写在 map 文件头部，
