@@ -51,10 +51,45 @@ setline **只生成片段**，不生成也不改动 `/etc/nginx/nginx.conf`：
 `"upstream" directive is not allowed here`。所以"不写 `listen`、由你的 server 持有监听"
 就只能拆开 include。
 
+## 数据面与控制面：nginx 直接回源后端
+
+setline **不在业务流量的路径上**。片段里的 upstream server 写的就是业务端口：
+
+```
+# 单机部署：回源主机固定 127.0.0.1
+upstream local_app_example_com_api_edu {
+  server 127.0.0.1:9002;
+}
+# peers 模式：回源主机取自 peer.url，端口取自对端的路由表
+upstream app_app_example_com_api_edu {
+  server 10.0.1.10:9002;
+}
+```
+
+顶层 `listen` 是 setline 的**控制面**入口，只承担三件事：
+
+- basctl 用 `PUT` / `DELETE /__setline/routes*` 登记本机路由；
+- 采集机用 `GET /__setline/routes` 拉别的主机的路由表；
+- 直接用 `curl http://127.0.0.1:8080/<path>` 调试本机解析结果。
+
+nginx 的 `server { listen ...; }` 跟它没有关系：**不要把 `proxy_pass` 指到 setline 的
+`listen` 端口**，那样等于白白多一跳，还丢掉 nginx 自己的负载均衡与健康检查。所以
+`listen` 平时绑回环（`"127.0.0.1:8080"`）就够；只有采集机在别的机器上时才绑 `*` 并设置
+`adminToken`。
+
+落盘后一眼自检：
+
+```bash
+grep -n '^  server ' /var/lib/setline/nginx/setline.conf
+```
+
+每行都应是 `127.0.0.1:<业务端口>`（单机）或 `<peer 主机>:<业务端口>`（peers）。出现
+`<某主机>:8080` 就是配错了，8080 是 setline 的管理端口，不是业务端口。
+
 ## setline 配置示例
 
 先选数据来源：**边缘机聚合多台 setline** 用 `peers`（下面第一个例子）；nginx 与
-setline、basctl **同机**时不配 `peers`/`remote`，setline 边当本机代理边渲染片段
+setline、basctl **同机**时不配 `peers`/`remote`，setline 边收 basctl 推的路由边渲染片段
 （见「单机部署」）。
 
 ### 聚合多台 setline（peers）
@@ -114,8 +149,9 @@ setline、basctl **同机**时不配 `peers`/`remote`，setline 边当本机代�
 ### 单机部署（nginx 与 setline 同机）
 
 nginx、setline、basctl 装在同一台机器上时，upstream 就是 setline 调度的同机后端，
-不配 `peers` 也**不需要** `remote`：setline 照常监听 `listen` 接收 basctl 推的路由，
-同时把本机路由表渲染成片段（upstream 服务器固定 `127.0.0.1`）。
+不配 `peers` 也**不需要** `remote`：setline 监听 `listen` 接收 basctl 推的路由
+（控制面，业务流量不经过它），同时把本机路由表渲染成片段（upstream 服务器固定
+`127.0.0.1`）。
 
 ```json
 {
@@ -137,7 +173,7 @@ nginx、setline、basctl 装在同一台机器上时，upstream 就是 setline �
 
 | 项 | peers 模式 | 单机模式 |
 |---|---|---|
-| `listen` / `routes` | 不配（纯渲染机，不监听） | 配（本机代理，basctl 推到这里） |
+| `listen` / `routes` | 不配（纯渲染机，不监听） | 配（控制面入口，basctl 推到这里） |
 | upstream 名前缀 | peer 的 `name` | `local` |
 | 回源地址 | 各 peer 的 `url` 主机 | `127.0.0.1` |
 | 重渲染时机 | `sync` 周期 / 外层 timer | 启动一次 + 每次管理接口改路由 |
@@ -216,6 +252,8 @@ include，和上面示例一致。
 退出码：`1` 片段不合法（已回滚），`3` 接线错误（片段留在磁盘，等修接线），`2` 用法错误。
 **timer 装完不会自动启用**，要 `sudo systemctl enable --now setline-apply.timer`；手工
 执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
+reload 有没有发生（master PID 不变、worker PID 换掉、日志里的 `reconfiguring`）见
+`docs/agent-reload.md` 的「如何确认 reload 真的发生」。
 
 ## 权限
 

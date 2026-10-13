@@ -51,6 +51,10 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 只写端口时默认绑回环，不会意外对外暴露。要对外提供服务必须显式写 `*:port` 或具体地址，
 此时务必同时设置 `adminToken`（原因见下）。
 
+配了 `agent` 时 `listen` 只是**控制面**入口（basctl 登记路由、采集机读路由表），业务
+流量不经过它：haproxy/nginx 按生成的片段直接回源业务端口。这种部署绑回环即可，只有当
+采集机在别的机器上、需要它来 `GET /__setline/routes` 时才绑 `*`。
+
 ## adminToken
 
 `adminToken` 只保护**读**接口的**非本机**来源，这是最容易误解的一点，分三种情况：
@@ -143,11 +147,13 @@ token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent
 |---|---|---|---|
 | `peers`（与 `remote` 互斥） | 纯渲染机：合并多台对端 setline 的路由表 | **不监听**，按 `sync` 拉取 | `sync` 周期，或外层 timer 跑一轮 |
 | `remote`（与 `peers` 互斥） | 纯渲染机：下载 registry bundle | **不监听**，按 `sync` 拉取 | `sync` 周期，或外层 timer 跑一轮 |
-| 都不配（**单机部署**） | haproxy/nginx、setline、basctl 同机 | **照常监听**本机代理 | 启动时渲染一次，之后每次经管理接口改路由立即重渲染 |
+| 都不配（**单机部署**） | haproxy/nginx、setline、basctl 同机 | **照常监听**，但只当控制面入口 | 启动时渲染一次，之后每次经管理接口改路由立即重渲染 |
 
-单机部署下 setline 既是被 basctl 推路由的本机代理，又把自己的路由表渲染成片段，因此
-不需要 `peers`（不要求边缘代理和管理入口互相访问），也不需要轮询 timer —— 路由一变
-片段就重渲染。此时 `output` 必填。
+单机部署下 setline 是路由表的**登记处**（接收 basctl 推来的路由）和**渲染器**，同时
+保留一个本机代理用于调试：业务流量并不经过它，同机的 haproxy/nginx 按片段直接回源
+业务端口（见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md` 的
+「数据面与控制面」）。因此不需要 `peers`（不要求边缘代理和管理入口互相访问），也不需要
+轮询 timer —— 路由一变片段就重渲染。此时 `output` 必填。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -257,13 +263,13 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 
 和纯渲染机（配了 `peers`/`remote`）的三点区别：
 
-- setline **照常监听** `listen`，既是本机代理，也是 basctl 推路由的登记处；
+- setline **照常监听** `listen`，作为 basctl 推路由的登记处（控制面，业务流量不经过它）；
 - 片段在**启动时渲染一次**，之后每次经管理接口（`PUT` / `DELETE /__setline/routes*`）
   改路由就**立即重渲染**，不需要 `sync` 定时器，也不依赖外面再跑一个 `setline -f`；
 - `output` **必填**：没有外部驱动，留空只会把片段反复打到标准输出。
 
-写片段失败（目录不存在、权限不足）只打一行 `setline agent sync failed: ...`，本机代理
-照常运行，下次改路由会再试——不会因为边缘代理的片段写不出去而让业务断掉。
+写片段失败（目录不存在、权限不足）只打一行 `setline agent sync failed: ...`，setline
+照常运行（业务流量本来就不经过它），下次改路由会再试——不会因为片段写不出去而让业务断掉。
 
 回源主机固定为 `127.0.0.1` —— 单机部署下路由端口都在本机。生成的服务名用 `local`
 前缀（例如 `local_app_example_com_api_edu`），与 peer 模式的服务名区分开。
@@ -405,8 +411,9 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 
 ### agent：单机部署（同机 haproxy + setline + basctl）
 
-边缘代理和 setline 同机时省掉 `peers`：setline 仍监听本机代理，路由一变就重渲染片段。
-本例绑回环，管理接口也只对本机开放。
+边缘代理和 setline 同机时省掉 `peers`：setline 仍监听控制面入口（basctl 推路由），
+路由一变就重渲染片段；业务流量由 haproxy 按片段直接回源，不经过 setline。本例绑回环，
+管理接口也只对本机开放。
 
 ```json
 {

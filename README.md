@@ -119,8 +119,14 @@ no matching route for the requested path, setline tries `*`.
 never rewrites the proxy's own config file, so the custom content in that file
 stays intact. There are three data sources:
 
+- **setline is not in the traffic path.** Fragments point at **backend ports**:
+  `127.0.0.1:<port>` in single-host mode, `<peer host>:<port>` in peers mode, so
+  HAProxy/Nginx proxies straight to the application. setline's `listen` address
+  is only the control plane (basctl registers routes, edge agents read
+  `GET /__setline/routes`), so binding it to loopback is enough unless peers or
+  collectors live on other machines.
 - **Single host** (no `peers`, no `remote`): proxy, setline and basctl run on
-  one machine; setline keeps listening as the local proxy and re-renders the
+  one machine; setline keeps listening as the control plane and re-renders the
   fragment whenever its route table changes through the admin API.
 - **`agent.peers`**: an edge machine merges the route tables of several remote
   `setline` instances.
@@ -260,7 +266,6 @@ certs/
       "name": "edu-learning",
       "host": "www.example.com",
       "contentPath": "/m/edu/learning",
-      "healthPath": "/health",
       "instances": [
         { "host": "10.0.1.10", "port": 18001 },
         { "host": "10.0.1.11", "port": 18002 }
@@ -270,8 +275,9 @@ certs/
 }
 ```
 
-`content_path`, `health_path`, and instance `ip` are also accepted for existing
-registry payloads.
+`content_path` and instance `ip` are also accepted for existing registry
+payloads. `healthPath` / `health_path` are accepted but ignored: generated
+backends always use a plain TCP `check`, never `option httpchk`.
 
 ## Runtime Route Management
 

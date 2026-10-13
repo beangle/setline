@@ -35,7 +35,7 @@ setline **只生成片段**，不生成也不改动 `/etc/haproxy/haproxy.cfg`�
 
 | 生成 | 不生成（始终归主配置） |
 |---|---|
-| `backend` 段（含 `server`、`option httpchk`） | `global`、`defaults`、日志、`stats socket` |
+| `backend` 段（`server` + TCP `check`；**从不**生成 `option httpchk`） | `global`、`defaults`、日志、`stats socket` |
 | 路由规则：自包含模式的 `frontend`，或规则模式的 map 文件 | TLS 证书/`bind ssl`、`crt-list`、超时、调优 |
 | | 其它与 setline 无关的 `frontend`/`backend` |
 
@@ -44,8 +44,42 @@ setline **只生成片段**，不生成也不改动 `/etc/haproxy/haproxy.cfg`�
 - HAProxy 的 `global`/`defaults` 和 TLS、证书、日志、统计页都是部署方自定义内容，
   生成器无法替它们做决定；片段 + `-f <dir>` 已经能覆盖路由与后端这两件事。
 - 校验成本不变：`haproxy -c` 永远校验**整份**配置（含片段），片段模式并不会降低把关强度。
+- 健康检查固定只做 TCP `check`（端口能连上就算健康），和 setline 自己的 `healthCheck`
+  口径一致，**永远不发 `option httpchk`**。HTTP 检查按响应状态码判健康，应用根路径返回
+  404/401 太常见，只会把本来能用的后端判成 DOWN；要按业务路径探活请在主配置里自己写。
+  registry payload 里的 `healthPath` / `health_path` 仍被接受，但一律忽略。
 - 真要"全量生成"，正确做法是在外层用模板/配置管理工具渲染 `haproxy.cfg`，再把 setline
   片段作为其中一段拼进去；让 setline 覆盖主文件与"保留自定义内容"的目标冲突，所以不做。
+
+## 数据面与控制面：haproxy 直接回源后端
+
+setline **不在业务流量的路径上**。片段里的 `server` 写的就是业务端口：
+
+```
+# 单机部署：回源主机固定 127.0.0.1
+server local_app_example_com_api_edu_0 127.0.0.1:9002 check
+# peers 模式：回源主机取自 peer.url，端口取自对端的路由表
+server app_app_example_com_api_edu_0 10.0.1.10:9002 check
+```
+
+顶层 `listen` 是 setline 的**控制面**入口，只承担三件事：
+
+- basctl 用 `PUT` / `DELETE /__setline/routes*` 登记本机路由；
+- 采集机用 `GET /__setline/routes` 拉别的主机的路由表；
+- 直接用 `curl http://127.0.0.1:8080/<path>` 调试本机解析结果。
+
+haproxy 的 `bind` 跟它没有关系：**不要把 backend 指到 setline 的 `listen` 端口**，
+那样等于白白多一跳，还丢掉 haproxy 自己的负载均衡与健康检查。所以 `listen` 平时绑回环
+（`"127.0.0.1:8080"`）就够；只有采集机在别的机器上时才绑 `*` 并设置 `adminToken`。
+
+落盘后一眼自检：
+
+```bash
+grep -n '^  server ' /var/lib/setline/haproxy/setline.cfg
+```
+
+每行都应是 `127.0.0.1:<业务端口>`（单机）或 `<peer 主机>:<业务端口>`（peers）。出现
+`<某主机>:8080` 就是配错了，8080 是 setline 的管理端口，不是业务端口。
 
 ## 两种模式
 
@@ -75,7 +109,7 @@ setline **只生成片段**，不生成也不改动 `/etc/haproxy/haproxy.cfg`�
 ## setline 配置示例
 
 先选数据来源：**边缘机聚合多台 setline** 用 `peers`（下面第一个例子）；haproxy 与
-setline、basctl **同机**时不配 `peers`/`remote`，setline 边当本机代理边渲染片段
+setline、basctl **同机**时不配 `peers`/`remote`，setline 边收 basctl 推的路由边渲染片段
 （见「单机部署」）。
 
 ### 聚合多台 setline（peers）
@@ -135,8 +169,8 @@ setline、basctl **同机**时不配 `peers`/`remote`，setline 边当本机代�
 ### 单机部署（haproxy 与 setline 同机）
 
 haproxy、setline、basctl 装在同一台机器上时，回源目标和 setline 调度的后端是同一批
-进程，不配 `peers` 也**不需要** `remote`：setline 照常监听 `listen` 接收 basctl 推的
-路由，同时把本机路由表渲染成片段（回源主机固定 `127.0.0.1`）。
+进程，不配 `peers` 也**不需要** `remote`：setline 监听 `listen` 接收 basctl 推的路由
+（控制面，业务流量不经过它），同时把本机路由表渲染成片段（回源主机固定 `127.0.0.1`）。
 
 ```json
 {
@@ -158,7 +192,7 @@ haproxy、setline、basctl 装在同一台机器上时，回源目标和 setline
 
 | 项 | peers 模式 | 单机模式 |
 |---|---|---|
-| `listen` / `routes` | 不配（纯渲染机，不监听） | 配（本机代理，basctl 推到这里） |
+| `listen` / `routes` | 不配（纯渲染机，不监听） | 配（控制面入口，basctl 推到这里） |
 | 服务名前缀 | peer 的 `name` | `local` |
 | 回源主机 | 各 peer 的 `url` 主机 | `127.0.0.1` |
 | 重渲染时机 | `sync` 周期 / 外层 timer | 启动一次 + 每次管理接口改路由 |
@@ -272,10 +306,10 @@ frontend http_in
   `set-header` 的 log-format、`req.hdr`、`map_beg` 加动态 `use_backend` 这套组合 1.5
   起就存在，2.0 以上通用，所以规则模式只保留这一种写法。Map 查询、`*` 回退、host 大小写
   三条语义都不变。
-- 代价是请求里多了一个内部头。**setline 生成的 backend 会自己加
-  `http-request del-header X-Setline-Route` 把它删掉**（已实测 2.0/2.2/3.0 都不会传给
-  应用）；如果你把 map 的某条路由指到 setline 之外的 backend，需要自己补一行
-  `del-header`。
+- 代价是请求里多了一个内部头 `X-Setline-Route`，它会跟请求一起到应用。setline **不生成
+  `del-header`**，删不删由你决定：要清理就在自己的 backend 里加一行
+  `http-request del-header X-Setline-Route`（frontend 里那三行的顺序别动，
+  `set-header` 必须排在两条 `use_backend` 之前）。
 
 setline 生成的 map 形如：
 
@@ -304,6 +338,8 @@ backend 名由服务名转换而来，不要手写 backend 段；map 文件与 b
 `2` 用法错误。为什么用 `systemctl reload` 而不是 `-sf`/`-x`/`SIGHUP`，见
 `docs/agent-reload.md`。**timer 装完不会自动启用**，要 `sudo systemctl enable --now
 setline-apply.timer`；手工执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
+reload 到底有没有发生（master PID 不变、worker PID 换掉、`show proc` 的 reload 计数）
+见 `docs/agent-reload.md` 的「如何确认 reload 真的发生」。
 
 ## 权限
 
@@ -321,4 +357,5 @@ setline-apply.timer`；手工执行、日志与参数覆盖见 `docs/agent-reloa
 | `Could not open configuration file <目录>` | 目录不存在（老发行版没有 `conf.d`），或 HAProxy < 1.7 根本不认 `-f <目录>`（本项目最低要求 2.0，见「版本要求」） |
 | `invalid variable 'set-var-fmt(txn.hp)'` | 用了 2.6+ 才有的写法；换成上面的 `set-header` 三行（2.0 起通用） |
 | `/api/xxx` 返回 503 且日志无异常 | map 命中了 backend，但 backend 里 `server` 健康检查失败（对端不可达） |
+| `Server be_xxx/... is DOWN, reason: Layer7 wrong status, code: 404` | 主配置（`defaults` 或你自己的 backend）里有 `option httpchk`：setline 片段只发 TCP `check`，不会产生这条例；把该 HTTP 检查挪走或换一个返回 2xx 的路径 |
 | 改了路由但流量没变 | 片段没写出（agent 未运行/未同步）、静默窗口还没过，或 `*.map` 未被引用 |

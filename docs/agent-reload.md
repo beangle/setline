@@ -143,6 +143,64 @@ processes.`）；nginx 收到 `SIGHUP` 后重读配置、起新 worker、老 wor
 haproxy 那条 `-c -q` 排在 `kill` 之前，systemd 按顺序执行、前一条失败就不执行后一条
 （实测：reload 返回 1，后面的 `ExecReload` 确实没跑），所以坏配置走不到发信号那一步。
 
+## 如何确认 reload 真的发生
+
+先看 `setline-apply` 自己怎么说（最直接，且不需要额外接线）：
+
+```bash
+journalctl -u setline-apply -n 5 -o cat    # 成功时最后一行是 "reloaded <服务名>"
+```
+
+如果打的是 `fragment unchanged, nothing to do`，说明片段没变、**故意没有** reload，
+那是对的行为，不是故障。
+
+再确认 haproxy 侧。判断依据是 **master PID 不变、worker PID 换掉**——`-Ws` 下 master
+持有监听 socket，reload 只是 fork 一个新 worker 接管，记在同一个 master 上：
+
+```bash
+systemctl show -p MainPID haproxy        # master PID，reload 前后不变
+pgrep -a haproxy                         # worker 的 PID 会变
+ps -o pid,ppid,lstart,cmd -C haproxy     # worker 的 STARTED 是刚才
+journalctl -u haproxy -n 20 --no-pager   # reload 后会出现这几行
+```
+
+```
+systemd[1]: Reloading HAProxy Load Balancer...
+haproxy[<master>]: [NOTICE] (<master>) : New worker (<new pid>) forked
+haproxy[<master>]: [NOTICE] (<master>) : Loading success.
+haproxy[<master>]: [WARNING] (<master>) : Former worker (<old pid>) exited with code 0 (Exit)
+```
+
+`Former worker ... exited with code 0` 是软退出完成的正常提示，不是错误；只有 master
+PID 变了才说明是重启（`systemctl restart`）而不是 reload。
+
+**最精确的办法是看 reload 计数**，前提是给 haproxy 加了 master CLI socket
+（`-S`，2.0 起有；它和配置里的 `stats socket` 是两个不同的 socket）。加在
+`ExecStart` 的 `-Ws` 之后（照 `docs/haproxy-integration.md` 的「接线（一次性）」那样
+整段覆盖 `ExecStart`，例如 `-S /run/haproxy/master.sock`）：
+
+```bash
+echo "show proc" | sudo socat stdio /run/haproxy/master.sock
+```
+
+```
+#<PID>          <type>          <reloads>       <uptime>        <version>
+1271904         master          1 [failed: 0]   0d00h00m05s     3.0.25
+# workers
+1271950         worker          0               0d00h00m01s     3.0.25
+```
+
+`master` 行的 `<reloads>` 每成功 reload 一次 +1，`[failed: N]` 是校验/加载失败的次数。
+上面这个格式在 2.0.33 与 3.0.25 上都实测可用（2.0 的输出多一列 `<relative PID>`）。
+没有 `-S` 时用上面的 `ps` + journal 判断即可；socket 默认只有 root 能连，所以查询要
+`sudo`。
+
+nginx 同理，只是没有 reload 计数可查：`systemctl reload nginx` 后 master PID 不变、
+worker 全换，`error_log` 里依次出现
+`signal 1 (SIGHUP) received from <pid>, reconfiguring` → `reconfiguring` →
+`start worker process <新 pid>` → `worker process <旧 pid> exited with code 0`
+（本机 nginx 1.30.4 实测；nginx 的日志默认在 `/var/log/nginx/error.log`）。
+
 ## 为什么用 timer 而不是 path 单元
 
 `writeSnippet` 是 tmp + rename 的原子替换，这对 inotify 不友好。实测：
