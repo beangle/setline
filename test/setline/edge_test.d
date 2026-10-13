@@ -43,10 +43,17 @@ import setline.model;
   assert(services[0].name == "edu-learning");
   assert(services[0].host == "local.example.com");
   assert(services[0].contentPath == "/m/edu/learning");
-  assert(services[0].healthPath == "/health");
   assert(services[0].instances.length == 2);
   assert(services[0].instances[0].host == "10.0.1.10");
   assert(services[0].instances[1].port == 18002);
+
+  auto bare = parseBackends(`{"services":[{"name":"a","contentPath":"/a",
+    "instances":[{"host":"10.0.1.30","port":18003}]}]}`);
+  assert(renderHaproxyBackends(bare).canFind("server a_0 10.0.1.30:18003 check"));
+
+  // payload 里的 healthPath / health_path 一律忽略：片段只发 TCP `check`，绝不发 httpchk。
+  assert(!renderHaproxyBackends(services).canFind("option httpchk"));
+  assert(renderHaproxyBackends(services).canFind("server edu_learning_0 10.0.1.10:18001 check"));
 }
 
 @("edge renders haproxy config") unittest {
@@ -64,9 +71,11 @@ import setline.model;
   assert(rendered.canFind("  mode http\n"));
   assert(rendered.canFind("acl path_edu_learning path_beg /m/edu/learning"));
   assert(rendered.canFind("backend be_edu_learning"));
-  assert(rendered.canFind("option httpchk GET /health"));
+  // 后端健康检查固定 TCP check，不生成 option httpchk。
+  assert(!rendered.canFind("option httpchk"));
   assert(rendered.canFind("server edu_learning_0 10.0.1.10:18001 check"));
-  assert(rendered.canFind("http-request del-header X-Setline-Route"));
+  // 不生成 del-header：X-Setline-Route 是规则模式的查询键，删不删由部署方决定。
+  assert(!rendered.canFind("del-header"));
 }
 
 @("edge renders haproxy routing map usable from 2.0") unittest {
@@ -92,7 +101,7 @@ import setline.model;
 
   auto backends = renderHaproxyBackends(services);
   assert(backends.canFind("backend be_app"));
-  assert(backends.canFind("http-request del-header X-Setline-Route"));
+  assert(!backends.canFind("del-header"));
 }
 
 @("edge renders nginx config") unittest {

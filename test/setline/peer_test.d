@@ -18,9 +18,10 @@ module setline.peer_test;
 
 import std.algorithm : canFind;
 import std.exception : assertThrown;
-import std.file : exists, mkdirRecurse, readText, rmdirRecurse, write;
+import std.file : exists, mkdirRecurse, readText, remove, rmdirRecurse, write;
 import std.path : buildPath;
 
+import setline.config : parseConfigFile;
 import setline.edge;
 import setline.model;
 import setline.peer;
@@ -164,6 +165,26 @@ PeerConfig peerWithUrl(string url) {
   assert(snippets[0].text.canFind("backend be_local_localhost_tools"));
   assert(snippets[0].text.canFind("server local_localhost_tools_0 127.0.0.1:20000 check"));
   assert(snippets[1].text.canFind("localhost~/tools be_local_localhost_tools"));
+}
+
+@("single-host agent renders business ports, never the setline listen port") unittest {
+  auto path = "/tmp/setline-peer-local-listen-test.json";
+  write(path, `{"listen":"*:18080","agent":{"type":"haproxy",` ~
+    `"output":"/tmp/setline-conf/local-listen/setline.cfg"},` ~
+    `"routes":{"app.example.com":{"/api/edu":[9002,9003]}}}`);
+  scope (exit) if (exists(path)) remove(path);
+
+  // 数据面片段只认业务端口：haproxy 直接回源，setline 的 listen 只是控制面。
+  auto config = parseConfigFile(path);
+  auto snippets = renderAgentSnippets(config.agent, config.routes);
+  assert(snippets[0].text.canFind("server local_app_example_com_api_edu_0 127.0.0.1:9002 check"));
+  assert(snippets[0].text.canFind("server local_app_example_com_api_edu_1 127.0.0.1:9003 check"));
+  foreach (snippet; snippets) assert(!snippet.text.canFind("18080"));
+
+  auto nginx = layoutSnippets(collectLocalServices(config.routes), "nginx",
+    "/tmp/setline-conf/local-listen/setline.conf", "");
+  assert(nginx.length == 2);
+  foreach (snippet; nginx) assert(!snippet.text.canFind("18080"));
 }
 
 @("peer renders rules-only snippets without a listener") unittest {

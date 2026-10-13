@@ -46,7 +46,6 @@ struct BackendService {
   string name;
   string host = "*";
   string contentPath;
-  string healthPath = "/";
   BackendInstance[] instances;
 }
 
@@ -266,8 +265,9 @@ string renderHaproxyBackends(BackendService[] services) {
     拼键用 `set-header` 而不是 HAProxy 2.6 才有的 `set-var-fmt`：`set-header` 的
     log-format + `req.hdr` + `map_beg` + 动态 `use_backend` 这组组合 1.5 起就存在，
     HAProxy 2.0 以上各版本通用（已在 2.0.33、2.2.9、3.0.25 实测）。代价是请求里多了
-    一个内部头，setline 生成的 backend 会用 `http-request del-header` 删掉它，不会
-    传给它代理的应用。
+    一个内部头 `X-Setline-Route`，setline 不替谁做决定、不生成 `del-header`：它在
+    后端的可见性由部署方自己控制（要清理就在自己的 backend 里加一行
+    `http-request del-header X-Setline-Route`）。
 */
 string renderHaproxyMap(BackendService[] services, string mapPath) {
   auto outp = appender!string();
@@ -318,15 +318,11 @@ void appendHaproxyBackends(BackendService[] services, ref Appender!string outp) 
     outp.put(id);
     outp.put("\n");
     outp.put("  mode http\n");
-    // 规则模式在 frontend 用这个头拼 map 查找键，别让它传给它代理的应用。
-    outp.put("  http-request del-header ");
-    outp.put(haproxyRouteHeader);
-    outp.put("\n");
-    if (service.healthPath.length > 0) {
-      outp.put("  option httpchk GET ");
-      outp.put(service.healthPath);
-      outp.put("\n");
-    }
+    // 不生成 del-header：规则模式在 frontend 用 X-Setline-Route 拼 map 键，这个头会跟着
+    // 请求到应用。删不删是部署方的取舍，setline 不替他决定（片段只声明 backend）。
+    // 固定只发 TCP `check`，从不生成 `option httpchk`：HTTP 检查按状态码判健康，应用根路径
+    // 返回 404/401 很常见，会把本来能用的后端判成 DOWN。setline 自己的 healthCheck 也只探
+    // TCP，两边口径保持一致。
     foreach (i, instance; service.instances) {
       outp.put("  server ");
       outp.put(id);
@@ -459,8 +455,8 @@ BackendService parseBackendService(JSONValue value) {
   auto contentPath = optionalString(value, "contentPath", optionalString(value, "content_path", ""));
   enforce(contentPath.length > 0, "backend service contentPath is required");
   service.contentPath = normalizeRoutePrefix(contentPath);
-  service.healthPath = normalizeRoutePrefix(optionalString(value, "healthPath",
-    optionalString(value, "health_path", "/")));
+  // payload 里可能带 healthPath / health_path，这里不再解析：渲染固定只发 TCP `check`，
+  // 不发 `option httpchk`（理由见 appendHaproxyBackends）。未知字段本来就被忽略，老 bundle 不必改。
   service.instances = parseBackendInstances(value);
   enforce(service.name.length > 0, "backend service name must not be empty");
   enforce(service.instances.length > 0, "backend service instances must not be empty");
