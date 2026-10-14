@@ -133,13 +133,17 @@ import setline.http;
     "POST /api HTTP/1.1\r\n" ~
     "Content-Length: 9223372036854775808\r\n\r\n";
   assert(parseHttpHead(tooLarge).contentLength < 0);
+}
 
-  auto negative =
-    "POST /api HTTP/1.1\r\n" ~
-    "Content-Length: -1\r\n\r\n";
-  auto negativeHead = parseHttpHead(negative);
-  assert(!negativeHead.hasContentLength);
-  assert(negativeHead.contentLength < 0);
+@("http rejects content length that is not 1*DIGIT") unittest {
+  // 宽松解析（to!long 会接受 "+5" 甚至 "-1"）会把 framing 冲突漏成「没有长度」：
+  // 入口必须按 RFC 9110 只认纯十进制数字，否则请求体边界会退化成连接关闭界定。
+  foreach (value; ["-1", "+5", "5x", "0x10", "5 5", ""]) {
+    auto head = parseHttpHead("POST /api HTTP/1.1\r\nContent-Length: " ~ value ~ "\r\n\r\n");
+    assert(!head.hasContentLength, value);
+    assert(head.contentLength < 0, value);
+    assert(head.invalidFraming, value);
+  }
 }
 
 @("http parses switching protocols response") unittest {

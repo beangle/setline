@@ -421,7 +421,23 @@ private void parseHeaderFields(ref HttpHead result) {
   }
 }
 
+/** 解析 `Content-Length` 的值。
+
+    RFC 9110 规定它是 `1*DIGIT`：只接受纯十进制数字，不接受正负号、空白、`0x` 前缀，超出
+    `long` 范围也算非法。这里必须自己按字符校验，不能让 `to!long` 代劳——它会接受 `+5`，
+    甚至接受 `-1`；后者一旦被判成「合法但为负」，本该以 `invalidFraming` 拒绝的报文就会
+    退化成「没有长度」，把请求/响应体边界变成连接关闭界定（`invalidFraming` 的判据见
+    `parseHeaderFields`）。
+*/
 private bool parseContentLengthValue(string value, ref long length) {
+  if (value.length == 0) {
+    return false;
+  }
+  foreach (ch; value) {
+    if (ch < '0' || ch > '9') {
+      return false;
+    }
+  }
   try {
     length = value.to!long;
   } catch (ConvException) {
