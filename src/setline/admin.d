@@ -186,7 +186,12 @@ bool isLocalhostAddress(string address) {
   return address == "127.0.0.1" || address == "::1" || address == "::ffff:127.0.0.1";
 }
 
-/** 从 request target 的 query string 中读取指定参数。 */
+/** 从 request target 的 query string 中读取指定参数。
+
+    不做 URL 解码：管理接口用到的 `host` / `prefix` 都是 ASCII 路径片段，客户端（basctl /
+    curl）不会对它们做百分号编码；真要传特殊字符应该写进 JSON body（`PUT /routes/all`）。
+*/
+
 string queryValue(string target, string name) {
   auto queryStart = target.indexOf("?");
   if (queryStart < 0) {

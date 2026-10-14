@@ -219,20 +219,6 @@ HttpHead parseHttpHead(string head, ubyte[] bufferedBody = null) {
   return result;
 }
 
-/** 读取完整 HTTP 请求，主要供需要解析请求体的管理接口使用。
-
-    普通代理路径不调用这个函数，因为代理目标是基于 URL 的快速透传；只有 `__setline`
-    管理接口需要读取 JSON body 来修改运行时路由配置，所以这里按 `Content-Length`
-    补齐请求体。当前管理接口不支持 chunked body。
-*/
-string readHttpRequest(TCPConnection socket) {
-  auto request = readHttpHead(socket);
-  if (request.head.length == 0) {
-    return "";
-  }
-  return completeHttpRequest(socket, request);
-}
-
 /** 在已有请求头基础上补齐 `Content-Length` 指定的请求体。
 
     这个函数刻意不做业务解析，只负责把已经读到的 body 前缀和剩余 body 拼回一个完整
@@ -504,27 +490,4 @@ string buildHttpResponse(string status, string contentType, string body, string[
 
   response ~= "\r\n" ~ body;
   return response;
-}
-
-/** 返回常见 HTTP 状态码的 reason phrase。 */
-string statusReason(int status) {
-  switch (status) {
-    case 200: return "OK";
-    case 201: return "Created";
-    case 202: return "Accepted";
-    case 204: return "No Content";
-    case 301: return "Moved Permanently";
-    case 302: return "Found";
-    case 304: return "Not Modified";
-    case 400: return "Bad Request";
-    case 401: return "Unauthorized";
-    case 403: return "Forbidden";
-    case 404: return "Not Found";
-    case 405: return "Method Not Allowed";
-    case 429: return "Too Many Requests";
-    case 500: return "Internal Server Error";
-    case 502: return "Bad Gateway";
-    case 503: return "Service Unavailable";
-    default: return "Status";
-  }
 }

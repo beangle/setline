@@ -176,26 +176,6 @@ ushort selectPort(ref RouteTree tree, string path, PortPredicate available) {
   return candidates.length == 0 ? 0 : candidates[uniform(0, candidates.length)];
 }
 
-/** 新增或替换一条运行时路由。
-
-    管理接口使用该函数更新内存路由表。每次更新后立即重新排序并重建树索引，保证后续
-    请求仍按最长前缀规则匹配；函数不负责持久化，当前项目把动态路由视为运行时状态。
-*/
-void upsertRoute(ref Route[] routes, ref RouteTree tree, Route route) {
-  validateRoute(route);
-  foreach (i, existing; routes) {
-    if (existing.prefix == route.prefix) {
-      routes[i] = route;
-      sortRoutes(routes);
-      tree = buildRouteTree(routes);
-      return;
-    }
-  }
-  routes ~= route;
-  sortRoutes(routes);
-  tree = buildRouteTree(routes);
-}
-
 /** 将路由插入路径段树。 */
 void insertRoute(ref RouteTree tree, Route route) {
   auto node = &tree.root;
