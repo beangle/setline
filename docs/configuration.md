@@ -16,17 +16,70 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 
 完整可运行样例见 `config.example.json`。
 
+> **定位**：setline 只部署在 haproxy/nginx 之后，不是用户访问的第一站（详见
+> `docs/roadmap.md`）。作为数据面代理时 `listen` 必须只绑回环；TLS、请求头大小限制、
+> 客户端超时、限流、访问日志都由前置代理负责，setline 不重复实现。
+
 ## 顶层字段
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `listen` | 整数或字符串 | `127.0.0.1:8080` | 监听地址，见下节 |
+| `listen` | 整数、字符串或 `false` | `127.0.0.1:8080` | 监听地址；`false` 表示不监听（纯渲染），见下节 |
+| `adminListen` | 整数、字符串或 `false` | `false` | 给管理接口单独开一个监听；`false`（缺省）表示和数据面共用 `listen` |
 | `adminToken` | 字符串 | 空 | 管理读接口的凭据，见「adminToken」一节 |
 | `connectTimeoutMillis` | 整数 > 0 | `3000` | 连接后端的 TCP 超时 |
+| `readTimeoutMillis` | 整数 > 0 | `15000` | 单次上游读取的不活动超时 |
+| `reusePort` | 布尔 | `false` | 同地址多进程监听时启用 Linux `SO_REUSEPORT` |
+| `accessLog` | 布尔 | `false` | 每个转发的请求打一行访问日志到 stderr |
+| `upstreamIdleTimeoutMillis` | 整数 > 0 | `30000` | 空闲上游连接保留多久：客户端连接亲和挂着的连接和空闲池里的连接都用它 |
+| `webSocketIdleTimeoutMillis` | 整数 ≥ 0 | `0` | WebSocket 隧道两个方向都静默多久后断开；`0` 表示不断开 |
 | `maxConnections` | 整数 > 0 | `65535` | 并发客户端连接上限，超出返回 `503` |
 | `healthCheck` | 对象 | 见下 | 后端健康检查（始终开启，只调参数） |
 | `agent` | 对象 | 无 | 边缘代理片段渲染模式，见「agent」一节（配了 `peers`/`remote` 才是纯渲染机） |
 | `routes` | 对象 | `{}` | host → 路径前缀 → 端口，见「routes」一节 |
+
+`maxConnections` 是并发**连接**上限，不是请求数上限：一条连接从 `accept` 到 `close` 一直
+占一个名额（空闲的 keep-alive 连接、打开的 WebSocket 隧道都算），超出时在读取请求之前
+直接返回 `503`。上游连接按客户端连接亲和，每条连接都挂着一条自己的上游连接，进程的
+fd 预算按 `2 * maxConnections + 64` 配 `LimitNOFILE`；每一项的来历和「多端口时 64 不够」
+的边界见 `docs/deployment.md` 的 File Descriptors 一节。
+
+`readTimeoutMillis` 限制已经连上的后端在两次读操作之间可以停顿多久。最终响应尚未开始时
+超时，setline 会回收客户端和上游连接并向客户端返回 `504`；响应已经开始后不能可靠地追加
+状态码，此时只回收连接。空闲连接池取出连接时会重新套用这个超时。
+
+`accessLog` 默认关闭：正常部署靠 haproxy/nginx 的访问日志就够，setline 再打一份只会重复。
+打开后每个转发到后端的请求打一行 `setline access host=... method=... path=... port=... status=... duration_ms=...`；
+无路由、无健康端口、连接失败等没有落到后端的情形也会记一行（`port=0`），未拿到最终响应时
+`status=0`。这一行是排障用的，不是计费/统计口径——那是前置代理的职责。
+
+`upstreamIdleTimeoutMillis` 管的是「空闲的上游连接留多久」。setline 按客户端连接做上游
+连接亲和（见 `docs/deployment.md` 的连接一节）：一条 keep-alive 的客户端连接会一直握着它的
+上游连接，超过这个时间没有新请求就把连接交回空闲池，空闲池里的连接也用同一个时限过期
+回收。调小能更快释放 fd 和临时端口，代价是「请求间隔大于该值」的客户端连接每次都要重新
+握一次上游连接；默认 30s 足够覆盖前置代理的 `timeout server` 量级。
+
+`status.json` 里还有一组累计计数：`counters.poolHits`（上游连接复用：命中空闲池或客户端
+连接亲和自带的连接）、`counters.upstreamConnects`（新建上游连接）、
+`counters.upstreamTimeouts`（上游读超时）、`counters.unhealthyTransitions`（端口由健康变
+离线）、`counters.portRequests`（每个后端端口的请求数）。其中 `counters.upstreamLeased`
+（正挂在客户端连接上的上游连接数）和 `counters.upstreamIdle`（空闲池里的上游连接数）是
+瞬时值，不是累计量。进程启动时清零，不持久化。
+
+WebSocket 隧道单独一组：`activeWebSockets`（当前打开的隧道数）和
+`counters.webSocketTunnels`（累计建立）、`counters.webSocketIdleTimeouts`（被空闲超时断开）、
+`counters.webSocketBytesToUpstream` / `counters.webSocketBytesToClient`（两个方向的字节数，
+不含 101 握手本身）。
+
+`webSocketIdleTimeoutMillis` 默认 `0`：WebSocket 是长连接，空闲多久算超时由业务决定，
+常规位置是前置代理的 `timeout tunnel`。设成正数时它只是资源回收的兜底，而且只在**两个
+方向都没有字节**时才计时——只有一侧在动（例如后端只推、客户端不回）不算空闲。要注意
+101 之后隧道不算「在途请求」：优雅退出不会等它自然结束，进程退出时隧道随之断开。
+
+`reusePort` 只是监听能力开关：它把 Linux 的 `SO_REUSEPORT` 交给 `listenTCP`，让多个
+setline 进程可以绑定完全相同的地址。默认关闭，避免无意间让多个拥有独立路由状态的进程
+分摊管理接口。启用前必须让所有实例加载相同配置并维持路由同步；设置开关本身不等于已经
+完成多实例扩展验证，见 `docs/deployment.md` 的多实例一节。
 
 ### healthCheck
 
@@ -38,6 +91,8 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 | `healthyThreshold` | 整数 > 0 | `1` | 连续成功多少次标记恢复 |
 
 健康检查是 TCP connect 到 `127.0.0.1:<port>`，只维护在线状态，不主动探测 HTTP 路径。
+这个周期只管探测：空闲上游连接池的回收（过期和超容量）由独立的后台巡检按自己的 1s 节奏
+做，高水位也按真实经过时间衰减，所以把 `intervalMillis` 调大不会让池里的连接多留那么久。
 
 ## listen 的写法
 
@@ -47,6 +102,7 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 | `"127.0.0.1:8080"` | 绑定指定地址 |
 | `"192.168.1.10:8080"` | 绑定指定网卡地址 |
 | `"*:8080"` | 绑定所有 IPv4 地址（`0.0.0.0:8080`） |
+| `false` | 不绑定任何监听：渲染片段后退出，必须同时配 `agent.type` |
 
 只写端口时默认绑回环，不会意外对外暴露。要对外提供服务必须显式写 `*:port` 或具体地址，
 此时务必同时设置 `adminToken`（原因见下）。
@@ -54,6 +110,34 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 配了 `agent` 时 `listen` 只是**控制面**入口（basctl 登记路由、采集机读路由表），业务
 流量不经过它：haproxy/nginx 按生成的片段直接回源业务端口。这种部署绑回环即可，只有当
 采集机在别的机器上、需要它来 `GET /__setline/routes` 时才绑 `*`。
+
+**路由完全来自配置文件、不需要运行时下发时**，可以写 `"listen": false`：setline 不绑任何
+端口，启动时按配置文件渲染一次片段就退出，没有管理接口，也没有数据面。适合「静态路由 +
+片段渲染」和 `setline-apply.timer` 配合的部署；此时 `agent.type` 必填（否则进程无事可做），
+单机部署下 `agent.output` 仍必填。
+
+### adminListen：控制面与数据面分开
+
+缺省时管理接口和数据面共用 `listen`，于是「让采集机读路由表」和「数据面只绑回环」两个
+要求互相打架：前者要 `*:port`，后者只能是 `127.0.0.1`。配一个 `adminListen` 就分开了：
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "adminListen": "*:8081",
+  "adminToken": "please-change-me"
+}
+```
+
+- `adminListen` 只服务 `/__setline/*`，其它路径一律 `404`，**不再走路由表**，所以绑 `*`
+  不会顺带把业务端口暴露出去。
+- 反过来，数据面不再认 `/__setline/*`（按「没有路由」返回 `404`）。管理接口只在一个地方。
+- 访问控制规则没有任何变化（见下节）：写接口仍然只接受 TCP 对端是本机的请求，读接口对
+  非本机来源仍然要 `adminToken` / HTTP Basic。
+- `status.json` 会多一个 `adminListen` 字段，写明管理面实际绑在哪。
+
+配置了 `adminListen` 之后，同机的工具（basctl 等）要把地址从 `listen` 改成 `adminListen`：
+两个监听是**两个入口**，不是同一份接口的两份拷贝。
 
 ## adminToken
 
@@ -154,6 +238,16 @@ token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent
 业务端口（见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md` 的
 「数据面与控制面」）。因此不需要 `peers`（不要求边缘代理和管理入口互相访问），也不需要
 轮询 timer —— 路由一变片段就重渲染。此时 `output` 必填。
+
+如果连「登记处」都不需要（路由只在配置文件里，没有 basctl 推），在这套基础上加
+`"listen": false`：setline 不绑监听，启动时渲染一次片段后退出，交给 `setline-apply.timer`
+应用。三种形态的 `listen` 取值归纳如下：
+
+| 数据来源 | `listen` | 进程行为 |
+|---|---|---|
+| `peers` / `remote` | 不用写（写了也不监听） | 按 `sync` 拉取并渲染，不监听 |
+| 配置文件（单机部署，需运行时改路由） | 地址或端口 | 监听控制面，改路由立即重渲染 |
+| 配置文件（纯渲染，无运行时变更） | `false` | 渲染一次后退出，不监听 |
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -330,6 +424,10 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
   "listen": "*:8080",
   "adminToken": "please-change-me",
   "connectTimeoutMillis": 3000,
+  "readTimeoutMillis": 15000,
+  "reusePort": false,
+  "upstreamIdleTimeoutMillis": 30000,
+  "webSocketIdleTimeoutMillis": 0,
   "maxConnections": 65535,
   "healthCheck": {
     "intervalMillis": 5000,
@@ -392,8 +490,8 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 
 ### agent：生成 haproxy 片段（规则模式）
 
-生成 `setline.cfg`（backend）加 `setline.map`（路由表），主配置的 frontend 加三行
-`map_beg()` 查询即可，`bind` 仍归主配置。
+生成 `setline.cfg`（backend）加 `setline.map`（路由表），主配置的 frontend 加四行
+（`set-var` + `concat` + 两条 `map_beg()` 查询）即可，`bind` 仍归主配置。
 
 ```json
 {
@@ -458,7 +556,16 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 |---|---|
 | `listen must be port or host:port` | `listen` 既不是整数也不是字符串 |
 | `listen must be host:port` | 字符串里的冒号不止一个 |
-| `connectTimeoutMillis must be positive` | 超时或连接上限写成 0 / 负数 |
+| `listen must be port, host:port or false` | `listen` 写成 `true` 或其他类型 |
+| `adminListen must be port, host:port or false` | `adminListen` 写成 `true` 或其他类型 |
+| `adminListen must differ from listen` | `adminListen` 和 `listen` 是同一个地址（含 `*:` 与具体地址同端口） |
+| `adminListen cannot be combined with listen:false` | `"listen": false` 时进程渲染完就退出，没人来服务这个管理监听 |
+| `listen:false requires agent.type` | 写了 `"listen": false` 却没配 `agent`（进程无事可做） |
+| `connectTimeoutMillis must be positive` / `readTimeoutMillis must be positive` | 超时写成 0 / 负数 |
+| `upstreamIdleTimeoutMillis must be positive` | 空闲上游连接保留时间写成 0 / 负数 |
+| `maxConnections must be positive` | 连接上限写成 0 / 负数 |
+| `reusePort must be boolean` | `reusePort` 不是 `true` / `false` |
+| `webSocketIdleTimeoutMillis must not be negative` | `webSocketIdleTimeoutMillis` 写成负数 |
 | `route prefix must start with /` | 前缀没以 `/` 开头 |
 | `route prefix conflicts with admin API` | 前缀以 `/__setline` 开头 |
 | `route value must be port or ports` | 路由值不是整数也不是数组 |

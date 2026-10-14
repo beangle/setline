@@ -106,8 +106,9 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
 
 2. 监听失败也走同一个 catch-all，所以端口被占、无权限绑低端口会伪装成
    `Config ... is invalid: <bind 的错误>`。`listen` 写 `*:8080` 时先看端口是不是被占了
-   （`ss -ltnp | grep 8080`）；要绑 1024 以下端口得让服务有 root 或
-   `AmbientCapabilities=CAP_NET_BIND_SERVICE`。
+   （`ss -ltnp | grep 8080`）；要绑 1024 以下端口用
+   `AmbientCapabilities=CAP_NET_BIND_SERVICE`——**不要**为了绑低端口让服务以
+   root 运行（硬性要求，见 `docs/project-constraints.md` 的 Privilege Model）。
 
 前台手工复现最直接，注意用服务账号，才和 unit 里的权限一致：
 
@@ -136,6 +137,7 @@ connection to a backend:
 {
   "listen": "127.0.0.1:8080",
   "connectTimeoutMillis": 3000,
+  "readTimeoutMillis": 15000,
   "maxConnections": 65535
 }
 ```
@@ -145,18 +147,84 @@ vibe-core tasks and file descriptors. For local development backends, 1000-3000
 ms is usually enough. For slower startup or remote-like test environments, use a
 larger value.
 
-`maxConnections` limits active browser-to-setline connections. The default is
+`readTimeoutMillis` protects the segment setline cannot otherwise recover on its
+own: a local backend that accepts the connection and then stops producing the
+next response byte. Before the final response begins, timeout is reported as
+`504` and both connections are recycled. After response bytes have been sent,
+setline can only recycle the connection because the client already received the
+start of a response.
+
+`maxConnections` limits concurrent client connections. The default is
 intentionally large so most deployments do not need to change it; it acts as a
 last-resort fuse to prevent the process from exhausting file descriptors or
 memory under abnormal load. When the limit is reached, setline returns
-`503 Service Unavailable` before reading the proxied request.
+`503 Service Unavailable` before reading the proxied request. It counts
+connections, not requests: a connection keeps its slot from `accept` to `close`,
+so an idle keep-alive connection counts too.
 
-If you lower `maxConnections`, size the process file descriptor limit for at
-least two sockets per proxied request:
+Each of those connections also holds one upstream socket for most of its life,
+so the process needs open files according to:
 
 ```text
-required open files >= maxConnections * 2 + backend/process overhead
+required open files = 2 * maxConnections + 64
 ```
+
+The two terms, what the fixed 64 covers, and how to raise the limit for a shell
+or a systemd unit are in "File Descriptors" below.
+
+### Upstream connection affinity
+
+setline gives every client connection one dedicated upstream connection and keeps
+it across the requests on that connection, as long as the request still routes to
+the same backend port. The front proxy already serializes requests on a connection
+(`http-reuse` in haproxy), so this is the same granularity the proxy works at.
+
+Why not a shared pool sized to fit: the pool only helps when its capacity is at
+least the concurrency, and every connection the pool drops is a connection
+setline has to open again on the next request. Those closed connections leave a
+`TIME_WAIT` entry on this host, so churn scales with request rate and can eat the
+ephemeral port range under load. With affinity, steady state is "one upstream
+connection per client connection, created once": closing happens when the client
+connection goes away, which is the rate the front proxy chooses, not the request
+rate. A small pool still sits behind it as a recycling bin for connections left
+over from closed client connections, sized from recent concurrency (4..32 per
+port). A dedicated janitor task trims that pool once a second and lets the
+capacity follow real time — the high-water mark halves after every 30s without a
+new peak — so pool behaviour does not depend on `healthCheck.intervalMillis`,
+which only controls how often backends are probed.
+
+`upstreamIdleTimeoutMillis` (default 30s) bounds how long a connection may sit
+idle. A client connection that stops sending requests releases its upstream
+connection back to the pool; the pool itself expires idle connections on the same
+timeout.
+
+### Splitting the admin plane
+
+The recommended production shape keeps the data plane on loopback and gives the
+admin API its own address:
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "adminListen": "*:8081",
+  "adminToken": "please-change-me"
+}
+```
+
+`listen` is where the front proxy sends traffic, so it never needs to leave the
+machine. `adminListen` is what a collector on another host reads; it serves only
+`/__setline/*` (everything else is `404`) and does not route to backends. Writes
+still come only from a loopback TCP peer, so a `*`-bound admin listener exposes
+exactly the read API, gated by `adminToken`.
+
+Without `adminListen` the two planes share one port, which forces the data plane
+out of loopback as soon as a remote collector needs the route table. Tools that
+push or read routes (basctl, peers) must point at `adminListen` once it is set:
+the two listeners are two separate entry points.
+
+Startup still validates the address pair: `adminListen` may not duplicate
+`listen` (including `*:port` versus a concrete address on the same port) and may
+not be combined with `"listen": false`.
 
 ## Runtime Route Updates
 
@@ -193,7 +261,9 @@ the listener; how to wire each proxy is in `docs/haproxy-integration.md` and
 Reloading is separate and privileged. `setline` runs as the unprivileged
 `setline` user and only writes the fragment; `setline-apply` (root, oneshot,
 timer-driven) validates it, runs `systemctl reload`, and rolls the fragment
-directory back if either step fails. See `docs/agent-reload.md`.
+directory back if either step fails. Running the daemon as root is a hard
+requirement to avoid, not a tuning choice: see the Privilege Model in
+`docs/project-constraints.md`. See `docs/agent-reload.md` for the reload flow.
 
 When routes change, setline rebuilds the next host route trees, writes the new
 `routes` field to disk, and then swaps it into runtime state. Port health
@@ -202,24 +272,59 @@ If writing the config file fails, runtime routes are not changed.
 
 ## File Descriptors
 
-Each proxied request needs at least two file descriptors:
+`maxConnections` counts connected clients, not in-flight requests: a connection
+holds its slot from `accept` to `close`, so an idle keep-alive connection and an
+open WebSocket tunnel count as well. While a connection is proxying, setline also
+holds one upstream connection for it (see "Upstream connection affinity"), and
+affinity keeps that connection for the whole client connection. One client
+connection therefore costs two descriptors for most of its life:
 
-- browser to setline
-- setline to backend
+- browser to setline (the `maxConnections` slot),
+- setline to the upstream connection leased to that client connection.
 
-Set a high open-file limit for the process.
+The startup check and the shipped unit use one formula for that:
+
+```text
+required open files = 2 * maxConnections + 64
+                    = client sockets + upstream sockets + fixed overhead
+```
+
+- `2 * maxConnections` — one client socket plus the upstream socket leased to it.
+  Affinity makes this the steady state, not just a worst case: a connection that
+  has served one request keeps its upstream connection until the front proxy
+  closes the client connection.
+- `64` — overhead that does not scale with traffic: the data listener and the
+  optional `adminListen` listener, eventcore's epoll/eventfd/timerfd handles, the
+  health probes (one connection at a time), the `--sync-map` admin socket, and
+  the idle upstream pool that recycling leaves behind (at most 32 connections per
+  backend port; the pool ceiling is 4..32, see "Upstream connection affinity").
+
+The margin is a flat 64, so a host that spreads traffic over many backend ports
+can hold more than 64 idle pool descriptors (up to 32 per port, all idle at the
+same time). That is harmless, but the true worst case is
+`2 * maxConnections + 64 + 32 * routed_ports`; add that headroom when routing to
+many ports. On startup setline compares the formula with `RLIMIT_NOFILE` and
+prints a warning when the limit is too low:
+
+```text
+Warning: RLIMIT_NOFILE=1024 is below required fd budget 131134
+(2*maxConnections+64=65535*2+64); raise systemd LimitNOFILE
+```
+
+The default `65535` needs `131134`, which is exactly what the shipped
+`setline.service` sets. Raise `LimitNOFILE` whenever `maxConnections` grows.
 
 For an interactive shell:
 
 ```bash
-ulimit -n 65535
+ulimit -n 131134
 ```
 
 For systemd:
 
 ```ini
 [Service]
-LimitNOFILE=65535
+LimitNOFILE=131134
 ```
 
 Check the running process:
@@ -227,6 +332,32 @@ Check the running process:
 ```bash
 cat /proc/$(pidof setline)/limits | grep "open files"
 ```
+
+### Multiple Processes
+
+Set `"reusePort": true` only when several setline processes intentionally listen
+on the exact same address. This maps to Linux `SO_REUSEPORT`; each process still
+owns its route table, health state, connection pool, and admin endpoint. Keep
+their route configuration synchronized, and do not enable it merely to make a
+single process use more than one CPU: verify request throughput across one and
+four instances before treating it as a scaling deployment:
+
+```bash
+SETLINE_INSTANCES=1 scripts/bench.sh    # baseline: one instance
+SETLINE_INSTANCES=4 scripts/bench.sh    # four instances on the same port
+```
+
+Measured on a 16-core machine (single-threaded `ab`, `-n 40000`, TIME_WAIT
+drained first): one instance saturates a core at ~20k RPS, four instances reach
+~65k RPS at `-c 64`/`-c 128` (3.3x) with per-request CPU unchanged (40 -> 48us)
+and each instance only ~76% busy. The remaining gap to 4x is the client and the
+loopback softirq, not setline.
+
+At `-c 64` on one instance the same machine now measures ~23k RPS (direct) and
+~22k RPS behind haproxy (previously ~18k behind haproxy; see `docs/roadmap.md`
+P1-7). Upstream connection churn dropped from ~10% of requests to one connection
+per client connection, and the `TIME_WAIT` delta over a 20k-request run went from
+~2000 to 0.
 
 ## TCP Listen Queues
 
@@ -236,6 +367,7 @@ not overflow before setline accepts them:
 ```bash
 sudo sysctl -w net.core.somaxconn=4096
 sudo sysctl -w net.ipv4.tcp_max_syn_backlog=4096
+sudo sysctl -w net.ipv4.ip_local_port_range="10240 65535"
 ```
 
 To persist the values, place them in `/etc/sysctl.d/90-setline.conf`:
@@ -243,6 +375,17 @@ To persist the values, place them in `/etc/sysctl.d/90-setline.conf`:
 ```conf
 net.core.somaxconn = 4096
 net.ipv4.tcp_max_syn_backlog = 4096
+net.ipv4.ip_local_port_range = 10240 65535
+```
+
+`ip_local_port_range` matters because every connection setline opens to a backend
+consumes an ephemeral port on this host. The default range (`32768 60999`, about
+28k ports) is shared with everything else on the machine, and a port closed by
+setline stays in `TIME_WAIT` for 60s. Wide range plus `tcp_tw_reuse` (2 on
+recent kernels, i.e. allowed for loopback) gives churn a lot more headroom:
+
+```bash
+ss -tan state time-wait | wc -l    # watch this before/after a load test
 ```
 
 Then reload:
@@ -259,6 +402,13 @@ for the accept queue.
 
 setline opens outbound TCP connections to local backends. With many short
 requests, the local ephemeral port range can become a limit before CPU does.
+
+How fast the range is consumed depends on how often connections are *closed*,
+not on request count: setline reuses one upstream connection per client
+connection (see "Upstream connection affinity"), so ports are consumed at the
+rate client connections come and go. Before that change an upstream connection
+was recycled every few requests, which put roughly one `TIME_WAIT` per request on
+this host.
 
 Recommended range:
 
@@ -295,11 +445,18 @@ handled with atomics.
 
 ## Shutdown Notes
 
-setline stops its listener and health-check task when the event loop exits.
-It does not track every active client connection for shutdown cleanup, because
-that would add synchronization to the normal connection lifecycle.
+On `SIGTERM`/`SIGINT` setline stops listening immediately, waits for requests
+that are already being processed to finish, and then exits with status 0. A
+second signal skips the wait; `TimeoutStopSec` in the unit is the last resort.
+Idle keep-alive connections and WebSocket tunnels are not waited for — they are
+long-lived by nature and are dropped when the process exits.
 
-If Ctrl+C is pressed while WebSocket, slow, or half-open client connections are
-still active, eventcore may print `streamSocket` active-handle warnings during
-process exit. Avoid treating that shutdown-only diagnostic as a load-path
-tuning target unless it becomes operationally noisy in real deployments.
+It does not track every active client connection for shutdown cleanup, because
+that would add synchronization to the normal connection lifecycle, and holding
+`TCPConnection` copies in a registry defers eventcore handle release to process
+exit (an fd leak, not a fix).
+
+Because the drain waits for real requests, a restart under load can take as
+long as the slowest in-flight request. Size `TimeoutStopSec` above
+`readTimeoutMillis` so a request that is about to time out can still be
+answered with `504` before systemd force-kills the process.

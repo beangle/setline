@@ -57,7 +57,26 @@ These are intentionally out of scope unless the project goal changes:
 - full HTTP framework behavior
 - Linux TPROXY or other kernel traffic interception
 - HTTP pipelining
-- setline-to-backend keep-alive or backend connection pooling
+
+## Privilege Model
+
+- `setline` must not run as root. This is a hard requirement, not a deployment
+  preference: the daemon is the network-facing data plane. It accepts arbitrary
+  client HTTP, parses request heads, and tunnels WebSocket frames, so running it
+  as root would turn any bug on that path into a root compromise.
+- Privileged work belongs only to `setline-apply`, the short-lived root oneshot:
+  validating fragments, running `systemctl reload`, rolling the fragment
+  directory back, and talking to a proxy admin socket.
+- The shipped `setline.service` enforces the split with `User=setline` and
+  `Group=beangle`. Do not remove those lines, and do not add a replacement unit
+  or a manual command that starts `setline` as root.
+- `setline` needs write access only to its own fragment directory
+  (`/var/lib/setline/<proxy>/`), never to `/etc/haproxy` or `/etc/nginx`.
+- Needing a port below 1024 is not a reason to run as root. Use
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE` on the unit instead.
+- If a feature seems to need root, implement it in `setline-apply` (or in a
+  helper that `setline-apply` runs as root) rather than raising the daemon's
+  privileges.
 
 ## Implementation Constraints
 
@@ -76,9 +95,11 @@ These are intentionally out of scope unless the project goal changes:
   WebSocket, or response status decisions.
 - Keep request and response bodies streaming. For chunked bodies, track only
   chunk boundaries and do not accumulate full body content.
-- Support keep-alive only on the client side of the proxy:
-  upstream proxy/browser to `setline`. Backend connections remain one request
-  per local TCP connection and are closed after the response is relayed.
+- Support sequential keep-alive on both sides of the proxy. Each client
+  connection keeps one upstream connection for its own requests (port
+  affinity), with a small per-port idle pool behind it as the recycling bin;
+  discard connections whenever framing or connection headers make reuse unsafe
+  and expire idle ones.
 - Do not support HTTP pipelining. A reused client connection must send the next
   request only after the previous response has completed.
 - Runtime route changes must build the next route set and route tree first,
@@ -100,7 +121,8 @@ These are intentionally out of scope unless the project goal changes:
   only because the request head is otherwise forwarded unchanged.
 - Do not track every active client connection just to silence Ctrl+C shutdown
   warnings. Avoid adding hot-path global synchronization unless it protects
-  normal proxy correctness.
+  normal proxy correctness; storing `TCPConnection` copies globally also keeps
+  eventcore handles alive until process exit, which leaks fds.
 - Do not use production `synchronized` around route lookup, health reads, or
   route persistence. Only active-connection accounting currently needs hot-path
   atomic mutation.

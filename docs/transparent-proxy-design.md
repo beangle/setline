@@ -107,11 +107,20 @@ until the previous response is complete. This matches common upstream
 keep-alive behavior while avoiding cross-request buffering and response-order
 complexity.
 
-Backend connections are intentionally not pooled or kept alive. Each proxied
-request opens a fresh local TCP connection to the selected backend port and
-closes it after the response is relayed. This keeps routing, health retry, and
-failure handling simple, and avoids adding shared backend connection state to
-the hot path.
+Backend connections are handed out per client connection, not per request. A
+client connection gets one dedicated upstream connection and keeps it for the
+requests that follow, as long as they still route to the same backend port; the
+front proxy already serializes requests on a connection, so this is the same
+granularity it works at. Keeping the connection is conditional: the response
+body boundary must be complete, both HTTP versions and `Connection` headers must
+permit reuse, and a closed/EOF check runs before the next request goes out.
+
+Connections left over when a client connection goes away go back into a small
+per-port idle pool rather than being closed immediately; the pool is sized from
+recent concurrency (4..32 per port) and expires idle entries. That keeps
+connection churn proportional to client-connection turnover instead of request
+rate, which matters because every closed upstream connection parks an ephemeral
+port of this host in `TIME_WAIT` (see `docs/roadmap.md` P1-7).
 
 ## WebSocket
 
@@ -121,6 +130,24 @@ the backend handshake response, and then tunnels both directions.
 
 `vibe-core` fibers are used for the tunnel directions, avoiding one OS thread
 per long-lived connection.
+
+The tunnel itself is byte-transparent: frame layout, masking and ping/pong stay
+the backend's business. Two details are worth knowing:
+
+- The handshake is passed through, not generated. HAProxy validates it (a valid
+  `Sec-WebSocket-Key` in the request, a matching `Sec-WebSocket-Accept` in the
+  101), so a backend that hand-rolls a fake 101 shows up as a `502` from the
+  front proxy rather than any setline error.
+- `webSocketIdleTimeoutMillis` (default `0`, disabled) closes a tunnel only when
+  **both** directions have been silent for that long. A direction that has been
+  quiet is re-checked against the other direction's last activity before any
+  close, so a server-push-only stream is not mistaken for an idle connection.
+
+Once the 101 is sent, the connection is no longer counted as an in-flight
+request: it is a long-lived tube, so a graceful shutdown stops listening and
+drains real requests without waiting for tunnels to end. Active tunnels are
+visible as `activeWebSockets` in `status.json` and are dropped when the process
+exits.
 
 ## Concurrency Model
 
@@ -193,16 +220,30 @@ health remains owned by the background health-check loop.
 
 ## Shutdown
 
-On event-loop shutdown, `setline` stops the TCP listener and stops the
-background health-check task. It intentionally does not keep a global registry
-of every active client connection. Such a registry would add synchronization to
-the normal connection lifecycle and was judged not worth the cost only to
-silence shutdown warnings.
+`setline` installs its own SIGTERM/SIGINT handlers instead of letting
+`vibe-core` end the event loop directly. The handler only bumps an atomic
+counter; a drain task polls it, stops the listener, waits until
+`activeRequests` reaches zero, and then exits the event loop. A second signal
+skips the wait, and `TimeoutStopSec` remains the last resort. SIGPIPE is set
+back to `SIG_IGN` because `disableDefaultSignalHandlers()` removed the
+`vibe-core` handler that used to absorb it.
 
-The tradeoff is that pressing Ctrl+C while long-lived or half-open client
-connections are active may still produce an eventcore `streamSocket` leak
-warning during process exit. This is treated as a shutdown diagnostic, not a
-normal proxy-path correctness issue.
+Only requests still being processed are waited for. An idle keep-alive
+connection is not one, and neither is a WebSocket tunnel once the 101 is sent:
+tunnels are long-lived by nature, so `activeWebSockets` tracks them and the
+process exit drops them.
+
+It intentionally does not keep a global registry of every active client
+connection. Such a registry would add synchronization to the normal connection
+lifecycle and, worse, its stored copies keep eventcore handles alive until
+process exit, which leaks file descriptors instead of saving them.
+
+One shutdown trap is worth recording: the listener must be stopped exactly
+once. `TCPListener` copies carry their own `m_socket`, so letting both the drain
+task and the post-loop cleanup call `stopListening()` releases the same
+eventcore handle twice and dereferences freed `userData` (SIGSEGV, exit 139).
+The drain task now holds a pointer to the single listener owned by `serve()`
+and invalidates it for everyone.
 
 ## TPROXY Decision
 

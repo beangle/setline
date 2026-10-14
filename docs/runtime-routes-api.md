@@ -203,6 +203,56 @@ Response is the new route list:
 - `403 Forbidden`: write request did not come from localhost.
 - `404 Not Found`: unknown admin endpoint.
 
+## Status View
+
+```http
+GET /__setline/status.json
+```
+
+The admin API lives on `listen` unless `adminListen` is configured; with a
+separate admin listener the data plane returns `404` for every `/__setline`
+path and the admin listener returns `404` for everything else. Same
+credentials, same rules, two doors.
+
+Returns listener info, active/max connections, timeouts, health-check tuning, the
+route table with per-port health, and cumulative counters:
+
+```json
+{
+  "listen": {"host": "127.0.0.1", "port": 8080},
+  "activeConnections": 0,
+  "activeRequests": 0,
+  "activeWebSockets": 0,
+  "maxConnections": 65535,
+  "connectTimeoutMillis": 3000,
+  "accessLog": false,
+  "counters": {
+    "poolHits": 128,
+    "upstreamConnects": 4,
+    "upstreamLeased": 2,
+    "upstreamIdle": 1,
+    "upstreamTimeouts": 0,
+    "unhealthyTransitions": 0,
+    "portRequests": {"9002": 96, "9003": 32},
+    "webSocketTunnels": 1,
+    "webSocketIdleTimeouts": 0,
+    "webSocketBytesToUpstream": 40,
+    "webSocketBytesToClient": 512
+  },
+  "routes": {"local1.example.com": [{"prefix": "/api", "ports": [{"port": 9002, "healthy": true}]}]}
+}
+```
+
+Counters are cumulative since process start and are not persisted. `activeRequests`
+counts requests currently being processed, but not WebSocket tunnels: after the 101
+the connection is a long-lived tube, so it is tracked by `activeWebSockets` and does
+not hold up a graceful shutdown. `webSocketBytes*` exclude the 101 handshake itself.
+`upstreamLeased` (upstream connections currently attached to client connections) and
+`upstreamIdle` (upstream connections sitting in the idle pool) are gauges rather than
+totals, and `poolHits` counts every upstream connection reuse, whether it came from
+the idle pool or from the client connection's own affinity.
+`GET /__setline/status` serves the same data as an HTML page.
+
 ## Health State
 
 After a route update, port health state is refreshed:

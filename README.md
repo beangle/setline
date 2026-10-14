@@ -10,6 +10,15 @@ port and dispatches requests to local backend ports by host and URI prefix. It
 favors simple deployment and predictable HTTP streaming over kernel-level
 transparent proxy techniques.
 
+**Positioning: setline is a proxy that sits behind a proxy.** It is deployed
+after HAProxy/Nginx and is never the first hop a client reaches. Either the
+front proxy connects straight to the applications and setline only renders the
+routing fragments, or setline serves as the subordinate proxy for that front
+proxy - in both shapes it never faces untrusted clients, so TLS termination,
+header size limits, client timeouts, rate limiting and access logging stay the
+front proxy's job. The consequences of this boundary, the out-of-scope list and
+the improvement plan live in `docs/roadmap.md`.
+
 ## Scope
 
 - Linux only.
@@ -49,6 +58,9 @@ reference with examples, including how `adminToken` does and does not apply.
   "listen": 8080,
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
+  "readTimeoutMillis": 15000,
+  "reusePort": false,
+  "maxConnections": 65535,
   "healthCheck": {
     "intervalMillis": 5000,
     "timeoutMillis": 1000,
@@ -78,7 +90,15 @@ reference with examples, including how `adminToken` does and does not apply.
 Top-level fields:
 
 - `listen`: listen port or address, default `127.0.0.1:8080`; accepts `8080`,
-  `"8080"`, `"*:8080"`, or `"127.0.0.1:8080"`.
+  `"8080"`, `"*:8080"`, or `"127.0.0.1:8080"`. Set it to `false` for a
+  render-only deployment: `setline` binds nothing, renders the configured routes
+  into fragments, and exits. `false` requires `agent.type`.
+- `adminListen`: give the admin API its own address (e.g. `"*:8081"`) so the data
+  plane can stay on `127.0.0.1`. That listener serves only `/__setline/*` and
+  returns `404` for everything else; the data plane in turn stops serving
+  `/__setline/*` and `404`s those paths. Access rules are unchanged: writes still
+  require a loopback TCP peer, reads from other hosts still need `adminToken`.
+  The default (`false`) keeps both planes on `listen`.
 - `adminToken`: credential for the **read** side of the `__setline` API
   (`GET /__setline/routes` and the status page/JSON) when the caller is **not**
   localhost. Localhost callers need no credential, exactly like route writes,
@@ -87,7 +107,30 @@ Top-level fields:
   loopback. Route **writes** never use this token: they are accepted only from
   localhost.
 - `connectTimeoutMillis`: backend TCP connect timeout, default `3000`.
-- `maxConnections`: active client connection limit, default `65535`.
+- `readTimeoutMillis`: inactivity timeout for an upstream read, default `15000`;
+  before the final response starts, a timeout returns `504` and recycles both
+  ends.
+- `reusePort`: opt in to Linux `SO_REUSEPORT` when several processes intentionally
+  listen on the same address, default `false`.
+- `maxConnections`: concurrent client connection limit, counted from `accept` to
+  `close` (idle keep-alive connections included), default `65535`. Each
+  connection also holds its own upstream socket, so size `LimitNOFILE` to
+  `2 * maxConnections + 64`; see "File Descriptors" in `docs/deployment.md`.
+- `upstreamIdleTimeoutMillis`: how long an idle upstream connection is kept
+  before it is released, default `30000`. Each client connection holds one
+  upstream connection while it is proxying, and a client connection that stops
+  sending requests hands its connection back to the idle pool at this timeout.
+- `accessLog`: log one `setline access ...` line per forwarded request, default
+  `false`; the front proxy's access log is the real one, this is a debugging aid.
+  `GET /__setline/status.json` also exposes cumulative counters (pool hits,
+  upstream connects, upstream timeouts, unhealthy transitions, per-port requests,
+  WebSocket tunnels/bytes/idle timeouts) plus the `upstreamLeased` /
+  `upstreamIdle` upstream connection gauges.
+- `webSocketIdleTimeoutMillis`: close a WebSocket tunnel after this many
+  milliseconds with no bytes in **either** direction, default `0` (never).
+  WebSocket is a long-lived connection, so the usual place for this is the front
+  proxy's `timeout tunnel`; a positive value here is only a resource-reclamation
+  backstop.
 - `healthCheck`: TCP connect health check tuning; health checks are always
   enabled and run on a fixed background interval.
 - `agent.type`: optional render target; accepts `haproxy` or `nginx`. Together
@@ -125,6 +168,8 @@ stays intact. There are three data sources:
   is only the control plane (basctl registers routes, edge agents read
   `GET /__setline/routes`), so binding it to loopback is enough unless peers or
   collectors live on other machines.
+  When `adminListen` is set, that control-plane address is `adminListen`: tools
+  such as basctl must be pointed at it instead of `listen`.
 - **Single host** (no `peers`, no `remote`): proxy, setline and basctl run on
   one machine; setline keeps listening as the control plane and re-renders the
   fragment whenever its route table changes through the admin API.
@@ -198,7 +243,7 @@ The generated files are fragments, never a full config, and the proxy keeps its
 listener, TLS and custom content. What you write once depends on the mode:
 
 - Rules mode (`agent.bind` empty): HAProxy gets `<output>` (backends) plus
-  `<stem>.map`, and you add three `map_beg()` lines to your own `frontend`;
+  `<stem>.map`, and you add the `map_beg()` lines to your own `frontend`;
   Nginx gets `<output>` (upstreams, included in `http {}`) plus one
   `<stem>.<host>.conf` per host, included inside that vhost's `server {}`.
 - Self-contained mode (`agent.bind` set): one file that also owns the listener.
@@ -224,6 +269,14 @@ the package**: turn it on with `sudo systemctl enable --now setline-apply.timer`
 on any machine whose config carries an `agent` block. See `docs/agent-reload.md`
 for why `-sf`, `-x`, and `SIGHUP` are the wrong tools here, why a timer is used
 instead of a `systemd.path` unit, and how to run `setline-apply` by hand.
+Running `setline` itself as root is a hard requirement to avoid, not a tuning
+choice; see the Privilege Model in `docs/project-constraints.md`.
+
+Route-only changes do not force a reload: when the backend fragment is unchanged
+and only a `*.map` differs, `setline-apply` looks for a usable HAProxy admin
+socket and hot-syncs the map through `setline --sync-map`, with no configuration
+and no connection drop. If no socket answers, or a sync fails, it falls back to
+the reload path above.
 
 ## Agent Bundle Mode (registry manifest)
 
@@ -367,3 +420,4 @@ See also:
 - `docs/agent-reload.md`
 - `docs/haproxy-integration.md`
 - `docs/nginx-integration.md`
+- `docs/roadmap.md`

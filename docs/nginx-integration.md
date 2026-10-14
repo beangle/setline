@@ -3,6 +3,11 @@
 本文交代 setline agent 生成的 Nginx 片段怎么接到 Nginx 上：生成什么、不生成什么、
 两种模式的文件布局、一次性接线步骤，以及校验/热加载和排错。
 
+> **定位**：setline 永远部署在 haproxy/nginx **之后**，不是用户访问的第一站。推荐形态是
+> nginx 直接回源业务端口、setline 只渲染片段（本文就是这套）；也可以让 setline 作为
+> nginx 的下级代理承接数据面，但那样必须先满足 `docs/roadmap.md` 的前置条件。两种形态
+> 下 setline 都不面对不可信客户端。
+
 ## 生成范围：部分生成，不接管主配置
 
 setline **只生成片段**，不生成也不改动 `/etc/nginx/nginx.conf`：
@@ -76,6 +81,10 @@ nginx 的 `server { listen ...; }` 跟它没有关系：**不要把 `proxy_pass`
 `listen` 端口**，那样等于白白多一跳，还丢掉 nginx 自己的负载均衡与健康检查。所以
 `listen` 平时绑回环（`"127.0.0.1:8080"`）就够；只有采集机在别的机器上时才绑 `*` 并设置
 `adminToken`。
+
+配了 `adminListen` 后，上面三件事的地址就换成 `adminListen`：数据面可以稳定只绑回环，
+管理入口单独绑 `*`（见 `docs/configuration.md` 的「adminListen」一节）。同机的 basctl
+也要跟着改地址——两个监听是两个入口。
 
 落盘后一眼自检：
 
