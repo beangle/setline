@@ -26,8 +26,7 @@ import vibe.core.stream : IOMode;
 import vibe.core.task : InterruptException, Task;
 
 import setline.http :
-  HttpHead, headerContains, isIntermediateResponse, readHttpHead, readResponseHead,
-  sendPrepared;
+  HttpHead, headerContains, isIntermediateResponse, readResponseHead, sendPrepared;
 import setline.model;
 import setline.state :
   connectTimeoutMillis, notePoolHit, noteUpstreamConnect, noteUpstreamTimeout,
@@ -300,30 +299,64 @@ bool responseBodyDelimited(HttpHead request, HttpHead response) {
     普通的在途请求，但后面的隧道是长连接，调用方用它把请求计数交出去，否则优雅退出会
     一直等这条隧道自己结束。
 */
-void forwardWebSocket(TCPConnection client, HttpHead request, ushort port) {
+int forwardWebSocket(
+  TCPConnection client,
+  HttpHead request,
+  ushort port,
+  scope void delegate() nothrow onTunnelStart = null
+) {
   auto upstream = connectPort(port);
-
-  sendPrepared(upstream, request.head);
-  if (request.bufferedBody.length > 0) {
-    sendPrepared(upstream, request.bufferedBody);
-  }
-
-  auto response = readHttpHead(upstream);
-  if (response.head.length == 0) {
+  upstream.readTimeout = readTimeoutMillis().msecs;
+  upstream.tcpNoDelay = true;
+  scope (exit) {
     upstream.close();
-    throw new Exception("upstream closed websocket handshake");
   }
 
-  sendPrepared(client, response.head);
-  if (response.bufferedBody.length > 0) {
-    sendPrepared(client, response.bufferedBody);
-  }
-  if (response.statusCode != 101) {
-    upstream.close();
-    return;
+  bool finalResponseStarted;
+  try {
+    string pending;
+    sendPrepared(upstream, request.head);
+    if (request.bufferedBody.length > 0) {
+      sendPrepared(upstream, request.bufferedBody);
+    }
+
+    HttpHead response;
+    while (true) {
+      response = readResponseHead(upstream, pending);
+      if (response.head.length == 0) {
+        throw new Exception("upstream closed websocket handshake");
+      }
+      if (isIntermediateResponse(response)) {
+        sendPrepared(client, response.head);
+        continue;
+      }
+      break;
+    }
+
+    finalResponseStarted = true;
+    sendPrepared(client, response.head);
+    if (response.bufferedBody.length > 0) {
+      sendPrepared(client, response.bufferedBody);
+    }
+    if (response.statusCode != 101) {
+      return response.statusCode;
+    }
+  } catch (Exception e) {
+    if (upstreamReadTimedOut(e)) {
+      noteUpstreamTimeout();
+      throw new UpstreamReadTimeoutException(port, finalResponseStarted);
+    }
+    throw e;
   }
 
+  upstream.readTimeout = Duration.max;
+  if (onTunnelStart) onTunnelStart();
+  noteWebSocketOpen();
+  scope (exit) {
+    noteWebSocketClose();
+  }
   tunnel(client, upstream);
+  return 101;
 }
 
 /** 建立到本机上游端口的 TCP 连接。
@@ -715,11 +748,18 @@ private struct TunnelActivity {
 
     vibe-core 的 task 用于承载上游到浏览器方向，当前 task 负责浏览器到上游方向。任意一边
     读到 EOF 或出错后都会关闭目标连接，让另一边尽快退出，避免 WebSocket 或长连接残留。
+
+    配置了 `webSocketIdleTimeoutMillis` 时按「两个方向都没有字节」计时：只有一侧在动就不算
+    空闲；真正静默到点就断开两端，并记一次 `webSocketIdleTimeouts`。
 */
 void tunnel(TCPConnection client, TCPConnection upstream) {
-  runTask(&relayToClient, upstream, client);
+  auto activity = new TunnelActivity(MonoTime.currTime);
+  runTask(&relayToClient, upstream, client, activity);
 
-  relay(client, upstream);
+  relayDirection(client, upstream, activity, true);
+  if (activity.timedOut) {
+    noteWebSocketIdleTimeout();
+  }
   upstream.close();
   client.close();
 }
@@ -729,9 +769,13 @@ void tunnel(TCPConnection client, TCPConnection upstream) {
     这是隧道中后台方向的保护壳。它不能把异常抛回调用方，因为该函数运行在独立 task 中；
     出错时关闭目标连接就是通知另一半隧道退出的机制。
 */
-void relayToClient(TCPConnection source, TCPConnection target) nothrow {
+private void relayToClient(
+  TCPConnection source,
+  TCPConnection target,
+  TunnelActivity* activity
+) nothrow {
   try {
-    relay(source, target);
+    relayDirection(source, target, activity, false);
   } catch (Throwable) {
   }
   try {
@@ -740,19 +784,65 @@ void relayToClient(TCPConnection source, TCPConnection target) nothrow {
   }
 }
 
-/** 持续把一个连接上的字节写到另一个连接。
+/** 单向隧道透传，并顺带做空闲超时和字节计数。
 
-    该函数不理解 HTTP、WebSocket 或 chunked 编码，只做字节复制。保持这种低层语义可以
+    该函数不理解 HTTP、WebSocket 帧或 chunked 编码，只做字节复制。保持这种低层语义可以
     让 WebSocket、SSE 或其他升级后的协议尽量不受代理层影响。
+
+    `upstreamDirection` 为真表示 client -> upstream。读超时本身只说明「这个方向没等到
+    数据」，因此超时后回到循环重算剩余空闲时间：另一个方向刚有字节就不算空闲。这样做的
+    代价是每个方向最多每隔 `idleTimeout` 醒一次，不会变成忙等。
 */
-void relay(TCPConnection source, TCPConnection target) {
-  ubyte[8192] buffer;
+private void relayDirection(
+  TCPConnection source,
+  TCPConnection target,
+  TunnelActivity* activity,
+  bool upstreamDirection
+) {
+  ubyte[ioBufferSize] buffer;
+  auto idleMillis = webSocketIdleTimeoutMillis();
   while (true) {
-    auto received = source.read(buffer[], IOMode.once);
-    if (received <= 0) {
+    if (idleMillis > 0) {
+      auto remaining = idleMillis.msecs - (MonoTime.currTime - activity.last);
+      if (remaining <= Duration.zero) {
+        activity.timedOut = true;
+        closeBoth(source, target);
+        return;
+      }
+      source.readTimeout = remaining;
+    }
+
+    size_t received;
+    try {
+      received = source.read(buffer[], IOMode.once);
+    } catch (Exception e) {
+      if (idleMillis > 0 && upstreamReadTimedOut(e)) {
+        continue;
+      }
       return;
     }
+    if (received == 0) {
+      return;
+    }
+    activity.last = MonoTime.currTime;
+    if (upstreamDirection) {
+      noteWebSocketBytesToUpstream(received);
+    } else {
+      noteWebSocketBytesToClient(received);
+    }
     sendPrepared(target, buffer[0 .. received]);
+  }
+}
+
+/** 关闭隧道两端；对已经关闭的连接是空操作。 */
+private void closeBoth(TCPConnection source, TCPConnection target) nothrow {
+  try {
+    source.close();
+  } catch (Throwable) {
+  }
+  try {
+    target.close();
+  } catch (Throwable) {
   }
 }
 

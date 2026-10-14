@@ -268,7 +268,14 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
       try {
         noteRequestPort(port);
         if (request.upgradeWebSocket) {
-          forwardWebSocket(client, request, port);
+          // 101 之后是长连接隧道，不再算「在途请求」：优雅退出等的是请求处理完，而隧道
+          // 只能等对端关闭，不能让一次重启卡到 `TimeoutStopSec`。隧道本身另有活跃计数。
+          scope void onTunnelStart() nothrow {
+            requestFinished();
+            requestCounted = false;
+          }
+          auto status = forwardWebSocket(client, request, port, &onTunnelStart);
+          logAccess(request, routeHost, path, port, status, started);
           return false;
         }
         auto outcome = forward(client, request, port, lease);
