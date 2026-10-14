@@ -106,7 +106,24 @@ Config parseConfigFile(string path) {
   Config config;
   auto root = parseJSON(readText(path));
   if ("listen" in root.object) {
-    config.listen = parseListen(root["listen"]);
+    auto listen = root["listen"];
+    if (listen.type == JSONType.false_) {
+      config.listenDisabled = true;
+    } else {
+      enforce(listen.type != JSONType.true_, "listen must be port, host:port or false");
+      config.listen = parseListen(listen);
+    }
+  }
+  if ("adminListen" in root.object) {
+    auto adminListen = root["adminListen"];
+    if (adminListen.type == JSONType.false_) {
+      config.adminListenEnabled = false;
+    } else {
+      enforce(adminListen.type != JSONType.true_,
+        "adminListen must be port, host:port or false");
+      config.adminListen = parseListen(adminListen, "adminListen");
+      config.adminListenEnabled = true;
+    }
   }
   if ("adminToken" in root.object) {
     config.adminToken = root["adminToken"].str;
@@ -152,34 +169,55 @@ Config parseConfigFile(string path) {
   if ("routes" in root.object) {
     config.routes = parseHostRoutes(root["routes"]);
   }
+  // 不监听就没有管理接口，运行时路由无从下发，必须自带数据来源（本机配置文件或 agent）。
+  enforce(!config.listenDisabled || config.agent.type.length > 0,
+    "listen:false requires agent.type");
+  // listen:false 是「渲染完就退出」，配一个只用来承载管理接口的监听没有意义。
+  enforce(!config.listenDisabled || !config.adminListenEnabled,
+    "adminListen cannot be combined with listen:false");
+  enforce(!config.adminListenEnabled || !listenAddressesOverlap(config.listen, config.adminListen),
+    "adminListen must differ from listen");
   return config;
+}
+
+/** 两个监听是否可能抢同一个地址。
+
+    `0.0.0.0` 和具体地址在同一端口上会 `EADDRINUSE`，所以不能只比较字符串形式。
+*/
+private bool listenAddressesOverlap(ListenAddress a, ListenAddress b) {
+  if (a.port != b.port) {
+    return false;
+  }
+  return a.host == b.host || a.host == "0.0.0.0" || b.host == "0.0.0.0";
 }
 
 /** 解析监听地址。
 
     支持三种形式：`8080`、`*:8080`、`host:port`。裸端口默认绑定 `127.0.0.1`；
     `*` 映射为 `0.0.0.0`，用于显式监听所有 IPv4 地址。后端仍固定为本机端口。
+
+    `field` 只用于报错，`listen` 和 `adminListen` 共用这套解析和消息口径。
 */
-ListenAddress parseListen(JSONValue value) {
+ListenAddress parseListen(JSONValue value, string field = "listen") {
   if (value.type == JSONType.integer) {
-    return ListenAddress("127.0.0.1", parsePort(value.integer, "listen port"));
+    return ListenAddress("127.0.0.1", parsePort(value.integer, field ~ " port"));
   }
 
-  enforce(value.type == JSONType.string, "listen must be port or host:port");
-  return parseListen(value.str);
+  enforce(value.type == JSONType.string, field ~ " must be port or host:port");
+  return parseListen(value.str, field);
 }
 
 /** 解析字符串形式的监听地址。 */
-ListenAddress parseListen(string value) {
+ListenAddress parseListen(string value, string field = "listen") {
   auto colon = value.indexOf(":");
   if (colon < 0) {
-    return ListenAddress("127.0.0.1", parsePort(value, "listen port"));
+    return ListenAddress("127.0.0.1", parsePort(value, field ~ " port"));
   }
 
   auto parts = value.split(":");
-  enforce(parts.length == 2, "listen must be host:port");
+  enforce(parts.length == 2, field ~ " must be host:port");
   auto host = parts[0] == "*" ? "0.0.0.0" : parts[0];
-  return ListenAddress(host, parsePort(parts[1], "listen port"));
+  return ListenAddress(host, parsePort(parts[1], field ~ " port"));
 }
 
 /** 解析配置文件中的单条路由。

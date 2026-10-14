@@ -1,5 +1,6 @@
 {
   "listen": 8080,
+  "adminListen": false,
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
   "readTimeoutMillis": 15000,

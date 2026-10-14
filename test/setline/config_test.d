@@ -273,3 +273,101 @@ import setline.model;
   scope (exit) remove(path);
   assertThrown!Exception(loadConfig(path));
 }
+
+@("config accepts listen false for a render-only deployment") unittest {
+  auto path = "/tmp/setline-config-listen-false-test.json";
+  write(path, `{"listen":false,"agent":{"type":"haproxy",` ~
+    `"output":"/var/lib/setline/haproxy/setline.cfg"},"routes":{"app.example.com":{"/":9001}}}`);
+  scope (exit) remove(path);
+
+  auto config = loadConfig(path);
+  assert(config.listenDisabled);
+  assert(config.routes.length == 1);
+}
+
+@("config requires an agent when listen is false") unittest {
+  auto path = "/tmp/setline-config-listen-false-bad-test.json";
+  scope (exit) remove(path);
+
+  // 不监听又没有 agent：进程既没有监听入口，也没有片段要渲染，什么都不会做。
+  write(path, `{"listen":false,"routes":{"app.example.com":{"/":9001}}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // `true` 不是合法值：能监听就必须写地址。
+  write(path, `{"listen":true,"agent":{"type":"haproxy","output":"/tmp/setline.cfg"}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config reads the access log switch") unittest {
+  auto path = "/tmp/setline-config-accesslog-test.json";
+  write(path, `{"listen":"127.0.0.1:8080","accessLog":true,"routes":{}}`);
+  scope (exit) remove(path);
+  assert(loadConfig(path).accessLog);
+
+  // 默认关闭，且非布尔值必须报错。
+  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
+  assert(!loadConfig(path).accessLog);
+  write(path, `{"listen":"127.0.0.1:8080","accessLog":"yes","routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config parses a separate adminListen") unittest {
+  auto path = "/tmp/setline-config-adminlisten-test.json";
+  scope (exit) remove(path);
+
+  // 默认不分离：管理接口和数据面共用 listen。
+  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
+  auto combined = loadConfig(path);
+  assert(!combined.adminListenEnabled);
+
+  write(path, `{"listen":"127.0.0.1:8080","adminListen":"*:8081","routes":{}}`);
+  auto separated = loadConfig(path);
+  assert(separated.adminListenEnabled);
+  assert(separated.adminListen.host == "0.0.0.0");
+  assert(separated.adminListen.port == 8081);
+
+  // 和 listen 一样接受裸端口。
+  write(path, `{"listen":"127.0.0.1:8080","adminListen":8082,"routes":{}}`);
+  assert(loadConfig(path).adminListen.port == 8082);
+
+  // 显式 false 等于不分离。
+  write(path, `{"listen":"127.0.0.1:8080","adminListen":false,"routes":{}}`);
+  assert(!loadConfig(path).adminListenEnabled);
+}
+
+@("config rejects an unusable adminListen") unittest {
+  auto path = "/tmp/setline-config-adminlisten-bad-test.json";
+  scope (exit) remove(path);
+
+  // 同一个地址会抢端口，启动时必然 EADDRINUSE，直接在配置层拦掉。
+  write(path, `{"listen":"127.0.0.1:8080","adminListen":"127.0.0.1:8080","routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+  write(path, `{"listen":"*:8080","adminListen":"127.0.0.1:8080","routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  write(path, `{"listen":"127.0.0.1:8080","adminListen":true,"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // listen:false 是渲染完就退出，没有进程来服务这个管理监听。
+  write(path, `{"listen":false,"adminListen":"127.0.0.1:8081",` ~
+    `"agent":{"type":"haproxy","output":"/tmp/setline.cfg"},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config reads the websocket idle timeout") unittest {
+  auto path = "/tmp/setline-config-wsidle-test.json";
+  scope (exit) remove(path);
+
+  // 默认 0：不主动断开隧道，长连接空闲多久由业务和前置代理决定。
+  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
+  assert(loadConfig(path).webSocketIdleTimeoutMillis == 0);
+
+  write(path, `{"listen":"127.0.0.1:8080","webSocketIdleTimeoutMillis":500,"routes":{}}`);
+  assert(loadConfig(path).webSocketIdleTimeoutMillis == 500);
+
+  // 0 本身合法（显式关闭），负数不是。
+  write(path, `{"listen":"127.0.0.1:8080","webSocketIdleTimeoutMillis":0,"routes":{}}`);
+  assert(loadConfig(path).webSocketIdleTimeoutMillis == 0);
+  write(path, `{"listen":"127.0.0.1:8080","webSocketIdleTimeoutMillis":-1,"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}

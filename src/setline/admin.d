@@ -272,6 +272,11 @@ string statusHtml() {
   html.put("<h1>setline status</h1>");
   html.put("<section><dl>");
   html.put("<dt>listen</dt><dd>" ~ escapeHtml(listen.host) ~ ":" ~ listen.port.to!string ~ "</dd>");
+  if (adminListenSeparated()) {
+    auto admin = adminListenAddress();
+    html.put("<dt>admin listen</dt><dd>" ~ escapeHtml(admin.host) ~ ":" ~
+      admin.port.to!string ~ "</dd>");
+  }
   html.put("<dt>active connections</dt><dd>" ~ activeConnections().to!string ~ "</dd>");
   html.put("<dt>active requests</dt><dd>" ~ activeRequests().to!string ~ "</dd>");
   html.put("<dt>max connections</dt><dd>" ~ maxConnections().to!string ~ "</dd>");
@@ -316,6 +321,13 @@ JSONValue statusJson() {
   listenJson["host"] = JSONValue(listen.host);
   listenJson["port"] = JSONValue(listen.port);
   root["listen"] = JSONValue(listenJson);
+  if (adminListenSeparated()) {
+    auto admin = adminListenAddress();
+    JSONValue[string] adminJson;
+    adminJson["host"] = JSONValue(admin.host);
+    adminJson["port"] = JSONValue(admin.port);
+    root["adminListen"] = JSONValue(adminJson);
+  }
   root["activeConnections"] = JSONValue(activeConnections());
   root["activeRequests"] = JSONValue(cast(long) activeRequests());
   root["maxConnections"] = JSONValue(maxConnections());

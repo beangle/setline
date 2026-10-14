@@ -73,6 +73,9 @@ int main(string[] args) {
     }
 
     initialize(config, configPath);
+    if (!config.listenDisabled) {
+      warnIfFdBudgetInsufficient(config.maxConnections);
+    }
     // 单机部署：既当本机代理（也是 basctl 推路由的登记处），又把自己的路由表渲染成片段。
     // 片段在启动时出一版，之后每次管理接口改路由都重渲染，不需要 peers，也不需要轮询。
     if (config.agent.type.length > 0) {
@@ -88,8 +91,18 @@ int main(string[] args) {
       renderLocal(routesSnapshot());
     }
 
+    // 纯渲染部署：只把配置文件里的路由渲染成片段，不绑监听，也没有管理接口。
+    if (config.listenDisabled) {
+      stdout.writefln("setline rendered fragments without a listener (listen:false)");
+      return 0;
+    }
+
     stdout.writefln("setline listening on http://%s:%s", config.listen.host, config.listen.port);
-    serve(config.listen);
+    if (config.adminListenEnabled) {
+      stdout.writefln("setline admin listening on http://%s:%s",
+        config.adminListen.host, config.adminListen.port);
+    }
+    serve(config.listen, config.adminListen, config.adminListenEnabled);
     return 0;
   } catch (Exception e) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);

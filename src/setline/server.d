@@ -25,8 +25,8 @@ import std.algorithm : startsWith;
 import std.stdio : stderr;
 import std.string : indexOf;
 
-import vibe.core.core : runEventLoop, runTask;
-import vibe.core.net : TCPConnection, TCPListener, listenTCP;
+import vibe.core.core : disableDefaultSignalHandlers, exitEventLoop, runEventLoop, runTask, sleep;
+import vibe.core.net : TCPConnection, TCPListener, TCPListenOptions, listenTCP;
 import vibe.core.task : Task;
 
 import setline.admin;
@@ -38,14 +38,36 @@ import setline.proxy;
 import setline.state;
 import setline.util : adminPrefix;
 
+/** `serve()` 持有的监听句柄，drain 任务要能一次停掉全部监听。 */
+private struct ServerListeners {
+  TCPListener data;
+  TCPListener admin;
+}
+
 /** 启动本地 TCP 监听并进入 vibe-core 事件循环。
 
     每个客户端连接由 vibe-core task 处理，避免旧的线程模型在大量 Vite 资源并发请求时
     阻塞后续连接。这里不暴露 HTTP server 框架抽象，是因为 setline 需要精确控制请求头、
     request body、响应体和 WebSocket 升级后的字节透传。
+
+    `adminSeparated` 为真时再开一个只服务 `__setline` 的管理监听，数据面不再暴露管理接口。
+    这样数据面可以稳定只绑回环，而管理面按需绑 `*` 供跨机采集。
 */
-void serve(ListenAddress listenAddress) {
-  auto listener = listenTCP(listenAddress.port, (TCPConnection client) @trusted nothrow {
+void serve(ListenAddress listenAddress, ListenAddress adminAddress, bool adminSeparated) {
+  auto options = TCPListenOptions.defaults;
+  if (reusePort()) {
+    options |= TCPListenOptions.reusePort;
+  }
+  ServerListeners listeners;
+  bool loopStarted;
+  // 只兜启动阶段的失败：进入事件循环后监听句柄只能由 drain 任务停，事件循环退出后
+  // eventcore 的 driver 已经销毁，再碰就是野指针（实测是退出段 SIGSEGV）。
+  scope (exit) {
+    if (!loopStarted && listeners.data) {
+      listeners.data.stopListening();
+    }
+  }
+  listeners.data = listenTCP(listenAddress.port, (TCPConnection client) @trusted nothrow {
     try {
       scope (exit) {
         closeQuietly(client);
@@ -57,32 +79,142 @@ void serve(ListenAddress listenAddress) {
       scope (exit) {
         releaseConnection();
       }
+      client.tcpNoDelay = true;
       handleClient(client);
     } catch (Throwable) {
     }
-  }, listenAddress.host);
+  }, listenAddress.host, options);
+  if (adminSeparated) {
+    listeners.admin = listenTCP(adminAddress.port, (TCPConnection client) @trusted nothrow {
+      handleAdminClient(client);
+    }, adminAddress.host, options);
+  }
+  loopStarted = true;
   auto healthTask = runTask(&runHealthChecks);
+  auto poolTask = runTask(&runUpstreamPoolJanitor);
+  // 自己接管 SIGTERM/SIGINT：vibe-core 默认收到信号立刻结束事件循环，正在处理的
+  // 请求会被直接丢掉；这里改成「停监听 -> 等在途请求 -> 关连接 -> 退出」。
+  disableDefaultSignalHandlers();
+  installShutdownSignals();
+  auto drainTask = runTask(&drainForShutdown, &listeners);
   scope (exit) {
-    shutdownServer(listener, healthTask);
+    shutdownServer(listeners, healthTask, poolTask, drainTask);
   }
   runEventLoop();
+}
+
+shared private int gShutdownSignals;
+
+extern(C) private void onShutdownSignal(int) nothrow {
+  atomicOp!"+="(gShutdownSignals, 1);
+}
+
+/** 安装 SIGTERM/SIGINT 处理器，并补回 SIGPIPE 忽略。
+
+    `disableDefaultSignalHandlers()` 之后 vibe-core 的 `onBrokenPipe` 不再生效，不把
+    SIGPIPE 设成忽略的话，写一个已被对端关闭的连接会直接杀掉进程。
+*/
+void installShutdownSignals() nothrow {
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaction_t info;
+  info.sa_handler = &onShutdownSignal;
+  info.sa_mask = mask;
+  info.sa_flags = SA_RESTART;
+  sigaction(SIGINT, &info, null);
+  sigaction(SIGTERM, &info, null);
+  sigaction_t ignore;
+  ignore.sa_handler = SIG_IGN;
+  ignore.sa_mask = mask;
+  ignore.sa_flags = 0;
+  sigaction(SIGPIPE, &ignore, null);
+}
+
+/** 是否已经收到过终止信号。 */
+bool shutdownRequested() nothrow {
+  return atomicLoad(gShutdownSignals) > 0;
+}
+
+/** 是否收到第二次终止信号（表示「别等了，立即退出」）。 */
+bool shutdownForced() nothrow {
+  return atomicLoad(gShutdownSignals) > 1;
+}
+
+/** 收到终止信号后停监听、等在途请求跑完，再退出事件循环。
+
+    这里拿的是 `serve` 里那些 listener 的指针，`stopListening()` 会就地把它标记成无效，也就
+    不会被 `shutdownServer` 再释放一次 —— eventcore 的句柄被 release 两遍时，第二次会去读
+    已经释放的 userData，直接踩成 segfault。
+
+    不主动去关空闲的 keep-alive 连接：连接对象一旦被长期引用，eventcore 的句柄就会拖到
+    进程退出才释放，反倒会漏 fd。停监听后不再有新请求进来，等在途请求归零直接退出即可，
+    剩下的空闲连接随进程退出一起消失。
+
+    硬超时不在这里做：systemd 的 `TimeoutStopSec` 是最后一道保险，第二次 SIGTERM/SIGINT
+    则表示运维要求立刻退出。
+*/
+void drainForShutdown(ServerListeners* listeners) nothrow {
+  try {
+    while (!shutdownRequested()) {
+      sleep(50.msecs);
+    }
+  } catch (Throwable) {
+    return;
+  }
+  stopListeningQuietly(listeners);
+  while (!shutdownForced() && activeRequests() > 0) {
+    try {
+      sleep(20.msecs);
+    } catch (Throwable) {
+      return;
+    }
+  }
+  exitEventLoop();
 }
 
 /** 退出事件循环后释放 eventcore 持有的活动句柄。
 
     Ctrl+C 会让 vibe-core 的事件循环返回，但 TCP listener、仍在处理的 client 连接以及后台
-    健康检查 task 可能还持有 eventcore handle。这里按固定顺序关闭它们，避免进程退出时
-    输出 active handles leak 警告。
+    健康检查与空闲池巡检 task 可能还持有 eventcore handle。这里按固定顺序关闭它们，避免进程
+    退出时输出 active handles leak 警告。
 */
-void shutdownServer(ref TCPListener listener, ref Task healthTask) nothrow {
-  try {
-    listener.stopListening();
-  } catch (Throwable) {
-  }
+void shutdownServer(ref ServerListeners listeners, ref Task healthTask, ref Task poolTask,
+    ref Task drainTask) nothrow {
+  stopListeningQuietly(&listeners);
+  // 空闲池里没有请求在用，但句柄还活着，退出前关掉，避免 eventcore 打一堆泄漏告警。
+  closeUpstreamPool();
   stopHealthChecks();
   try {
     if (healthTask && healthTask.running) {
       healthTask.interrupt();
+    }
+  } catch (Throwable) {
+  }
+  try {
+    if (poolTask && poolTask.running) {
+      poolTask.interrupt();
+    }
+  } catch (Throwable) {
+  }
+  try {
+    if (drainTask && drainTask.running) {
+      drainTask.interrupt();
+    }
+  } catch (Throwable) {
+  }
+}
+
+/** 停掉全部监听；已经关掉或还没建起来的监听都是空操作。 */
+private void stopListeningQuietly(ServerListeners* listeners) nothrow {
+  try {
+    if (listeners.data) {
+      listeners.data.stopListening();
+    }
+  } catch (Throwable) {
+  }
+  try {
+    if (listeners.admin) {
+      listeners.admin.stopListening();
     }
   } catch (Throwable) {
   }
@@ -99,6 +231,7 @@ void closeQuietly(ref TCPConnection client) nothrow {
   } catch (Throwable) {
   }
 }
+
 
 /** 处理一个 client 连接上的 HTTP 请求。
 
@@ -230,7 +363,9 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
 
   auto path = request.path;
 
-  if (path.startsWith(adminPrefix)) {
+  // 管理接口拆到独立监听后，数据面不再认这些路径：它们落到下面的路由查找里，按「没有
+  // 路由」返回 404（配置校验不允许路由以 __setline 开头）。
+  if (!adminListenSeparated() && path.startsWith(adminPrefix)) {
     handleAdmin(client, request.method, request.target, completeHttpRequest(client, request));
     return false;
   }
