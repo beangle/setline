@@ -34,6 +34,7 @@ struct PortHealth {
 
 __gshared private HealthConfig gConfig;
 __gshared private PortHealth[ushort] gHealth;
+__gshared private size_t gUnhealthyTransitions;
 shared private bool gStopping;
 
 /** 初始化端口健康状态。
@@ -44,6 +45,7 @@ shared private bool gStopping;
 void initializeHealth(Config config) {
   gConfig = config.healthCheck;
   gHealth = null;
+  gUnhealthyTransitions = 0;
   foreach (group; config.routes) {
     foreach (route; group.routes) {
       foreach (port; route.ports) {
@@ -129,9 +131,17 @@ void updatePortHealth(ushort port, bool ok) {
     health.failureCount++;
     health.successCount = 0;
     if (health.failureCount >= gConfig.unhealthyThreshold) {
+      if (health.healthy) {
+        gUnhealthyTransitions++;
+      }
       health.healthy = false;
     }
   }
+}
+
+/** 返回端口从健康变为离线的次数。 */
+size_t unhealthyTransitionCount() {
+  return gUnhealthyTransitions;
 }
 
 /** 返回当前需要健康检查的端口列表快照。 */

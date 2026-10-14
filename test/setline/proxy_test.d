@@ -16,6 +16,8 @@
 
 module setline.proxy_test;
 
+import core.time : Duration, msecs;
+
 import setline.http : parseHttpHead;
 import setline.proxy;
 
@@ -48,9 +50,11 @@ import setline.proxy;
   auto closeRequest = parseHttpHead("GET /api HTTP/1.1\r\nConnection: close\r\n\r\n");
   assert(!requestWantsKeepAlive(closeRequest));
   assert(!clientConnectionReusable(closeRequest, response));
+  assert(!upstreamConnectionReusable(closeRequest, response));
 
   auto closeResponse = parseHttpHead("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n");
   assert(!clientConnectionReusable(request, closeResponse));
+  assert(!upstreamConnectionReusable(request, closeResponse));
 
   auto unboundedResponse = parseHttpHead("HTTP/1.1 200 OK\r\n\r\n");
   assert(!clientConnectionReusable(request, unboundedResponse));
@@ -65,4 +69,69 @@ import setline.proxy;
   auto e = new PortConnectException(9001, "refused");
   assert(e.info !is null);
   assert(e.info.toString.length == 0);
+}
+
+@("proxy sizes the idle upstream pool from recent concurrency") unittest {
+  // 没有并发历史时用下限：低并发部署不该攒下一堆空闲上游连接。
+  assert(upstreamPoolCapacity(65001) == 4);
+  assert(leasedUpstreamCount() == 0);
+  assert(idleUpstreamCount() == 0);
+  // 空池回收是空操作（周期巡检会先跑一遍这里）。
+  sweepUpstreamPool(Duration.zero);
+  assert(upstreamPoolCapacity(65001) == 4);
+}
+
+@("proxy raises and decays the upstream concurrency high-water mark") unittest {
+  // 借出只抬不降；容量换算把高水位 clamp 到 [4, 32]。
+  assert(raisedUpstreamPeak(0, 3) == 3);
+  assert(raisedUpstreamPeak(5, 2) == 5);
+  assert(raisedUpstreamPeak(5, 6) == 6);
+  assert(upstreamPoolCapacityForPeak(0) == 4);
+  assert(upstreamPoolCapacityForPeak(4) == 4);
+  assert(upstreamPoolCapacityForPeak(9) == 9);
+  assert(upstreamPoolCapacityForPeak(32) == 32);
+  assert(upstreamPoolCapacityForPeak(4096) == 32);
+
+  // 衰减按真实经过时间算：每过半衰期折半，到下限停住；时间为 0 时不动。
+  enum halfLife = 30_000;
+  assert(decayedUpstreamPeak(32, 0) == 32);
+  assert(decayedUpstreamPeak(4, halfLife * 10) == 4);
+  assert(decayedUpstreamPeak(8, halfLife) == 6);
+  assert(decayedUpstreamPeak(32, halfLife) == 18);
+  assert(decayedUpstreamPeak(32, halfLife * 2) == 11);
+  assert(decayedUpstreamPeak(32, halfLife * 10) == 4);
+  size_t peak = 32;
+  size_t rounds;
+  while (peak > 4) {
+    auto next = decayedUpstreamPeak(peak, halfLife);
+    assert(next < peak);
+    peak = next;
+    rounds++;
+    assert(rounds < 64, "decay should reach the floor quickly");
+  }
+  assert(peak == 4);
+
+  // 全局路径：借出抬高水位、容量跟着走；归还只降借出数，高水位留在原地。
+  enum port = 65009;
+  assert(upstreamPoolCapacity(port) == 4);
+  foreach (_; 0 .. 9) {
+    noteUpstreamLeaseAcquired(port);
+  }
+  assert(leasedUpstreamCount() == 9);
+  assert(upstreamPoolCapacity(port) == 9);
+  foreach (_; 0 .. 9) {
+    noteUpstreamLeaseReleased(port);
+  }
+  assert(leasedUpstreamCount() == 0);
+  assert(upstreamPoolCapacity(port) == 9);
+
+  // 巡检把实际经过的时间交给衰减：0 不动，一个半衰期后 9 → 6，逐轮回到下限。
+  sweepUpstreamPool(Duration.zero);
+  assert(upstreamPoolCapacity(port) == 9);
+  sweepUpstreamPool(halfLife.msecs);
+  assert(upstreamPoolCapacity(port) == 6);
+  while (upstreamPoolCapacity(port) > 4) {
+    sweepUpstreamPool(halfLife.msecs);
+  }
+  assert(upstreamPoolCapacity(port) == 4);
 }

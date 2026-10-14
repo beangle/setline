@@ -123,10 +123,37 @@ struct AgentConfig {
 */
 struct Config {
   ListenAddress listen;
+  /** `"listen": false` 时不绑定任何监听：纯渲染部署，路由只来自配置文件。 */
+  bool listenDisabled;
+  /** 给管理接口单独开一个监听；未配置时管理接口和数据面共用 `listen`。
+
+      数据面必须只绑回环（见 roadmap 的定位），而跨机采集路由需要绑 `*`。把两者拆开之后，
+      `listen` 可以稳定留在 `127.0.0.1`，管理面按需单独放开。
+  */
+  bool adminListenEnabled;
+  ListenAddress adminListen;
   /** 非本机读接口的凭据；为空表示开发模式放行（生产绑 `*` 时必须设置）。 */
   string adminToken;
   int connectTimeoutMillis = 3000;
+  /** 单次上游读取的不活动超时；超时后回收连接并在最终响应未开始时返回 504。 */
+  int readTimeoutMillis = 15000;
   size_t maxConnections = 65535;
+  /** 同端口启动多个进程时启用 SO_REUSEPORT；默认关闭，避免误共享管理入口。 */
+  bool reusePort;
+  /** 是否把每个请求打一行访问日志；默认关闭，正常靠前置代理的日志。 */
+  bool accessLog;
+  /** 空闲上游连接保留多久（毫秒）。
+
+      客户端连接亲和会让一条 keep-alive 的客户端连接一直握着它的上游连接；超过这个时间
+      没有新请求就把连接交回空闲池，空闲池里的连接也用同一个时限过期回收。
+  */
+  int upstreamIdleTimeoutMillis = 30000;
+  /** WebSocket 隧道两个方向都静默多久后断开（毫秒）。
+
+      `0`（默认）表示不主动超时：WebSocket 是长连接，空闲多久由业务决定，常规位置是
+      前置代理的 `timeout tunnel`。设成正数时它只是资源回收的兜底，一侧有流量就不算空闲。
+  */
+  int webSocketIdleTimeoutMillis = 0;
   HealthConfig healthCheck;
   AgentConfig agent;
   HostRoutes[] routes;

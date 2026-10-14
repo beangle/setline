@@ -65,7 +65,9 @@ import setline.model;
 
   auto config = loadConfig(path);
   assert(config.connectTimeoutMillis == 3000);
+  assert(config.readTimeoutMillis == 15000);
   assert(config.maxConnections == 65535);
+  assert(!config.reusePort);
 }
 
 @("config check requires existing file") unittest {
@@ -85,14 +87,16 @@ import setline.model;
 @("config parses connection protection settings") unittest {
   auto path = "/tmp/setline-config-protection-test.json";
   write(path,
-    `{"connectTimeoutMillis":1500,"maxConnections":128,` ~
+    `{"connectTimeoutMillis":1500,"readTimeoutMillis":900,"maxConnections":128,"reusePort":true,` ~
     `"healthCheck":{"intervalMillis":2000,"timeoutMillis":300,"unhealthyThreshold":3,"healthyThreshold":2},` ~
     `"routes":{}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
   assert(config.connectTimeoutMillis == 1500);
+  assert(config.readTimeoutMillis == 900);
   assert(config.maxConnections == 128);
+  assert(config.reusePort);
   assert(config.healthCheck.intervalMillis == 2000);
   assert(config.healthCheck.timeoutMillis == 300);
   assert(config.healthCheck.unhealthyThreshold == 3);

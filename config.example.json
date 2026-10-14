@@ -2,6 +2,12 @@
   "listen": 8080,
   "adminToken": "change-me",
   "connectTimeoutMillis": 3000,
+  "readTimeoutMillis": 15000,
+  "reusePort": false,
+  "accessLog": false,
+  "upstreamIdleTimeoutMillis": 30000,
+  "webSocketIdleTimeoutMillis": 0,
+  "maxConnections": 65535,
   "healthCheck": {
     "intervalMillis": 5000,
     "timeoutMillis": 1000,

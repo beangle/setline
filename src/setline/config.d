@@ -115,9 +115,33 @@ Config parseConfigFile(string path) {
     config.connectTimeoutMillis = cast(int) root["connectTimeoutMillis"].integer;
     enforce(config.connectTimeoutMillis > 0, "connectTimeoutMillis must be positive");
   }
+  if ("readTimeoutMillis" in root.object) {
+    config.readTimeoutMillis = cast(int) root["readTimeoutMillis"].integer;
+    enforce(config.readTimeoutMillis > 0, "readTimeoutMillis must be positive");
+  }
   if ("maxConnections" in root.object) {
     config.maxConnections = cast(size_t) root["maxConnections"].integer;
     enforce(config.maxConnections > 0, "maxConnections must be positive");
+  }
+  if ("reusePort" in root.object) {
+    enforce(root["reusePort"].type == JSONType.true_ || root["reusePort"].type == JSONType.false_,
+      "reusePort must be boolean");
+    config.reusePort = root["reusePort"].boolean;
+  }
+  if ("accessLog" in root.object) {
+    enforce(root["accessLog"].type == JSONType.true_ || root["accessLog"].type == JSONType.false_,
+      "accessLog must be boolean");
+    config.accessLog = root["accessLog"].boolean;
+  }
+  if ("upstreamIdleTimeoutMillis" in root.object) {
+    config.upstreamIdleTimeoutMillis = cast(int) root["upstreamIdleTimeoutMillis"].integer;
+    enforce(config.upstreamIdleTimeoutMillis > 0,
+      "upstreamIdleTimeoutMillis must be positive");
+  }
+  if ("webSocketIdleTimeoutMillis" in root.object) {
+    config.webSocketIdleTimeoutMillis = cast(int) root["webSocketIdleTimeoutMillis"].integer;
+    enforce(config.webSocketIdleTimeoutMillis >= 0,
+      "webSocketIdleTimeoutMillis must not be negative");
   }
   if ("healthCheck" in root.object) {
     config.healthCheck = parseHealthConfig(root["healthCheck"]);

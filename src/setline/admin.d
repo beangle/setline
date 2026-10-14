@@ -30,6 +30,7 @@ import setline.health;
 import setline.http;
 import setline.jsonview;
 import setline.model : HostRoutes, Route;
+import setline.proxy;
 import setline.state;
 import setline.util : adminPrefix, escapeHtml;
 
@@ -272,8 +273,20 @@ string statusHtml() {
   html.put("<section><dl>");
   html.put("<dt>listen</dt><dd>" ~ escapeHtml(listen.host) ~ ":" ~ listen.port.to!string ~ "</dd>");
   html.put("<dt>active connections</dt><dd>" ~ activeConnections().to!string ~ "</dd>");
+  html.put("<dt>active requests</dt><dd>" ~ activeRequests().to!string ~ "</dd>");
   html.put("<dt>max connections</dt><dd>" ~ maxConnections().to!string ~ "</dd>");
   html.put("<dt>connect timeout</dt><dd>" ~ connectTimeoutMillis().to!string ~ " ms</dd>");
+  html.put("<dt>pool hits</dt><dd>" ~ poolHitCount().to!string ~ "</dd>");
+  html.put("<dt>upstream connects</dt><dd>" ~ upstreamConnectCount().to!string ~ "</dd>");
+  html.put("<dt>upstream connections</dt><dd>" ~ leasedUpstreamCount().to!string ~ " leased / " ~
+    idleUpstreamCount().to!string ~ " idle</dd>");
+  html.put("<dt>upstream timeouts</dt><dd>" ~ upstreamTimeoutCount().to!string ~ "</dd>");
+  html.put("<dt>unhealthy transitions</dt><dd>" ~ unhealthyTransitionCount().to!string ~ "</dd>");
+  html.put("<dt>access log</dt><dd>" ~ (accessLogEnabled() ? "on" : "off") ~ "</dd>");
+  html.put("<dt>websocket tunnels</dt><dd>" ~ activeWebSockets().to!string ~ " active / " ~
+    webSocketTunnelCount().to!string ~ " total</dd>");
+  html.put("<dt>websocket idle timeouts</dt><dd>" ~
+    webSocketIdleTimeoutCount().to!string ~ "</dd>");
   html.put("<dt>route hosts</dt><dd>" ~ routes.length.to!string ~ "</dd>");
   html.put("<dt>route count</dt><dd>" ~ routeCount(routes).to!string ~ "</dd>");
   html.put("</dl></section>");
@@ -304,13 +317,38 @@ JSONValue statusJson() {
   listenJson["port"] = JSONValue(listen.port);
   root["listen"] = JSONValue(listenJson);
   root["activeConnections"] = JSONValue(activeConnections());
+  root["activeRequests"] = JSONValue(cast(long) activeRequests());
   root["maxConnections"] = JSONValue(maxConnections());
   root["connectTimeoutMillis"] = JSONValue(connectTimeoutMillis());
   root["healthCheck"] = healthJson();
+  root["accessLog"] = JSONValue(accessLogEnabled());
+  root["activeWebSockets"] = JSONValue(cast(long) activeWebSockets());
+  root["counters"] = countersJson();
   root["routeHostCount"] = JSONValue(routes.length);
   root["routeCount"] = JSONValue(routeCount(routes));
   root["routes"] = statusRoutesJson(routes);
   return JSONValue(root);
+}
+
+/** 返回连接池、请求与健康事件的累计计数，用于 status.json 观测。 */
+JSONValue countersJson() {
+  JSONValue[string] item;
+  item["poolHits"] = JSONValue(cast(long) poolHitCount());
+  item["upstreamConnects"] = JSONValue(cast(long) upstreamConnectCount());
+  item["upstreamLeased"] = JSONValue(cast(long) leasedUpstreamCount());
+  item["upstreamIdle"] = JSONValue(cast(long) idleUpstreamCount());
+  item["upstreamTimeouts"] = JSONValue(cast(long) upstreamTimeoutCount());
+  item["unhealthyTransitions"] = JSONValue(cast(long) unhealthyTransitionCount());
+  item["webSocketTunnels"] = JSONValue(cast(long) webSocketTunnelCount());
+  item["webSocketIdleTimeouts"] = JSONValue(cast(long) webSocketIdleTimeoutCount());
+  item["webSocketBytesToUpstream"] = JSONValue(cast(long) webSocketBytesToUpstream());
+  item["webSocketBytesToClient"] = JSONValue(cast(long) webSocketBytesToClient());
+  JSONValue[string] ports;
+  foreach (port, count; portRequestCounts()) {
+    ports[port.to!string] = JSONValue(cast(long) count);
+  }
+  item["portRequests"] = JSONValue(ports);
+  return JSONValue(item);
 }
 
 /** 返回健康检查配置 JSON。 */

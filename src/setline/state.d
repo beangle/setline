@@ -16,7 +16,7 @@
 
 module setline.state;
 
-import core.atomic : atomicLoad, atomicStore, cas;
+import core.atomic : atomicLoad, atomicOp, atomicStore, cas;
 
 import setline.config : saveRoutes, sortHostRoutes;
 import setline.health;
@@ -28,9 +28,28 @@ __gshared private RouteTree[string] gRouteTrees;
 __gshared private string gAdminToken;
 __gshared private string gConfigPath;
 __gshared private ListenAddress gListenAddress;
+__gshared private ListenAddress gAdminListenAddress;
+__gshared private bool gAdminListenEnabled;
 __gshared private int gConnectTimeoutMillis = 3000;
+__gshared private int gReadTimeoutMillis = 15000;
+__gshared private bool gReusePort;
+__gshared private bool gListenDisabled;
+__gshared private bool gAccessLog;
+__gshared private int gUpstreamIdleTimeoutMillis = 30_000;
+__gshared private int gWebSocketIdleTimeoutMillis;
+// 观测计数器：事件循环单线程更新，status.json 只读快照，不做同步。
+__gshared private size_t gPoolHits;
+__gshared private size_t gUpstreamConnects;
+__gshared private size_t gUpstreamTimeouts;
+__gshared private size_t[ushort] gPortRequests;
+__gshared private size_t gWebSocketTunnels;
+__gshared private size_t gWebSocketIdleTimeouts;
+__gshared private size_t gWebSocketBytesToUpstream;
+__gshared private size_t gWebSocketBytesToClient;
 shared private size_t gMaxConnections = 65535;
 shared private size_t gActiveConnections;
+shared private size_t gActiveRequests;
+shared private size_t gActiveWebSockets;
 __gshared private void delegate(HostRoutes[]) gRoutesChangedHook;
 
 /** 初始化运行时状态。
@@ -45,10 +64,28 @@ void initialize(Config config, string configPath = "") {
   gAdminToken = config.adminToken;
   gConfigPath = configPath;
   gListenAddress = config.listen;
+  gAdminListenAddress = config.adminListen;
+  gAdminListenEnabled = config.adminListenEnabled;
   gConnectTimeoutMillis = config.connectTimeoutMillis;
+  gReadTimeoutMillis = config.readTimeoutMillis;
+  gReusePort = config.reusePort;
+  gListenDisabled = config.listenDisabled;
+  gAccessLog = config.accessLog;
+  gUpstreamIdleTimeoutMillis = config.upstreamIdleTimeoutMillis;
+  gWebSocketIdleTimeoutMillis = config.webSocketIdleTimeoutMillis;
+  gPoolHits = 0;
+  gUpstreamConnects = 0;
+  gUpstreamTimeouts = 0;
+  gPortRequests = null;
+  gWebSocketTunnels = 0;
+  gWebSocketIdleTimeouts = 0;
+  gWebSocketBytesToUpstream = 0;
+  gWebSocketBytesToClient = 0;
   initializeHealth(config);
   atomicStore(gMaxConnections, config.maxConnections);
   atomicStore(gActiveConnections, 0);
+  atomicStore(gActiveRequests, 0);
+  atomicStore(gActiveWebSockets, 0);
   gRoutesChangedHook = null;
 }
 
@@ -62,9 +99,159 @@ int connectTimeoutMillis() {
   return gConnectTimeoutMillis;
 }
 
+/** 返回当前上游读取不活动超时时间。 */
+int readTimeoutMillis() {
+  return gReadTimeoutMillis;
+}
+
+/** 返回同端口多实例是否启用 SO_REUSEPORT。 */
+bool reusePort() {
+  return gReusePort;
+}
+
+/** 返回是否禁用监听（`"listen": false` 的纯渲染形态）。 */
+bool listenDisabled() {
+  return gListenDisabled;
+}
+
+/** 返回是否启用访问日志（默认关闭）。 */
+bool accessLogEnabled() {
+  return gAccessLog;
+}
+
+/** 返回空闲上游连接被回收前的等待时间。 */
+int upstreamIdleTimeoutMillis() nothrow {
+  return gUpstreamIdleTimeoutMillis;
+}
+
+/** 返回 WebSocket 隧道空闲超时（毫秒）；0 表示不主动断开。 */
+int webSocketIdleTimeoutMillis() {
+  return gWebSocketIdleTimeoutMillis;
+}
+
+/** 记录一条 WebSocket 隧道建立（101 之后开始双向透传）。 */
+void noteWebSocketOpen() {
+  gWebSocketTunnels++;
+  atomicOp!"+="(gActiveWebSockets, 1);
+}
+
+/** 记录一条 WebSocket 隧道结束（任一端关闭或出错）。 */
+void noteWebSocketClose() {
+  atomicOp!"-="(gActiveWebSockets, 1);
+}
+
+/** 记录一条 WebSocket 隧道因空闲超时被主动断开。 */
+void noteWebSocketIdleTimeout() {
+  gWebSocketIdleTimeouts++;
+}
+
+/** 记录一个客户端到后端的隧道字节（不含 101 握手本身）。 */
+void noteWebSocketBytesToUpstream(size_t bytes) {
+  gWebSocketBytesToUpstream += bytes;
+}
+
+/** 记录一个后端到客户端的隧道字节。 */
+void noteWebSocketBytesToClient(size_t bytes) {
+  gWebSocketBytesToClient += bytes;
+}
+
+/** 记录一次从空闲池取到上游连接。 */
+void notePoolHit() {
+  gPoolHits++;
+}
+
+/** 记录一次新建上游 TCP 连接。 */
+void noteUpstreamConnect() {
+  gUpstreamConnects++;
+}
+
+/** 记录一次上游读超时。 */
+void noteUpstreamTimeout() {
+  gUpstreamTimeouts++;
+}
+
+/** 记录一次落到某个后端端口的代理请求。 */
+void noteRequestPort(ushort port) {
+  gPortRequests[port]++;
+}
+
+/** 返回空闲池命中次数。 */
+size_t poolHitCount() {
+  return gPoolHits;
+}
+
+/** 返回新建上游连接次数。 */
+size_t upstreamConnectCount() {
+  return gUpstreamConnects;
+}
+
+/** 返回上游读超时次数。 */
+size_t upstreamTimeoutCount() {
+  return gUpstreamTimeouts;
+}
+
+/** 返回每端口代理请求数快照。 */
+size_t[ushort] portRequestCounts() {
+  size_t[ushort] copy;
+  foreach (port, count; gPortRequests) {
+    copy[port] = count;
+  }
+  return copy;
+}
+
+/** 返回累计建立的 WebSocket 隧道数。 */
+size_t webSocketTunnelCount() {
+  return gWebSocketTunnels;
+}
+
+/** 返回当前仍然打开的 WebSocket 隧道数。 */
+size_t activeWebSockets() nothrow {
+  return atomicLoad(gActiveWebSockets);
+}
+
+/** 返回因空闲超时被断开的隧道数。 */
+size_t webSocketIdleTimeoutCount() {
+  return gWebSocketIdleTimeouts;
+}
+
+/** 返回隧道里客户端发往后端的累计字节数。 */
+size_t webSocketBytesToUpstream() {
+  return gWebSocketBytesToUpstream;
+}
+
+/** 返回隧道里后端发往客户端的累计字节数。 */
+size_t webSocketBytesToClient() {
+  return gWebSocketBytesToClient;
+}
+
 /** 返回当前监听地址配置。 */
 ListenAddress listenAddress() {
   return gListenAddress;
+}
+
+/** 是否把管理接口放到了独立监听上。 */
+bool adminListenSeparated() {
+  return gAdminListenEnabled;
+}
+
+/** 返回独立的管理监听地址；未分离时返回一个零值地址。 */
+ListenAddress adminListenAddress() {
+  return gAdminListenAddress;
+}
+
+/** 标记一个正在处理的请求开始；优雅退出要等到它结束。 */
+void requestStarted() nothrow {
+  atomicOp!"+="(gActiveRequests, 1);
+}
+
+/** 标记一个正在处理的请求结束。 */
+void requestFinished() nothrow {
+  atomicOp!"-="(gActiveRequests, 1);
+}
+
+/** 返回当前正在处理的请求数（不含等待下一次请求的空闲 keep-alive 连接）。 */
+size_t activeRequests() nothrow {
+  return atomicLoad(gActiveRequests);
 }
 
 /** 返回允许的最大活跃连接数。 */
@@ -126,6 +313,17 @@ ushort selectPortExcept(string host, string path, ushort[] skipped) {
 /** 判断 host 和 path 是否有匹配路由。 */
 bool hasRoute(string host, string path) {
   return hasRouteForHost(host, path);
+}
+
+/** 判断一个端口是否仍然是该 host/path 上可选的健康端口。
+
+    客户端连接亲和会跨请求保留上游连接，但路由表可能在两次请求之间被改掉（管理接口或
+    `--sync-map`），端口也可能被健康检查摘掉，所以复用之前要按当前路由复核一次。
+*/
+bool isRoutedPort(string host, string path, ushort port) {
+  return selectPortForHost(host, path, delegate bool(ushort candidate) {
+    return candidate == port && isPortHealthy(candidate);
+  }) == port;
 }
 
 /** 按 host 选择端口，必要时查找 `*` fallback。
