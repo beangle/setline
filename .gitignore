@@ -5,6 +5,9 @@
 target
 classes
 
+# dub test --build=unittest-cov 生成的行覆盖率报告
+*.lst
+
 lib
 packages
 

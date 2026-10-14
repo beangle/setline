@@ -141,6 +141,43 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 - 这一轮暴露的新问题记为 P1-7：并发超过池上限 4 之后约 8% 的请求要新建上游连接，
   TIME_WAIT 随请求数增长；临时端口被自己耗尽后吞吐会从 65k 掉到 17k 并开始报错。
   本轮没有改这个行为，只是把它量化了。P1-7 已修，见下面 P1-7 行与验证记录。
+- 代码走查（本轮）修掉一个「响应流被污染」的缺陷：`forward` 只对读超时区分「响应头是否
+  已经发出」，其它异常（响应体被上游截断时的 `Reached end of stream while reading data.`、
+  隧道中途出错、client 断开）一律原样抛给 `handleRequest`，于是外层 catch 会在**已经发出的
+  响应头后面**再补一个 `502`——状态行和错误文本直接混进响应体，已经声明 `Content-Length`
+  的情况下前置代理会把它当成响应内容甚至判成协议错误。改法：`forward`/`forwardWebSocket`
+  在最终响应头写出后统一抛新的 `ResponseStartedException`，`handleRequest` 只记一行访问日志
+  并截断连接（`configuration.md` 的 `readTimeoutMillis` 一节本来就是这么写的口径，代码终于
+  和文档一致）。e2e 新增 `truncated upstream response is not followed by a synthetic
+  response`：后端 `/truncate` 声明 `Content-Length: 32` 却只发 4 字节，用例直接打 setline
+  数报文里出现的状态行个数（补发的状态行紧跟在 body 字节后面、没有换行，所以必须全文计数
+  而不是只数行首）。用 HEAD 源码另建一份二进制做对照：旧实现 2 条状态行，用例如预期失败。
+- 同一轮走查的其它修正：`upstreamReadTimedOut` 改为按 `vibe.core.net.ReadTimeoutException`
+  类型判断（原来比类名字符串，多一层包装就静默失效）；`Content-Length` 按 RFC 9110 收紧成
+  `1*DIGIT`（`to!long` 会接受 `+5` 甚至 `-1`，后者被判成「合法但为负」→ 退化成「没有长度」，
+  framing 冲突从入口漏掉）；framing 冲突的响应不再进上游连接复用；`tunnel` 改用
+  `scope(exit)` 保证异常路径也关掉两端；删掉两处没有调用方的公开函数
+  （`http.readHttpRequest`、`router.upsertRoute`），注释／文档补齐（`ForwardResult` 字段、
+  `responseBodyDelimited`、`watchClientDisconnect`，`configuration.md` 新增「报文边界（framing）」
+  一节）。`dub test --compiler=ldc2` 100 通过、0 失败；`scripts/e2e.sh` 全绿。走查收尾又补了
+  几处纯函数单测：`escapeHtml` 的单引号分支、状态页／状态 JSON 的 `adminListen` 分支、
+  `queryValue` 里「参数没有 `=`」和「名字不匹配继续往后找」两条路径、以及 `state` 删掉最后
+  一条路由后整个 host 组要消失（含 host 不存在时 `deleteRoute` 返回 `false`）。这几处把
+  `admin.d` 行覆盖 126→136、`state.d` 167→177、`util.d` 26→29。
+- 走查还挖出一个测试基础设施缺陷：`silly` 用 `std.parallelism.parallel` **并发**跑 unittest，
+  而 `proxy_test.d` 里两个上游池测试共用进程级状态（`gUpstreamLeased`／`gUpstreamPeak`）。
+  「sizes the idle upstream pool」断言 `leasedUpstreamCount() == 0`，会读到另一个测试
+  `noteUpstreamLeaseAcquired` 之后、归还之前的中间态，实测约 12%（5/40）随机失败，掩盖了
+  真实回归信号。给两个池测试都套上项目已有的 `withStateTestLock` 后连跑 60 次全绿。
+- **已知偏差（本轮未改）**：setline 把 client 的 FIN（半关闭）当成「放弃本次请求」——
+  `watchClientDisconnect` 看到 `noMoreData` 就关掉上游，于是 `printf ... | nc` 这种「发完请求就
+  `shutdown(WR)`、再读响应」的客户端会拿到 `502`（复现：直连 setline 用管道喂一个普通
+  `GET /ok`）。这是 P0-4「客户端放弃后立即回收 fd」的实现代价：epoll 层面分不出「半关闭等着
+  读响应」和「真的走了」，而此刻阻塞在上游读上的 task 只能靠关连接唤醒。前置代理
+  （haproxy/nginx）在转发响应期间不会半关闭到 setline 的连接，推荐部署形态下撞不到；要支持
+  直连半关闭的客户端，就得改成「FIN 后不中断上游读、靠 `readTimeoutMillis` 和写失败兜底」，
+  代价是 P0-4 的 fd 回收从「立即」变成「最多一个读超时」。e2e 里走代理路径的探针因此一律走
+  haproxy，新加的截断用例用 bash `/dev/tcp` 拿读写双向 fd、不半关闭。
 
 ## P0：阻塞生产使用
 
@@ -149,7 +186,7 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 | P0-1 | 建立基准与端到端脚手架 | 已完成 | `scripts/e2e.sh` 用机器上现有的 haproxy 跑一轮（本机 3.0.25，13 项全绿），`scripts/bench.sh` 出性能数值 | `scripts/bench.sh`（顺序 RPS、8/64 并发 RPS、P99、1MB 响应吞吐、每秒新建上游连接数、TIME_WAIT 峰值）+ `scripts/e2e.sh`（真实 haproxy，用机器上现有的版本，可用 `HAPROXY_BINARIES` 指定） | 每次改动前后各跑一次，数值记进 PR/提交说明；跑的是哪个版本就记哪个版本 |
 | P0-2 | 1xx 中间响应被当成最终响应 | 已完成 | 单测覆盖 1xx/最终响应同段与异段；e2e 覆盖 Expect POST 和 103 + 200 | 透传中间响应（100/103 可多条）后继续读最终响应；修正「同一次 read 里 1xx 之后的字节」的处理，不能当 body 直接甩给客户端 | e2e：Expect POST = 200 且无超时；103 + 200 都到客户端；单测覆盖 1xx 与最终响应同段/异段/带 body |
 | P0-3 | 后端连接复用 | 已完成 | 每端口小池 + 30s 空闲超时；e2e 的 50 个顺序请求仅新建 1 条上游连接，新增 1000 请求仍为 0 条/秒、TIME_WAIT delta 0 | 按端口维护空闲连接池：响应边界明确且响应头没有 `Connection: close` 时放回；发送前发现空闲连接已 EOF 就换新连接（尚未发出任何字节，重试安全）；池上限 + 空闲超时 | 稳态下「每秒新建上游连接数」≈ 0；TIME_WAIT 不随请求数增长；e2e 全绿 |
-| P0-4 | 资源回收与上游读超时 | 已完成 | 新增 `readTimeoutMillis`；e2e 的卡死后端返回 504，客户端放弃后 fd 在观察窗内回落到起点 | 客户端断开立即中断上游并释放两端；上游读加超时（新配置 `readTimeoutMillis`，超时回 504 并回收） | e2e：卡死后端场景下客户端放弃后 1s 内 setline fd 数回落；上游超时能主动 504 |
+| P0-4 | 资源回收与上游读超时 | 已完成 | 新增 `readTimeoutMillis`；e2e 的卡死后端返回 504，客户端放弃后 fd 在观察窗内回落到起点。「客户端放弃」的判据是 client 侧 FIN：见验证记录里的已知偏差（半关闭的客户端也会被当成放弃） | 客户端断开立即中断上游并释放两端；上游读加超时（新配置 `readTimeoutMillis`，超时回 504 并回收） | e2e：卡死后端场景下客户端放弃后 1s 内 setline fd 数回落；上游超时能主动 504 |
 
 ## P1：性能与容量
 
@@ -159,7 +196,7 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 | P1-2 | 头解析改增量扫描 + 防御性上限 | 已完成 | 增量扫描和 64KB 上限已有单测，本轮补上基准证据。`scripts/bench.sh` 新增头部长度扫描（客户端是 `scripts/bench_headers.py`：`ab` 的请求缓冲只有 8KB，头再长就被截断），从 `/proc/<pid>/stat` 采 setline 的 CPU：0/1K/4K/16K/32K/48K 字节 = 43.8/46.2/55.0/83.8/126.2/167.5 µs，边际成本恒为 2.5 ns/头字节。把 `HttpHeadScanner.feed` 改回每次从 0 重扫做对照：43.8/47.5/60.0/113.8/216.2/348.8 µs，「每字节 CPU」稳定在 ~7 ns 即成本 ∝ n²，48KB 处慢 2.1× | 单测覆盖上限；基准里 CPU 不随头长平方增长 |
 | P1-3 | fd 预算口径 | 已完成 | 启动时按 `2×maxConnections+64` 对照 `RLIMIT_NOFILE` 告警；unit 覆盖 1→66、65535→131134；包内 `LimitNOFILE=131134`；部署文档把公式拆开写清：`2×maxConnections` = 每条客户端连接一个 socket + 亲和租给它的一条上游 socket（亲和态是常态，不是最坏情况），`64` = 监听（数据面 + 可选 `adminListen`）、eventcore 的 epoll/eventfd/timerfd、逐个执行的健康探测、`--sync-map` 管理 socket、回收留下的空闲池（每端口 ≤32）；并写明多端口时余量不够，真实上界是 `2×maxConnections+64+32×端口数`。`configuration.md` 与 `README.md` 各留一句指到该节 | 启动时按 `2×maxConnections+64` 校验 `LimitNOFILE` 并告警；包里的 `LimitNOFILE` 按公式给值；文档写明公式并解释每一项 |
 | P1-4 | I/O 缓冲调大 | 已完成 | 四个 relay 路径统一为 32KB；同后端 6 轮 A/B：8KB→32KB 的 1MB RPS 338.00→344.95，P99 46.0→45.17ms | 1MB 响应吞吐基准提升且 P99 不退化 |
-| P1-5 | 报文边界从严 | 已完成 | 相同重复 CL 保留；冲突重复 CL、CL+TE、非法或非 chunked TE 在入口返回 400；`Connection: close` 不进 client/upstream 池，均有单测 | 单测：CL+TE 并存、重复 CL、`Connection: close` 立即出池 |
+| P1-5 | 报文边界从严 | 已完成 | 相同重复 CL 保留；冲突重复 CL、CL+TE、非法或非 chunked TE 在入口返回 400；`Content-Length` 只接受 `1*DIGIT`（`+5`/`-1` 不再被宽松解析成「没有长度」）；framing 冲突的响应不复用上游连接；`Connection: close` 不进 client/upstream 池，均有单测 | 单测：CL+TE 并存、重复 CL、带符号或非数字 CL、`Connection: close` 立即出池 |
 | P1-6 | keep-alive 正确性回归 | 已完成 | e2e 覆盖 close、HTTP/1.0、连接关闭界定响应、HEAD/204/304，并保留 50 次顺序复用 | e2e 覆盖：`Connection: close`、HTTP/1.0、响应无长度（连接关闭界定）、HEAD/204/304 |
 | P1-7 | 上游池容量与连接 churn | 已完成 | 旧判据：空闲池每端口上限 4，并发超过 4 后归还的连接挤掉最旧的，下一条请求重连——单实例 5000 请求 c=8/16/64 新建 204/501/1009 条（1.4%/2.5%/4.0%）。改为**客户端连接亲和**：每条客户端连接一条专属上游连接、跨请求保留（端口没变就继续用），背后留一个自适应兜底池（容量 = 近期并发高水位，clamp 到 4..32）接住客户端连接关闭时还回来的连接，`upstreamIdleTimeoutMillis`（默认 30s）到期回收。池巡检（回收 + 高水位衰减）是独立 task，1s 一轮、按真实经过时间衰减（半衰期 30s），不跟随 `healthCheck.intervalMillis`。A/B（16 核单实例 c=64、20k 请求、TIME_WAIT 先排空）：新建上游连接 2059-2202 → 56-64（直连）、1593-2038 → 0-64（haproxy 形态）；TIME_WAIT 峰值增量 1988-2240 → 0-92；RPS 18325-18803 → 22820-23312（直连）、16136-18245 → 21332-22175（haproxy）；p99 8-9ms → 4-5ms。`scripts/bench.sh` 新增 `BENCH_HAPROXY=1` 复现真实形态 | 高并发稳态下新建上游连接数≈客户端连接数、TIME_WAIT 不随请求数增长（P0-3 的判据在 c8 以上也成立）；e2e 新增用例：8 条 keep-alive 客户端 × 200 请求只新建 ≤10 条上游连接，且空闲 `upstreamIdleTimeoutMillis` 后专属连接回池、池内连接随后被独立巡检关掉（`healthCheck.intervalMillis` 配成 60s 也照样回收） |
 
