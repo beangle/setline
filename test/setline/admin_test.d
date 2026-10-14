@@ -46,6 +46,8 @@ import setline.util : escapeHtml;
   withStateTestLock({
     Config config;
     config.listen = ListenAddress("0.0.0.0", 8080);
+    config.adminListenEnabled = true;
+    config.adminListen = ListenAddress("127.0.0.1", 8081);
     config.routes = [HostRoutes("local.example.com", [Route("/api", [9001])])];
     initialize(config);
 
@@ -57,6 +59,9 @@ import setline.util : escapeHtml;
     assert(html.indexOf("9001") >= 0);
     assert(html.indexOf("online") >= 0);
     assert(html.indexOf("dot") >= 0);
+    // 管理面独立监听时状态页要列出它的地址，否则排障时看不出管理入口在哪。
+    assert(html.indexOf("admin listen") >= 0);
+    assert(html.indexOf("127.0.0.1:8081") >= 0);
   });
 }
 
@@ -64,6 +69,8 @@ import setline.util : escapeHtml;
   withStateTestLock({
     Config config;
     config.listen = ListenAddress("127.0.0.1", 18080);
+    config.adminListenEnabled = true;
+    config.adminListen = ListenAddress("127.0.0.1", 18081);
     config.connectTimeoutMillis = 1500;
     config.routes = [
       HostRoutes("local.example.com", [
@@ -82,11 +89,15 @@ import setline.util : escapeHtml;
     assert(status["routes"].type == JSONType.object);
     assert(status["routes"]["local.example.com"].type == JSONType.array);
     assert(status["routes"]["local.example.com"][0]["ports"][0]["healthy"].boolean);
+    assert(status["adminListen"]["host"].str == "127.0.0.1");
+    assert(jsonNumber(status["adminListen"]["port"]) == 18081);
   });
 }
 
 @("admin escapes status html") unittest {
-  assert(escapeHtml(`<tag attr="x">&`) == `&lt;tag attr=&quot;x&quot;&gt;&amp;`);
+  // 单引号也要转义：属性值一旦用单引号包起来，`'` 就能闭合属性注入新的属性。
+  assert(escapeHtml(`<tag attr="x" data-y='z'>&`) ==
+    `&lt;tag attr=&quot;x&quot; data-y=&#39;z&#39;&gt;&amp;`);
 }
 
 @("admin detects localhost addresses") unittest {
@@ -145,6 +156,9 @@ import setline.util : escapeHtml;
   assert(queryValue("/__setline/routes?prefix=/api", "prefix") == "/api");
   assert(normalizeRoutePrefix(queryValue("/__setline/routes?prefix=/api/", "prefix")) == "/api");
   assert(queryValue("/__setline/routes?x=1&prefix=/m/edu", "prefix") == "/m/edu");
+  // 没有 `=` 的参数按空值处理；名字对不上就跳过，继续往后找。
+  assert(queryValue("/__setline/routes?prefix", "prefix") == "");
+  assert(queryValue("/__setline/routes?other&prefix=/api", "prefix") == "/api");
   assert(queryValue("/__setline/routes", "prefix") == "");
   assert(routeHostFromTarget("/__setline/routes?host=LOCAL.EXAMPLE.COM") == "local.example.com");
 }

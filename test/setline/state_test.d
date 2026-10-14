@@ -211,3 +211,36 @@ import setline.util : requiredFileDescriptorBudget;
     assert(unhealthyTransitionCount() == 1);
   });
 }
+
+@("state prunes empty host groups when the last route is removed") unittest {
+  withStateTestLock({
+    Config config;
+    config.routes = [
+      HostRoutes("a.example.com", [Route("/api", [9001])]),
+      HostRoutes("b.example.com", [Route("/", [9002])])
+    ];
+    initialize(config);
+
+    // 追加到已有 host、以及给新 host 建组，都要立刻反映到路由表。
+    upsertRoute("a.example.com", Route("/new", [9003]));
+    assert(selectPort("a.example.com", "/new/x") == 9003);
+    upsertRoute("c.example.com", Route("/", [9004]));
+    assert(selectPort("c.example.com", "/anything") == 9004);
+
+    // 删到最后一条时整个 host 组要消失：留空壳会让状态页和路由树都多出一个空条目。
+    assert(deleteRoute("a.example.com", "/api"));
+    assert(deleteRoute("a.example.com", "/new"));
+    assert(routesSnapshot().length == 2);
+
+    // host 不存在时返回 false（admin 的 DELETE 靠它回 404），且不动当前状态。
+    assert(!deleteRoute("missing.example.com", "/api"));
+    assert(routesSnapshot().length == 2);
+
+    assert(deleteRoute("b.example.com", "/"));
+    assert(routesSnapshot().length == 1);
+
+    // replaceRoutes 传空数组等价于删除该 host。
+    replaceRoutes("c.example.com", []);
+    assert(routesSnapshot().length == 0);
+  });
+}

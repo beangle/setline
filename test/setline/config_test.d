@@ -106,8 +106,8 @@ import setline.model;
 @("config parses agent settings") unittest {
   auto path = "/tmp/setline-config-agent-test.json";
   write(path,
-    `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json","workDir":"/var/lib/setline-agent"},` ~
-    `"routes":{}}`);
+    `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json",` ~
+    `"workDir":"/var/lib/setline-agent"},"routes":{}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
