@@ -16,6 +16,9 @@
 
 module setline.http_test;
 
+import std.algorithm : startsWith;
+import std.exception : assertThrown;
+
 import setline.http;
 
 @("http requestPath removes query string") unittest {
@@ -71,7 +74,7 @@ import setline.http;
   assert(headerContains(request, "Connection", "upgrade"));
 }
 
-@("http ignores invalid content length") unittest {
+@("http marks invalid content length") unittest {
   auto request =
     "POST /api HTTP/1.1\r\n" ~
     "Host: local.example.com\r\n" ~
@@ -79,6 +82,45 @@ import setline.http;
   auto head = parseHttpHead(request);
   assert(!head.hasContentLength);
   assert(head.contentLength < 0);
+  assert(head.invalidFraming);
+}
+
+@("http accepts identical repeated content length but rejects conflicting values") unittest {
+  auto identical =
+    "POST /api HTTP/1.1\r\n" ~
+    "Content-Length: 5\r\n" ~
+    "Content-Length: 5\r\n\r\n";
+  auto identicalHead = parseHttpHead(identical);
+  assert(identicalHead.contentLength == 5);
+  assert(!identicalHead.invalidFraming);
+
+  auto conflicting =
+    "POST /api HTTP/1.1\r\n" ~
+    "Content-Length: 5\r\n" ~
+    "Content-Length: 6\r\n\r\n";
+  auto head = parseHttpHead(conflicting);
+  assert(!head.hasContentLength);
+  assert(head.contentLength < 0);
+  assert(head.invalidFraming);
+}
+
+@("http transfer encoding wins when content length is also present") unittest {
+  auto head = parseHttpHead(
+    "POST /api HTTP/1.1\r\n" ~
+    "Content-Length: 5\r\n" ~
+    "Transfer-Encoding: chunked\r\n\r\n");
+  assert(head.transferChunked);
+  assert(!head.hasContentLength);
+  assert(head.invalidFraming);
+}
+
+@("http accepts chunked transfer encoding without content length") unittest {
+  auto head = parseHttpHead(
+    "POST /api HTTP/1.1\r\n" ~
+    "Transfer-Encoding: chunked\r\n\r\n");
+  assert(head.transferChunked);
+  assert(!head.hasContentLength);
+  assert(!head.invalidFraming);
 }
 
 @("http handles content length bounds") unittest {
@@ -108,4 +150,73 @@ import setline.http;
   auto head = parseHttpHead(response);
   assert(head.httpVersion == "HTTP/1.1");
   assert(head.statusCode == 101);
+}
+
+@("http keeps final response bytes after intermediate response in same read") unittest {
+  auto pending =
+    "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n" ~
+    "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody";
+  auto interim = takeResponseHead(pending);
+  assert(interim.statusCode == 103);
+  assert(interim.bufferedBody.length == 0);
+  assert(pending.startsWith("HTTP/1.1 200 OK"));
+
+  auto finalResponse = takeResponseHead(pending);
+  assert(finalResponse.statusCode == 200);
+  assert(cast(string) finalResponse.bufferedBody == "body");
+  assert(pending.length == 0);
+}
+
+@("http keeps final response bytes when intermediate and final arrive separately") unittest {
+  string pending = "HTTP/1.1 100 Continue\r\n\r\n";
+  auto interim = takeResponseHead(pending);
+  assert(interim.statusCode == 100);
+  assert(pending.length == 0);
+
+  pending = "HTTP/1.1 204 No Content\r\n\r\n";
+  auto finalResponse = takeResponseHead(pending);
+  assert(finalResponse.statusCode == 204);
+  assert(finalResponse.bufferedBody.length == 0);
+  assert(pending.length == 0);
+}
+
+@("http scans header terminator incrementally across chunk boundaries") unittest {
+  HttpHeadScanner scanner;
+  string current;
+  foreach (character; "GET / HTTP/1.1\r\nHost: local\r\n\r\n") {
+    current ~= character;
+    auto headerEnd = scanner.feed(current);
+    if (headerEnd < 0) {
+      assert(headerEnd == -1);
+    } else {
+      assert(current[headerEnd .. headerEnd + 4] == "\r\n\r\n");
+      assert(headerEnd == current.length - 4);
+      return;
+    }
+  }
+  assert(false, "header terminator was not found");
+}
+
+@("http rejects oversized incomplete head at the defensive limit") unittest {
+  HttpHeadScanner scanner;
+  string current;
+  current.length = maxHttpHeadSize + 1;
+  assertThrown!HttpHeadTooLargeException(scanner.feed(current));
+
+  current.length = maxHttpHeadSize;
+  assert(scanner.feed(current) == -1);
+  current ~= "x";
+  assertThrown!HttpHeadTooLargeException(scanner.feed(current));
+}
+
+@("http parses multiple intermediate responses before final response") unittest {
+  string pending =
+    "HTTP/1.1 100 Continue\r\n\r\n" ~
+    "HTTP/1.1 103 Early Hints\r\n\r\n" ~
+    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+  assert(takeResponseHead(pending).statusCode == 100);
+  assert(takeResponseHead(pending).statusCode == 103);
+  auto finalResponse = takeResponseHead(pending);
+  assert(finalResponse.statusCode == 200);
+  assert(cast(string) finalResponse.bufferedBody == "hello");
 }

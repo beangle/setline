@@ -26,6 +26,42 @@ import vibe.core.stream : IOMode;
 
 import setline.util : toLowerAscii;
 
+/** 透明代理对单条请求/响应头的防御性字节上限。 */
+enum size_t maxHttpHeadSize = 64 * 1024;
+
+/** 头部超过防御性上限。请求入口据此返回 400；上游响应入口交给 502。 */
+class HttpHeadTooLargeException : Exception {
+  this(size_t limit) {
+    super("HTTP head exceeds " ~ limit.to!string ~ " bytes");
+  }
+}
+
+/** 增量查找头部终止符的扫描器。
+
+    `feed` 接收累计缓冲而不是新片段；每轮只扫描上一轮末尾的 3 个重叠字节加新数据，
+    避免未以 `\\r\\n\\r\\n` 结尾的长头反复扫描整段造成 O(n²)。
+*/
+struct HttpHeadScanner {
+  private size_t scanFrom;
+
+  /// 找到终止符时返回其起始下标；未找到返回 -1；超过上限抛异常。
+  ptrdiff_t feed(string data) {
+    auto relativeEnd = data[scanFrom .. $].indexOf("\r\n\r\n");
+    if (relativeEnd >= 0) {
+      return cast(ptrdiff_t) scanFrom + relativeEnd;
+    }
+    if (data.length >= 3) {
+      scanFrom = data.length - 3;
+    } else {
+      scanFrom = 0;
+    }
+    if (data.length > maxHttpHeadSize) {
+      throw new HttpHeadTooLargeException(maxHttpHeadSize);
+    }
+    return -1;
+  }
+}
+
 /** 表示一次已经读取到的 HTTP 头部，以及读头时顺带收到的 body 前缀。
 
     请求和响应都使用相同的头部读取规则：读到 `\r\n\r\n` 为止，头后已经到达的字节放在
@@ -57,6 +93,7 @@ struct HttpHead {
   string host;
 
   /// `Content-Length` 的数值；小于 0 表示没有可用的固定长度。
+  /// 重复字段值不一致、任一字段非法，或同时出现 `chunked` 时都会保持小于 0。
   long contentLength = -1;
 
   /// 是否有可用的非负 `Content-Length`。
@@ -66,6 +103,9 @@ struct HttpHead {
 
   /// `Transfer-Encoding` 是否包含 `chunked`。
   bool transferChunked;
+
+  /// 请求/响应同时声明多种互相冲突的 body framing 时为 true。
+  bool invalidFraming;
 
   /// `Connection` 是否包含 `close`。
   bool connectionClose;
@@ -91,6 +131,7 @@ struct HttpHead {
 HttpHead readHttpHead(TCPConnection socket) {
   ubyte[8192] buffer;
   auto data = appender!string();
+  HttpHeadScanner scanner;
 
   while (true) {
     auto received = socket.read(buffer[], IOMode.once);
@@ -99,15 +140,68 @@ HttpHead readHttpHead(TCPConnection socket) {
     }
     data.put(cast(string) buffer[0 .. received]);
     auto current = data.data;
-    auto headerEnd = current.indexOf("\r\n\r\n");
+    auto headerEnd = scanner.feed(current);
     if (headerEnd < 0) {
       continue;
     }
 
-    auto bodyStart = cast(size_t) headerEnd + 4;
+    auto headSize = cast(size_t) headerEnd + 4;
+    if (headSize > maxHttpHeadSize) {
+      throw new HttpHeadTooLargeException(maxHttpHeadSize);
+    }
+    auto bodyStart = headSize;
     return parseHttpHead(current[0 .. bodyStart], cast(ubyte[]) current[bodyStart .. $].dup);
   }
   return HttpHead();
+}
+
+/** 从调用方维护的响应缓冲中取下一条 HTTP 响应头。
+
+    1xx 中间响应没有响应体；头后的字节属于下一条响应，必须留在缓冲里。最终响应则把
+    头后已经到达的字节作为 body 前缀交给调用方，并清空响应缓冲。101 是协议切换，按
+    最终响应处理，后续字节不再属于 HTTP 消息解析。
+*/
+HttpHead takeResponseHead(ref string pending) {
+  auto headerEnd = pending.indexOf("\r\n\r\n");
+  if (headerEnd < 0) {
+    return HttpHead();
+  }
+
+  auto bodyStart = cast(size_t) headerEnd + 4;
+  auto response = parseHttpHead(pending[0 .. bodyStart]);
+  auto remainder = pending[bodyStart .. $];
+  if (isIntermediateResponse(response)) {
+    pending = remainder;
+    response.bufferedBody = null;
+  } else {
+    response.bufferedBody = cast(ubyte[]) remainder.dup;
+    pending = "";
+  }
+  return response;
+}
+
+/** 读取一条响应头；调用方用 `pending` 保留同一次 read 中已经读到的后续字节。 */
+HttpHead readResponseHead(TCPConnection socket, ref string pending) {
+  ubyte[8192] buffer;
+  HttpHeadScanner scanner;
+  while (scanner.feed(pending) < 0) {
+    auto received = socket.read(buffer[], IOMode.once);
+    if (received <= 0) {
+      return HttpHead();
+    }
+    pending ~= cast(string) buffer[0 .. received];
+  }
+  auto response = takeResponseHead(pending);
+  if (response.head.length > maxHttpHeadSize) {
+    throw new HttpHeadTooLargeException(maxHttpHeadSize);
+  }
+  return response;
+}
+
+/** 100、103 等中间响应；101 是最终的协议切换响应。 */
+bool isIntermediateResponse(const HttpHead response) {
+  return response.statusCode >= 100 && response.statusCode < 200
+    && response.statusCode != 101;
 }
 
 /** 解析已有 HTTP 头字符串，并填充 `HttpHead` 的热路径字段。 */
@@ -276,6 +370,8 @@ private int parseStatusCode(string line) {
 private void parseHeaderFields(ref HttpHead result) {
   bool connectionUpgrade;
   bool websocketUpgrade;
+  bool sawContentLength;
+  bool sawTransferEncoding;
 
   foreachHeaderLine(result.head, delegate bool(string line) {
     auto pos = line.indexOf(":");
@@ -290,9 +386,19 @@ private void parseHeaderFields(ref HttpHead result) {
         result.host = value;
         break;
       case "content-length":
-        parseContentLengthValue(value, result.contentLength);
+        long parsedLength;
+        auto validLength = parseContentLengthValue(value, parsedLength);
+        if (!sawContentLength) {
+          result.contentLength = validLength ? parsedLength : -1;
+          result.invalidFraming = result.invalidFraming || !validLength;
+          sawContentLength = true;
+        } else if (!validLength || !result.hasContentLength || parsedLength != result.contentLength) {
+          result.contentLength = -1;
+          result.invalidFraming = true;
+        }
         break;
       case "transfer-encoding":
+        sawTransferEncoding = true;
         result.transferChunked = headerValueContains(value, "chunked");
         break;
       case "connection":
@@ -309,6 +415,10 @@ private void parseHeaderFields(ref HttpHead result) {
     return true;
   });
   result.upgradeWebSocket = connectionUpgrade && websocketUpgrade;
+  if (sawTransferEncoding) {
+    result.invalidFraming = result.invalidFraming || sawContentLength || !result.transferChunked;
+    result.contentLength = -1;
+  }
 }
 
 private bool parseContentLengthValue(string value, ref long length) {
