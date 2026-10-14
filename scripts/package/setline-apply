@@ -29,6 +29,8 @@ NGINX_SERVICE="${NGINX_SERVICE:-nginx}"
 SETLINE_APPLY_QUIET_SECONDS="${SETLINE_APPLY_QUIET_SECONDS:-15}"
 SETLINE_APPLY_STATE_DIR="${SETLINE_APPLY_STATE_DIR:-/var/lib/setline/apply}"
 SETLINE_APPLY_RUNTIME_DIR="${SETLINE_APPLY_RUNTIME_DIR:-/run}"
+# 片段目录必须归 setline 服务账号所有，否则 setline 写不进片段。只在目录属主是 root 时纠正。
+SETLINE_APPLY_FRAGMENT_OWNER="${SETLINE_APPLY_FRAGMENT_OWNER:-setline:beangle}"
 
 if [ -r /etc/setline/apply.conf ]; then
   # shellcheck disable=SC1091
@@ -105,6 +107,8 @@ fi
 STATE_DIR="$SETLINE_APPLY_STATE_DIR/$PROXY"
 LASTGOOD="$STATE_DIR/lastgood"
 HASHFILE="$STATE_DIR/applied.sha256"
+# 只覆盖 backend 片段（非 *.map）。它没变时说明本次只有路由表变了，可以走热同步。
+CFGHASHFILE="$STATE_DIR/applied.cfg.sha256"
 LOCKFILE="$SETLINE_APPLY_RUNTIME_DIR/setline-apply-$PROXY.lock"
 
 
@@ -117,6 +121,16 @@ esac
 
 dir_hash() {
   ( cd "$1" && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1 )
+}
+
+# 只对 backend 片段取哈希：*.map 是路由表，可以由 runtime socket 热更新，不触发 reload。
+cfg_hash() {
+  ( cd "$1" && find . -type f ! -name '*.map' -print0 | LC_ALL=C sort -z |
+      xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1 )
+}
+
+map_files() {
+  find "$FRAG_DIR" -maxdepth 1 -type f -name '*.map' | LC_ALL=C sort
 }
 
 validate() {
@@ -189,6 +203,72 @@ reload() {
   systemctl reload "$SERVICE"
 }
 
+# 片段必须由 setline 服务账号写。如果这目录是 root 建的（setline-apply 先于 setline 跑过，
+# 或 lastgood 快照本身是 root 属主），setline 之后就没法往里写片段了。只在属主确实为 root 时
+# 纠正，不动部署方刻意设置的其他属主。
+ensure_fragment_dir_owner() {
+  [ "$(id -u)" -eq 0 ] || return 0
+  [ -d "$FRAG_DIR" ] || return 0
+  [ "$(stat -c '%u' "$FRAG_DIR" 2>/dev/null || echo 0)" = "0" ] || return 0
+  if chown "$SETLINE_APPLY_FRAGMENT_OWNER" "$FRAG_DIR" 2>/dev/null; then
+    chmod 0755 "$FRAG_DIR" 2>/dev/null || true
+    log "took ownership of $FRAG_DIR as $SETLINE_APPLY_FRAGMENT_OWNER"
+  else
+    warn "cannot chown $FRAG_DIR to $SETLINE_APPLY_FRAGMENT_OWNER;" \
+      "setline may be unable to write fragments"
+  fi
+}
+
+# haproxy 的 runtime socket 候选，全部自动发现，不引入配置项：
+#   1) 运行中单元配置文件里的 `stats socket <path>`（worker 的 runtime API，map 命令都支持）
+#   2) 单元 ExecStart 里的 `-S <path>`（master CLI，命令集较小，放后面试）
+#   3) 几个发行版默认位置
+# 任何一个探不通就换下一个，全都不可用则回退 reload。
+list_haproxy_sockets() {
+  local f
+  for f in $HAPROXY_CONFIGS; do
+    if [ -d "$f" ]; then
+      grep -rhsE '^[[:space:]]*stats[[:space:]]+socket[[:space:]]+' --include='*.cfg' "$f" 2>/dev/null
+    elif [ -f "$f" ]; then
+      grep -hsE '^[[:space:]]*stats[[:space:]]+socket[[:space:]]+' "$f" 2>/dev/null
+    fi
+  done | awk '{print $3}'
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl show "$SERVICE" -p ExecStart 2>/dev/null | grep -oE '(^| )-S [^ ]+' | awk '{print $2}'
+  fi
+  printf '%s\n' \
+    /run/haproxy/admin.sock /var/run/haproxy/admin.sock \
+    /run/haproxy.sock /var/run/haproxy.sock \
+    /run/haproxy/master.sock /var/run/haproxy/master.sock
+}
+
+# 只把 *.map 热同步进运行中的 haproxy。返回 1 表示「没有可用的 socket 或同步失败」，
+# 调用方据此回退到 reload。每个 map 由 setline 自己算差量、下发并回读校验。
+hot_sync_maps() {
+  local map socket out maps=()
+  while IFS= read -r map; do
+    [ -n "$map" ] && maps+=("$map")
+  done < <(map_files)
+  [ "${#maps[@]}" -gt 0 ] || return 1
+  while IFS= read -r socket; do
+    [ -n "$socket" ] || continue
+    [ -S "$socket" ] || continue
+    local ok=1
+    for map in "${maps[@]}"; do
+      if ! out=$("$SETLINE_BIN" --sync-map "$socket" "$map" 2>&1); then
+        log "hot sync of $(basename "$map") via $socket failed: $out"
+        ok=0
+        break
+      fi
+    done
+    if [ "$ok" = 1 ]; then
+      log "hot-synced ${#maps[@]} map file(s) via $socket (no reload)"
+      return 0
+    fi
+  done < <(list_haproxy_sockets | awk 'NF && !seen[$0]++')
+  return 1
+}
+
 snapshot_lastgood() {
   rm -rf "$LASTGOOD"
   mkdir -p "$LASTGOOD"
@@ -201,9 +281,12 @@ restore_lastgood() {
   rm -rf "$FRAG_DIR"
   mkdir -p "$(dirname "$FRAG_DIR")"
   cp -a "$LASTGOOD" "$FRAG_DIR"
+  # lastgood 若本身是 root 属主（首次快照就取自 root 建的目录），回滚会把 root 属主带回来。
+  ensure_fragment_dir_owner
 }
 
 mkdir -p "$STATE_DIR" "$FRAG_DIR" "$SETLINE_APPLY_RUNTIME_DIR"
+ensure_fragment_dir_owner
 
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
@@ -229,6 +312,9 @@ if [ -f "$HASHFILE" ] && [ "$(cat "$HASHFILE")" = "$current_hash" ]; then
   log "fragment unchanged, nothing to do"
   exit 0
 fi
+# backend 片段（非 *.map）与上次应用内容的哈希：只改路由表时可以不 reload 就地热同步。
+new_cfg_hash=$(cfg_hash "$FRAG_DIR")
+prev_cfg_hash=$(cat "$CFGHASHFILE" 2>/dev/null || true)
 
 if ! validate; then
   log "validation FAILED for the new fragment"
@@ -248,12 +334,24 @@ if ! systemctl is-active --quiet "$SERVICE"; then
   log "$SERVICE is not active; keeping validated fragment, skipping reload"
   snapshot_lastgood
   echo "$current_hash" >"$HASHFILE"
+  echo "$new_cfg_hash" >"$CFGHASHFILE"
+  exit 0
+fi
+
+# 只有 backend 片段与上次应用过的完全一致时才尝试热同步：新增/删除 backend 必须 reload
+# 才能让 haproxy 认识，而纯粹的路由表变化可以靠 runtime socket 就地更新，不用打断连接。
+# 探测不到可用 socket（或某个 map 同步失败）就落到下面的 reload，行为与以前一致。
+if [ -n "$prev_cfg_hash" ] && [ "$new_cfg_hash" = "$prev_cfg_hash" ] && hot_sync_maps; then
+  snapshot_lastgood
+  echo "$current_hash" >"$HASHFILE"
+  echo "$new_cfg_hash" >"$CFGHASHFILE"
   exit 0
 fi
 
 if reload; then
   snapshot_lastgood
   echo "$current_hash" >"$HASHFILE"
+  echo "$new_cfg_hash" >"$CFGHASHFILE"
   log "reloaded $SERVICE"
   exit 0
 fi

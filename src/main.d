@@ -24,6 +24,7 @@ import std.getopt : defaultGetoptPrinter, getopt;
 import std.stdio : stderr, stdout;
 
 import setline.config;
+import setline.mapsync : syncMap;
 import setline.model : AgentConfig, HostRoutes;
 import setline.peer : renderAgentSnippets, writeSnippets;
 import setline.server;
@@ -41,15 +42,36 @@ int main(string[] args) {
   bool agentType;
   bool check;
   bool help;
+  string syncMapSocket;
   auto helpInfo = getopt(args,
     "file|f", "Path to setline JSON config", &configPath,
     "agent-type", "Print agent.type from the config and exit", &agentType,
+    "sync-map", "Sync a HAProxy map file into the running instance via its admin socket",
+      &syncMapSocket,
     "check|c", "Check config and exit", &check,
     "help|h", "Show this help", &help);
 
   if (help) {
-    defaultGetoptPrinter("Usage: setline [-f setline.json] [--agent-type] [-c]", helpInfo.options);
+    defaultGetoptPrinter("Usage: setline [-f setline.json] [--agent-type] [-c] " ~
+      "[--sync-map <socket> <mapfile>]", helpInfo.options);
     return 0;
+  }
+
+  // 规则模式的 map 热同步：走独立出口码，setline-apply 只在 0 时跳过 reload，其余一律回退。
+  if (syncMapSocket.length > 0) {
+    if (args.length != 2) {
+      stderr.writefln("usage: setline --sync-map <socket> <mapfile>");
+      return 2;
+    }
+    try {
+      auto change = syncMap(syncMapSocket, args[1], readText(args[1]));
+      stdout.writefln("setline hot-synced %s: +%d ~%d -%d", args[1], change.added.length,
+        change.updated.length, change.removed.length);
+      return 0;
+    } catch (Exception e) {
+      stderr.writefln("map hot-sync unavailable: %s", e.msg);
+      return 4;
+    }
   }
 
   try {

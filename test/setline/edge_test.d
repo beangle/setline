@@ -74,7 +74,7 @@ import setline.model;
   // 后端健康检查固定 TCP check，不生成 option httpchk。
   assert(!rendered.canFind("option httpchk"));
   assert(rendered.canFind("server edu_learning_0 10.0.1.10:18001 check"));
-  // 不生成 del-header：X-Setline-Route 是规则模式的查询键，删不删由部署方决定。
+  // 不再生成 del-header：规则模式的查找键放在事务变量里，请求里没有 setline 的内部头。
   assert(!rendered.canFind("del-header"));
 }
 
@@ -90,14 +90,20 @@ import setline.model;
 
   auto map = renderHaproxyMap(services, "/var/lib/setline/haproxy/setline.map");
   // 键里的 host 要小写并去掉端口，才和 setline 自己的 normalizeRequestHost 一致。
-  assert(map.canFind("#   http-request set-header X-Setline-Route %[req.hdr(host),lower,field(1,:)]~%[path]"));
-  assert(map.canFind("use_backend %[req.hdr(X-Setline-Route),map_beg(" ~
-    "/var/lib/setline/haproxy/setline.map)] if { req.hdr(X-Setline-Route),map_beg(" ~
+  // 免改请求头：键拼在事务变量里，请求原样透传给后端。
+  assert(map.canFind("#   http-request set-var(txn.setline_path) path"));
+  assert(map.canFind("#   http-request set-var(txn.setline_route) " ~
+    "req.hdr(host),lower,field(1,:),concat(~,txn.setline_path)"));
+  assert(map.canFind("use_backend %[var(txn.setline_route),map_beg(" ~
+    "/var/lib/setline/haproxy/setline.map)] if { var(txn.setline_route),map_beg(" ~
     "/var/lib/setline/haproxy/setline.map) -m found }"));
   assert(map.canFind("app.example.com~/api/edu be_app"));
   assert(map.canFind("/ be_fallback"));
-  // set-var-fmt 是 2.6 才有的动作，规则模式只用 2.0 起就有的 set-header 组合。
+  // set-var-fmt 是 2.6 才有的动作，规则模式只用 2.0 起就有的 set-var + concat，
+  // 且绝不生成会跟着请求到应用的内部头。
   assert(!map.canFind("set-var-fmt"));
+  assert(!map.canFind("set-header"));
+  assert(!map.canFind("X-Setline-Route"));
 
   auto backends = renderHaproxyBackends(services);
   assert(backends.canFind("backend be_app"));

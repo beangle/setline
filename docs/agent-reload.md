@@ -10,10 +10,14 @@
 | 组件 | 负责 | 不负责 |
 |---|---|---|
 | `setline`（`User=setline`） | 读 peer 路由表、合并、原子写出片段 | 不碰系统配置目录、不发信号、不 reload |
-| `setline-apply`（root，oneshot） | 校验、reload、回滚 | 不生成片段、不做服务发现 |
+| `setline-apply`（root，oneshot） | 校验、map 热同步、reload、回滚 | 不生成片段、不做服务发现 |
 | `haproxy` / `nginx` | 按各自方式加载片段 | 不感知 setline |
 
-`setline` 监听网络，不应持有 root。特权只留在 `setline-apply` 这一个短命进程里。
+`setline` **不得以 root 运行**，这是硬性要求而不是部署偏好：它监听网络，接受任意
+客户端 HTTP、解析请求头、还做 WebSocket 隧道，这条路径上任何一个解析或内存 bug 都会
+直接变成 root 失陷。特权只留在 `setline-apply` 这一个短命进程里；需要特权的功能
+（校验、reload、回滚、连代理的 admin socket）都放在那里，而不是给 `setline` 提权。
+完整条目见 `docs/project-constraints.md` 的 Privilege Model。
 
 ## 启用与使用
 
@@ -142,6 +146,50 @@ haproxy 收到 `SIGUSR2` 后 master 重读配置、给老 worker 发软退出（
 processes.`）；nginx 收到 `SIGHUP` 后重读配置、起新 worker、老 worker 优雅退出。
 haproxy 那条 `-c -q` 排在 `kill` 之前，systemd 按顺序执行、前一条失败就不执行后一条
 （实测：reload 返回 1，后面的 `ExecReload` 确实没跑），所以坏配置走不到发信号那一步。
+
+## 路由表热同步：能不 reload 就不 reload
+
+`setline-apply` 在决定 reload 之前会先试一次**热同步**。规则模式下真正决定走向的是
+`*.map`，而 haproxy 支持通过 runtime socket 就地改 map，不用重载进程、不打断连接。
+
+**触发条件**（两个都满足才热同步，任一不满足就回退 reload）：
+
+1. 片段目录里**只有 `*.map` 变了**。`setline-apply` 单独记录 backend 片段（非 `*.map`）
+   的内容哈希，只有它和上次应用过的一致，才说明本次是纯路由变更。新增或删除 backend
+   必须 reload 才能让 haproxy 认识，热同步救不了。
+2. 自动探测到一个**能用的 haproxy admin socket**。
+
+**socket 从哪来**（全部自动发现，不引入任何配置项），按顺序试：
+
+1. `HAPROXY_CONFIGS` 里各配置文件的 `stats socket <path>`（worker 的 runtime API）；
+2. 单元 `ExecStart` 里的 `-S <path>`（master CLI，命令集较小，所以排后面）；
+3. 常见默认位置，如 `/run/haproxy/admin.sock`、`/run/haproxy.sock`、`/run/haproxy/master.sock`。
+
+逐个试；**全都不可用、或某个 map 同步失败，就退回 `systemctl reload`**——行为与没有这个
+功能时完全一致。
+
+**同步怎么做**：`setline --sync-map <socket> <mapfile>` 读现有 map（`show map <file>`）、
+和文件算差量、下发、再回读校验：
+
+- **只增改，最后才删**：`del map` 会让命中的路由立刻回落到 `default_backend`，所以删除
+  排在最后，任何时刻都不会出现「路由突然不见」。
+- 同名 key 已有重复条目时（`add map` 对已存在的 key 是**追加**而不是覆盖），先 `del`
+  清干净再 `add`——重复条目下 haproxy 采用先插入的那个值，留着会让结果不可预期。
+- 下发完回读一遍，条目总数与每个 key 的值都对得上才算成功。
+- 出口码：`0` 成功、`2` 参数错误、`4` 不可用（socket 连不上、map 没被运行配置引用、
+  回读不一致）。`setline-apply` 只在 `0` 时跳过 reload。
+
+**怎么确认走了哪条路**（`journalctl -u setline-apply -o cat`）：
+
+```
+setline-apply[haproxy]: hot-synced 1 map file(s) via /run/haproxy/admin.sock (no reload)
+```
+
+出现这行就说明**没有** reload：haproxy 的 master PID 不变、worker 也不会换，和下面
+`reloaded haproxy` 那行正好对照。
+
+这条路不需要给 setline 开任何特权：socket 由 root 的 `setline-apply` 连，`setline`
+（`setline` 用户）只负责把片段写到磁盘。
 
 ## 如何确认 reload 真的发生
 
@@ -308,6 +356,12 @@ setline -f /etc/setline/setline.json --agent-type   # 打印 haproxy / nginx / �
 片段目录归 setline 自己，因此不需要给 `/etc/haproxy` 或 `/etc/nginx` 放权，发行版
 升级也不会重置。跨文件系统 rename 不会出问题：`writeSnippet` 在目标同目录写 tmp 再
 rename，只要片段目录本身可写即可。
+
+片段目录的属主必须能写：`setline-apply` 以 root 跑，如果它在 setline 之前先建出了
+目录（`mkdir -p` 在「片段为空就退出」的判断之前），目录会是 `root:root`，`setline`
+之后就没法往里写片段。所以脚本在 `mkdir -p` 之后、以及每次回滚重建目录之后，都会检查
+一次：**属主是 root 就改成 `setline:beangle`（0755），不是 root 就不动**——不覆盖
+部署方刻意设置的其他属主。owner 可用 `SETLINE_APPLY_FRAGMENT_OWNER` 覆盖。
 
 ## 已知边界
 

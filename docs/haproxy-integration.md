@@ -3,6 +3,11 @@
 本文交代 setline agent 生成的 HAProxy 片段怎么接到 HAProxy 上：生成什么、不生成什么、
 两种模式的差别、一次性接线步骤，以及校验/热加载和排错。
 
+> **定位**：setline 永远部署在 haproxy/nginx **之后**，不是用户访问的第一站。推荐形态是
+> haproxy 直接回源业务端口、setline 只渲染片段（本文就是这套）；也可以让 setline 作为
+> haproxy 的下级代理承接数据面，但那样必须先满足 `docs/roadmap.md` 的前置条件。两种形态
+> 下 setline 都不面对不可信客户端。
+
 ## 版本要求
 
 **最低要求 HAProxy ≥ 2.0**，2.0 以上任意版本都能跑（本仓库在 2.0.33、2.2.9、3.0.25 上
@@ -14,7 +19,7 @@
 |---|---|---|
 | `-f <目录>`（加载片段目录） | ≥ 1.7，本项目基线取 2.0 | 1.6 手册写 `-f <cfgfile>`，1.7 起写 `-f <cfgfile\|cfgdir>`；1.8.30 源码即 `cfgfiles_expand_directories()` |
 | `-W` / `-Ws`（master-worker，`kill -USR2` 重载） | ≥ 1.8 | 1.6 手册没有 `-W`，1.8 起才有 |
-| **规则模式**的三行 map（`set-header` + `req.hdr` + `map_beg`） | ≥ 2.0 | 用的都是 1.5 起就有的指令和转换器，没有新关键字；已在 2.0.33、2.2.9、3.0.25 实测 |
+| **规则模式**的四行 map（`set-var` + `concat` + `map_beg`） | ≥ 2.0 | `set-var`、`concat`、`map_beg` 都是老指令和转换器，没有新关键字；已在 2.0.33、2.2.9、3.0.25 实测 |
 | 自包含模式（`acl` + `use_backend`） | ≥ 2.0 | 同样都是老指令 |
 
 所以门槛就是 **HAProxy ≥ 2.0**：两种模式（规则模式 / 自包含模式）在这条线以上通用，
@@ -71,6 +76,10 @@ server app_app_example_com_api_edu_0 10.0.1.10:9002 check
 haproxy 的 `bind` 跟它没有关系：**不要把 backend 指到 setline 的 `listen` 端口**，
 那样等于白白多一跳，还丢掉 haproxy 自己的负载均衡与健康检查。所以 `listen` 平时绑回环
 （`"127.0.0.1:8080"`）就够；只有采集机在别的机器上时才绑 `*` 并设置 `adminToken`。
+
+配了 `adminListen` 后可以两全：数据面 `listen` 稳定只绑回环，上面三件事的地址换成
+`adminListen` 并单独绑 `*`（见 `docs/configuration.md` 的「adminListen」一节）。同机的
+basctl 也要改成 `adminListen`——两个监听是两个入口，不是同一份接口的两份拷贝。
 
 落盘后一眼自检：
 
@@ -280,36 +289,44 @@ drop-in。
 `-f <目录>` **只加载 `*.cfg`**，所以 backend 片段必须叫 `*.cfg`；同目录的 `.map` 是数据
 文件，不会被当成配置解析，两者可以放在一起。
 
-### 2. 规则模式：在主配置的 frontend 里加三行
+### 2. 规则模式：在主配置的 frontend 里加四行
 
 规则模式不生成 frontend，路由靠 map 查询。在你自己持有 `bind` 的 frontend 里加：
 
 ```
 frontend http_in
   bind *:80
-  http-request set-header X-Setline-Route %[req.hdr(host),lower,field(1,:)]~%[path]
-  use_backend %[req.hdr(X-Setline-Route),map_beg(/var/lib/setline/haproxy/setline.map)] if { req.hdr(X-Setline-Route),map_beg(/var/lib/setline/haproxy/setline.map) -m found }
+  http-request set-var(txn.setline_path) path
+  http-request set-var(txn.setline_route) req.hdr(host),lower,field(1,:),concat(~,txn.setline_path)
+  use_backend %[var(txn.setline_route),map_beg(/var/lib/setline/haproxy/setline.map)] if { var(txn.setline_route),map_beg(/var/lib/setline/haproxy/setline.map) -m found }
   use_backend %[path,map_beg(/var/lib/setline/haproxy/setline.map)] if { path,map_beg(/var/lib/setline/haproxy/setline.map) -m found }
 ```
 
-- 第一行把 host 和 path 拼成 `host~path` 作为 map 的查询键：`req.hdr(host)` 原样保留
-  大小写，所以先 `lower`；`field(1,:)` 去掉 Host 里的端口（浏览器/curl 访问
+- 前两行把 host 和 path 拼成 `host~path` 作为 map 的查询键，存进事务变量：
+  `req.hdr(host)` 原样保留大小写，所以先 `lower`；`field(1,:)` 去掉 Host 里的端口
+  （浏览器/curl 访问
   `http://localhost:8080/...` 时 Host 是 `localhost:8080`，不剥就永远对不上 map 里的
   `localhost`——setline 自己匹配时也剥端口，这里必须一致）；`path` 是大小写敏感的，
   不能跟着一起 lower。
-- 第二行处理精确 host 的路由（map_beg 取最长前缀匹配）。
-- 第三行处理 `*` 回退路由：setline 的 `*` 命名空间落到这里，所以它必须排在第二行之后。
-- 三行中的路径就是上面那份 `.map`，setline 也会把这三行以注释形式写在 map 文件头部，
+- 第三行处理精确 host 的路由（map_beg 取最长前缀匹配）。
+- 第四行处理 `*` 回退路由：setline 的 `*` 命名空间落到这里，所以它必须排在第三行之后。
+- 四行中的路径就是上面那份 `.map`，setline 也会把这几行以注释形式写在 map 文件头部，
   方便直接复制。
-- **为什么用 `set-header` 而不是 `set-var-fmt`**：`set-var-fmt` 是 2.6 才加的动作，
-  2.0–2.5 上会以 `invalid variable 'set-var-fmt(txn.hp)'` 直接拒绝启动；而
-  `set-header` 的 log-format、`req.hdr`、`map_beg` 加动态 `use_backend` 这套组合 1.5
-  起就存在，2.0 以上通用，所以规则模式只保留这一种写法。Map 查询、`*` 回退、host 大小写
-  三条语义都不变。
-- 代价是请求里多了一个内部头 `X-Setline-Route`，它会跟请求一起到应用。setline **不生成
-  `del-header`**，删不删由你决定：要清理就在自己的 backend 里加一行
-  `http-request del-header X-Setline-Route`（frontend 里那三行的顺序别动，
-  `set-header` 必须排在两条 `use_backend` 之前）。
+- **为什么用 `set-var` + `concat` 而不是 `set-header`**：`set-header` 会往请求里加一个
+  内部头，跟请求一起到达应用，你还得记得在自己的 backend 里 `del-header`；`set-var`
+  把查找键存在事务变量里，请求原样透传给后端，应用看不到任何 setline 的痕迹。拼字符串
+  只能落在 `concat` 上，因为 `set-var` 接收的是 sample、**不吃 log-format**
+  （`set-var(txn.x) %[...]~%[...]` 在 2.0/2.2/3.0 上都会报 `unknown fetch method`）。
+- **为什么不用 `set-var-fmt`**：它是 2.6 才加的动作，2.0–2.5 上会以
+  `invalid variable 'set-var-fmt(txn.hp)'` 直接拒绝启动。`set-var` + `concat` +
+  `map_beg` + 动态 `use_backend` 这套组合 2.0 起就通用（已在 2.0.33、2.2.9、3.0.25
+  实测），所以规则模式只保留这一种写法。Map 查询、`*` 回退、host 大小写三条语义都不变。
+
+**路由表变化不必 reload。** 只是 `*.map` 的内容变了（backend 片段没变）时，
+`setline-apply` 会自动通过 haproxy 的 admin socket 就地热同步，不打断连接；只有
+新增/删除 backend 才需要 reload。socket 路径是自动探测的（配置文件里的
+`stats socket`、单元的 `-S`、以及几个默认位置），探不到就老老实实回退 reload，
+**不需要任何配置**。细节与怎么确认走了哪条路见 `docs/agent-reload.md`。
 
 setline 生成的 map 形如：
 
@@ -355,7 +372,9 @@ reload 到底有没有发生（master PID 不变、worker PID 换掉、`show pro
 | `wiring error: .../setline.map is not referenced` | 主配置 frontend 缺 `map_beg(...)` 那几行（规则模式） |
 | `Configuration file has no error but will not start (no listener)` | 自包含片段里 `bind` 为空；规则模式不会出现，因为监听段归主配置 |
 | `Could not open configuration file <目录>` | 目录不存在（老发行版没有 `conf.d`），或 HAProxy < 1.7 根本不认 `-f <目录>`（本项目最低要求 2.0，见「版本要求」） |
-| `invalid variable 'set-var-fmt(txn.hp)'` | 用了 2.6+ 才有的写法；换成上面的 `set-header` 三行（2.0 起通用） |
+| `invalid variable 'set-var-fmt(...)'` / `unknown fetch method` | 用了 2.6+ 的 `set-var-fmt`，或拿 log-format 去喂 `set-var`；换成上面的 `set-var` + `concat` 四行（2.0 起通用） |
 | `/api/xxx` 返回 503 且日志无异常 | map 命中了 backend，但 backend 里 `server` 健康检查失败（对端不可达） |
 | `Server be_xxx/... is DOWN, reason: Layer7 wrong status, code: 404` | 主配置（`defaults` 或你自己的 backend）里有 `option httpchk`：setline 片段只发 TCP `check`，不会产生这条例；把该 HTTP 检查挪走或换一个返回 2xx 的路径 |
+| WebSocket 升级请求回 `400 Bad request` | haproxy 自己就要求带 `Upgrade: websocket` 的请求有合法的 `Sec-WebSocket-Key` 头；缺了它连 setline 都不会看到 |
+| WebSocket 握手回 `502 Bad Gateway`（消息是 *invalid or incomplete response*） | 后端的 101 缺 `Sec-WebSocket-Accept`，或者算错。haproxy 3.0 起会校验它，setline 只是原样透传后端响应，所以问题在业务后端而不是代理 |
 | 改了路由但流量没变 | 片段没写出（agent 未运行/未同步）、静默窗口还没过，或 `*.map` 未被引用 |
