@@ -21,6 +21,11 @@ import std.array : appender;
 enum defaultConfigPath = "setline.json";
 enum adminPrefix = "/__setline";
 
+/** 在途请求的 fd 预算：client + upstream，另留 64 个监听/日志/健康检查等余量。 */
+size_t requiredFileDescriptorBudget(size_t maxConnections) {
+  return maxConnections * 2 + 64;
+}
+
 /** 将 ASCII 大写字母转换为小写，非 ASCII 字符保持不变。 */
 string toLowerAscii(string value) {
   auto outp = appender!string();

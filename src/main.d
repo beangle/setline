@@ -18,6 +18,8 @@ module main;
 
 import core.thread : Thread;
 import core.time : msecs;
+import core.sys.posix.sys.resource : RLIMIT_NOFILE, getrlimit, rlimit;
+import std.file : readText;
 import std.getopt : defaultGetoptPrinter, getopt;
 import std.stdio : stderr, stdout;
 
@@ -26,7 +28,7 @@ import setline.model : AgentConfig, HostRoutes;
 import setline.peer : renderAgentSnippets, writeSnippets;
 import setline.server;
 import setline.state;
-import setline.util : defaultConfigPath;
+import setline.util : defaultConfigPath, requiredFileDescriptorBudget;
 
 /** 解析命令行参数，检查或启动 setline 服务。 */
 int main(string[] args) {
@@ -92,6 +94,18 @@ int main(string[] args) {
   } catch (Exception e) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
     return 1;
+  }
+}
+
+/** 启动时对照 RLIMIT_NOFILE 告警；公式与部署文档、unit 保持一致。 */
+void warnIfFdBudgetInsufficient(size_t maxConnections) {
+  auto required = requiredFileDescriptorBudget(maxConnections);
+  rlimit limit;
+  if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur < required) {
+    stderr.writefln(
+      "Warning: RLIMIT_NOFILE=%s is below required fd budget %s " ~
+      "(2*maxConnections+%s=%s*2+64); raise systemd LimitNOFILE",
+      limit.rlim_cur, required, 64, maxConnections);
   }
 }
 

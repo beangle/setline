@@ -17,7 +17,8 @@ StandardError=journal
 User=setline
 Group=beangle
 UMask=0002
-LimitNOFILE=65535
+# 默认 maxConnections=65535 时预算为 2*65535+64=131134；调大配置时同步上调。
+LimitNOFILE=131134
 
 [Install]
 WantedBy=multi-user.target

@@ -23,6 +23,12 @@ import setline.health;
 import setline.model;
 import setline.state;
 import setline.test_lock;
+import setline.util : requiredFileDescriptorBudget;
+
+@("util calculates fd budget as two sockets per connection plus overhead") unittest {
+  assert(requiredFileDescriptorBudget(1) == 66);
+  assert(requiredFileDescriptorBudget(65535) == 131134);
+}
 
 @("state enforces max active connections") unittest {
   withStateTestLock({
