@@ -252,6 +252,7 @@ void handleClient(TCPConnection client) {
   while (handleRequest(client, lease)) {
   }
 }
+
 /** 处理管理监听上的一个连接。
 
     管理面单独开监听时，数据面和它的入口完全不同：这里只服务 `__setline` 下的接口，其余
@@ -424,6 +425,11 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
         if (!e.finalResponseStarted) {
           sendResponse(client, 504, "Gateway Timeout", e.msg);
         }
+        return false;
+      } catch (ResponseStartedException) {
+        // 响应头已经写出去了（响应体被截断、隧道中途出错）。此时补发 502 只会把状态行和
+        // 错误文本混进响应体，所以只记一行访问日志并截断连接，让失败如实暴露出来。
+        logAccess(request, routeHost, path, port, 0, started);
         return false;
       } catch (ClientDisconnectedException) {
         logAccess(request, routeHost, path, port, 0, started);

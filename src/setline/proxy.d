@@ -21,7 +21,7 @@ import std.conv : to;
 import std.string : indexOf;
 
 import vibe.core.core : runTask, sleep;
-import vibe.core.net : TCPConnection, WaitForDataStatus, connectTCP;
+import vibe.core.net : ReadTimeoutException, TCPConnection, WaitForDataStatus, connectTCP;
 import vibe.core.stream : IOMode;
 import vibe.core.task : InterruptException, Task;
 
@@ -67,6 +67,24 @@ class ClientDisconnectedException : Exception {
   }
 }
 
+/** 最终响应头已经写给 client 之后代理失败。
+
+    响应流已经开了，这时再补发一个错误响应只会把状态行和错误文本混进响应体：前置代理会把
+    它们当成响应内容转发给浏览器，声明过 `Content-Length` 时甚至会被判成协议错误。调用方
+    看到这个异常只能关掉 client 连接，让「响应被截断」如实暴露出来；`cause` 保留原始异常，
+    便于排障。
+*/
+class ResponseStartedException : Exception {
+  ushort port;
+
+  this(ushort port, Throwable cause) {
+    super("upstream 127.0.0.1:" ~ port.to!string ~
+      " failed after the response head was sent to the client", cause);
+    this.port = port;
+    this.info = EmptyTraceInfo.instance;
+  }
+}
+
 private class EmptyTraceInfo : Throwable.TraceInfo {
   override int opApply(scope int delegate(ref const(char[])) dg) const {
     return 0;
@@ -86,6 +104,14 @@ private class EmptyTraceInfo : Throwable.TraceInfo {
   }
 }
 
+/** 一次代理的结果，供 server 层写访问日志。 */
+struct ForwardResult {
+  /** 本轮代理结束后，这条 client 连接能否继续复用来发下一个请求。 */
+  bool keepAlive;
+  /** 最终响应状态码；没有读到最终响应（上游提前关闭）时为 0。 */
+  int status;
+}
+
 /** 将一个普通 HTTP 请求转发到匹配到的后端。
 
     这个函数是 setline 的核心透明代理路径：请求头按原始字节顺序发送给上游，请求体和
@@ -94,14 +120,12 @@ private class EmptyTraceInfo : Throwable.TraceInfo {
 
     响应体的转发策略由响应头决定：有 `Content-Length` 时按长度补齐，chunked 响应按
     chunk 边界转发，没有明确长度时一直转发到上游关闭连接。
-*/
-/** 一次代理的结果，供 server 层写访问日志。 */
-struct ForwardResult {
-  bool keepAlive;
-  /** 最终响应状态码；没有读到最终响应（上游提前关闭）时为 0。 */
-  int status;
-}
 
+    失败语义按「最终响应头是否已经写给 client」分成两类：响应头之前的失败
+    （连不上上游、读头超时、client 中途断开）抛常见异常，由调用方决定回哪个状态码；
+    响应头之后的失败（响应体被上游截断、读超时、client 断开）抛
+    `ResponseStartedException`，调用方只能截断连接，不能再补发合成响应。
+*/
 ForwardResult forward(TCPConnection client, HttpHead request, ushort port, UpstreamLease lease) {
   bool keepConnection;
   scope (exit) {
@@ -191,6 +215,8 @@ ForwardResult forward(TCPConnection client, HttpHead request, ushort port, Upstr
     stopTaskIfRunning(clientWatcher);
     clientWatcher = Task.init;
 
+    // `pending` 里还留着字节说明上游在同一段读里给了下一条响应（setline 不支持 pipelining，
+    // 这些字节既不属于本轮响应也没法原样交出去），这条连接只能丢弃。
     upstreamCanReuse = bodyComplete && pending.length == 0
       && upstreamConnectionReusable(request, response);
     if (upstreamCanReuse) {
@@ -204,13 +230,21 @@ ForwardResult forward(TCPConnection client, HttpHead request, ushort port, Upstr
       noteUpstreamTimeout();
       throw new UpstreamReadTimeoutException(port, finalResponseStarted);
     }
+    if (finalResponseStarted) {
+      // 响应头已在 client 侧：这时只能截断连接，不能再补发合成响应。
+      throw new ResponseStartedException(port, e);
+    }
     throw e;
   }
 }
 
-/** 上游是否仍能承载同一端口的下一个请求。 */
+/** 上游是否仍能承载同一端口的下一个请求。
+
+    framing 冲突的响应（CL 重复且不一致、CL+TE、非 chunked 的 TE）已经被原样透传，但代理
+    不能再假定自己知道这条连接读到哪儿了，所以不复用。
+*/
 bool upstreamConnectionReusable(HttpHead request, HttpHead response) {
-  if (!requestWantsKeepAlive(request) || response.connectionClose
+  if (!requestWantsKeepAlive(request) || response.connectionClose || response.invalidFraming
       || !responseBodyDelimited(request, response)) {
     return false;
   }
@@ -220,8 +254,14 @@ bool upstreamConnectionReusable(HttpHead request, HttpHead response) {
   return response.httpVersion == "HTTP/1.0" && response.connectionKeepAlive;
 }
 
+/** 判断异常是否来自上游读超时。
+
+    vibe-core 在 `readTimeout` 到期时抛 `vibe.core.net.ReadTimeoutException`（见它的
+    `loopWithTimeout`）。直接按类型判断比拿类名字符串稳妥：vibe-core 改名或多包一层时，
+    字符串比较会静默失效，超时会被当成普通读错误。
+*/
 private bool upstreamReadTimedOut(Exception error) {
-  return error.classinfo.name == "vibe.core.net.ReadTimeoutException";
+  return cast(ReadTimeoutException) error !is null;
 }
 
 /** 判断本轮代理完成后，proxy 到 setline 的 client 连接是否可继续复用。
@@ -251,7 +291,13 @@ bool requestWantsKeepAlive(HttpHead request) {
   return request.httpVersion == "HTTP/1.0" && request.connectionKeepAlive;
 }
 
-/** client 完成 request body 后，独立 task 监听其 FIN，立即中断卡住的上游读。 */
+/** client 完成 request body 后，独立 task 监听其 FIN，立即中断卡住的上游读。
+
+    只负责「客户端消失」这一种情况：`noMoreData` 表示对端已关闭，立刻关掉上游读来唤醒
+    正卡在读响应上的主 task。`dataAvailable` 表示客户端又发了字节——setline 不支持
+    pipelining，这些字节只能是异常流量，这里不消费也不等待，直接结束监听（后续请求的
+    生命周期由本轮代理结束后的正常循环接管）。
+*/
 private void watchClientDisconnect(TCPConnection client, TCPConnection upstream) nothrow {
   while (upstream.connected) {
     try {
@@ -282,9 +328,14 @@ private void stopTaskIfRunning(ref Task task) nothrow {
   }
 }
 
-/** 判断响应体是否有明确边界，避免复用 client 连接时把下一轮请求混入上一轮响应。 */
+/** 判断响应体是否有明确边界，避免复用连接时把下一轮消息混入上一轮响应。
+
+    `Content-Length` 和 chunked 都能划出边界；`HEAD` 与 1xx/204/304 按定义没有响应体。
+    没有边界的响应只能以连接关闭作为结束信号，因此两端连接都不能再复用。
+*/
 bool responseBodyDelimited(HttpHead request, HttpHead response) {
-  return request.method == "HEAD" || responseHasNoBody(response) || response.hasContentLength || response.transferChunked;
+  return request.method == "HEAD" || responseHasNoBody(response)
+    || response.hasContentLength || response.transferChunked;
 }
 
 /** 将 WebSocket 握手转发给后端，并在 101 后切换为双向隧道。
@@ -355,7 +406,12 @@ int forwardWebSocket(
   scope (exit) {
     noteWebSocketClose();
   }
-  tunnel(client, upstream);
+  try {
+    tunnel(client, upstream);
+  } catch (Exception e) {
+    // 101 已经写回 client：隧道里的异常不能再变成 HTTP 响应。
+    throw new ResponseStartedException(port, e);
+  }
   return 101;
 }
 
@@ -756,12 +812,15 @@ void tunnel(TCPConnection client, TCPConnection upstream) {
   auto activity = new TunnelActivity(MonoTime.currTime);
   runTask(&relayToClient, upstream, client, activity);
 
-  relayDirection(client, upstream, activity, true);
-  if (activity.timedOut) {
-    noteWebSocketIdleTimeout();
+  // 用 scope(exit) 而不是顺序调用：两个方向的读写都可能抛异常，异常路径同样要把两端都关掉
+  // ——漏关的句柄要等 GC 才释放，退出时会被 eventcore 记成 leaking driver。
+  scope (exit) {
+    if (activity.timedOut) {
+      noteWebSocketIdleTimeout();
+    }
+    closeBoth(client, upstream);
   }
-  upstream.close();
-  client.close();
+  relayDirection(client, upstream, activity, true);
 }
 
 /** 从 source 转发到 target，并在异常或 EOF 后关闭 target。

@@ -17,6 +17,7 @@
 module setline.proxy_test;
 
 import core.time : Duration, msecs;
+import std.algorithm : canFind;
 
 import setline.http : parseHttpHead;
 import setline.proxy;
@@ -69,6 +70,31 @@ import setline.proxy;
   auto e = new PortConnectException(9001, "refused");
   assert(e.info !is null);
   assert(e.info.toString.length == 0);
+}
+
+@("proxy flags failures that happen after the response head was sent") unittest {
+  // 响应头已经交给 client 之后失败，调用方只能截断连接：再补一个合成响应会把状态行和
+  // 错误文本混进响应体。原始异常留在 `next` 上，排障时能看到真正的原因。
+  auto cause = new Exception("upstream closed in the middle of the response body");
+  auto e = new ResponseStartedException(9002, cause);
+  assert(e.port == 9002);
+  assert(e.next is cause);
+  assert(e.msg.canFind("9002"));
+  assert(e.info !is null);
+  assert(e.info.toString.length == 0);
+}
+
+@("proxy will not reuse an upstream connection with conflicting framing") unittest {
+  auto request = parseHttpHead("GET /api HTTP/1.1\r\nHost: local\r\n\r\n");
+  auto valid = parseHttpHead("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n");
+  assert(upstreamConnectionReusable(request, valid));
+
+  // CL + TE 并存：代理按 chunked 读，但流位置不再是它能担保的东西，不能留给下一条请求。
+  auto conflicting = parseHttpHead(
+    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n");
+  assert(conflicting.invalidFraming);
+  assert(conflicting.transferChunked);
+  assert(!upstreamConnectionReusable(request, conflicting));
 }
 
 @("proxy sizes the idle upstream pool from recent concurrency") unittest {

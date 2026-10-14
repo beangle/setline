@@ -175,6 +175,14 @@ def handle(connection, state, request_log=None):
                     b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nno-length-ok"
                 )
                 return
+            elif path == "/truncate":
+                # 声明 32 字节却只给 4 字节就关连接：用来验证「响应体被上游截断」时
+                # setline 不会在被截断的响应后面再补一个合成响应。
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                    b"Content-Length: 32\r\nConnection: close\r\n\r\ntrunc"
+                )
+                return
             elif path == "/status/204":
                 connection.sendall(b"HTTP/1.1 204 No Content\r\nConnection: keep-alive\r\n\r\n")
             elif path == "/status/304":

@@ -135,6 +135,25 @@ CFG
   grep -q 'no-length-ok' "$WORK/no-length.raw" || fail "$label close-delimited body missing"
   echo "PASS[$label] response without length uses connection close"
 
+  # 上游把响应体截断时，setline 只能关掉 client 连接。若它像以前那样再补一个 502，
+  # 响应体里就会多出一条状态行和错误文本（声明的 Content-Length 已经发出去，前置代理
+  # 会把它们当成响应内容，甚至判成协议错误）。
+  #
+  # 这里直接打 setline 以保证信号只来自它，但不能用 `printf | nc`：管道结束会让 nc 半关闭
+  # （FIN），而 setline 把 client 的 FIN 当作「放弃本次请求」（见 roadmap 的记录），
+  # 那样测到的就不是截断响应了。用 /dev/tcp 拿一个既能写又能读的 fd，不半关闭。
+  exec 3<>"/dev/tcp/127.0.0.1/$SETLINE_PORT"
+  printf 'GET /truncate HTTP/1.1\r\nHost: local.test\r\nConnection: close\r\n\r\n' >&3
+  timeout 5 cat <&3 >"$WORK/truncate.raw" || true
+  exec 3<&- 3>&-
+  # 补发的状态行会紧跟在 body 字节后面（没有换行），所以不能只数行首，要数全文出现次数。
+  local status_lines
+  status_lines="$(grep -oE 'HTTP/1\.[01] [0-9]+' "$WORK/truncate.raw" | wc -l | tr -d ' ')"
+  [ "$status_lines" = 1 ] ||
+    fail "$label truncated response carried $status_lines status lines: $(tr -d '\r' <"$WORK/truncate.raw" | tr '\n' ' ')"
+  grep -q 'trunc' "$WORK/truncate.raw" || fail "$label truncated response body missing"
+  echo "PASS[$label] truncated upstream response is not followed by a synthetic response"
+
   printf 'HEAD /head HTTP/1.1\r\nHost: local.test\r\nConnection: close\r\n\r\n' |
     timeout 5 nc 127.0.0.1 "$HAPROXY_PORT" >"$WORK/head.raw"
   grep -q '^HTTP/.* 200' "$WORK/head.raw" || fail "$label HEAD status missing"
