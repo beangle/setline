@@ -52,7 +52,7 @@ dub run -- -c -f config.example.json    # validate the config and exit
 {
   "listen": "127.0.0.1:8080",
   "adminListen": "127.0.0.1:10080",
-  "adminToken": "change-me",
+  "peerReaders": ["10.0.1.7"],
   "routes": {
     "local1.example.com": { "/api/edu": [9002, 9003], "/api": 9001 },
     "local2.example.com": { "/api": 9081 },
@@ -72,9 +72,9 @@ defaulting to `127.0.0.1:10080`. The data plane `listen` serves exactly one
 endpoint, `GET /_setline/routes` (the peer protocol), so a machine that only
 knows the service port can read the route table; the status page, `status.json`
 and every write live on `adminListen` alone. Route changes are therefore a
-localhost-only action. Reads need no credential from localhost and otherwise
-require `X-Setline-Token` (`adminToken`). Front proxies should reject
-`/_setline` outright.
+localhost-only action. Reads are gated by source address: localhost, or an
+address listed in `peerReaders` - setline holds no credentials. Front proxies
+should reject `/_setline` outright.
 
 The full reference - every field, its default, the validation errors and worked
 examples - is `docs/configuration.md`.

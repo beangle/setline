@@ -25,7 +25,7 @@ import setline.router;
 
 __gshared private HostRoutes[] gRoutes;
 __gshared private RouteTree[string] gRouteTrees;
-__gshared private string gAdminToken;
+__gshared private string[] gPeerReaders;
 __gshared private string gConfigPath;
 __gshared private ListenAddress gListenAddress;
 __gshared private ListenAddress gAdminListenAddress;
@@ -60,7 +60,7 @@ void initialize(Config config, string configPath = "") {
   gRoutes = cloneHostRoutes(config.routes);
   sortHostRoutes(gRoutes);
   gRouteTrees = buildRouteTrees(gRoutes);
-  gAdminToken = config.adminToken;
+  gPeerReaders = config.peerReaders;
   gConfigPath = configPath;
   gListenAddress = config.listen;
   gAdminListenAddress = config.adminListen;
@@ -87,9 +87,9 @@ void initialize(Config config, string configPath = "") {
   gRoutesChangedHook = null;
 }
 
-/** 返回管理接口使用的 token。 */
-string adminToken() {
-  return gAdminToken;
+/** 返回允许跨机读取路由表与状态页的来源地址。 */
+const(string)[] peerReaders() {
+  return gPeerReaders;
 }
 
 /** 返回当前上游端口连接超时时间。 */

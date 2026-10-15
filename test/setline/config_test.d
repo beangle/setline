@@ -145,7 +145,8 @@ import setline.model;
 @("config saves routes while preserving other fields") unittest {
   auto path = "/tmp/setline-config-save-routes-test.json";
   write(path,
-    `{"listen":"127.0.0.1:8080","adminToken":"secret","routes":{"local.example.com":{"/old":9000}}}`);
+    `{"listen":"127.0.0.1:8080","peerReaders":["10.0.1.7"],` ~
+    `"routes":{"local.example.com":{"/old":9000}}}`);
   scope (exit) remove(path);
 
   saveRoutes(path, [
@@ -159,7 +160,7 @@ import setline.model;
   ]);
 
   auto config = loadConfig(path);
-  assert(config.adminToken == "secret");
+  assert(config.peerReaders == ["10.0.1.7"]);
   assert(config.routes.length == 1);
   assert(config.routes[0].host == "local.example.com");
   assert(config.routes[0].routes[0].prefix == "/api/edu");
@@ -178,7 +179,6 @@ import setline.model;
   auto path = "/tmp/setline-config-agent-peers-test.json";
   write(path,
     `{"agent":{"type":"haproxy","output":"/etc/haproxy",` ~
-    `"token":"shared",` ~
     `"peers":[{"name":"app1","url":"http://10.0.1.10:8080"},` ~
     `{"url":"http://10.0.1.11:8080"}]},"routes":{}}`);
   scope (exit) remove(path);
@@ -186,7 +186,6 @@ import setline.model;
   auto config = loadConfig(path);
   assert(config.agent.type == "haproxy");
   assert(config.agent.output == "/etc/haproxy");
-  assert(config.agent.token == "shared");
   assert(config.agent.peers.length == 2);
   assert(config.agent.peers[0].name == "app1");
   assert(config.agent.peers[0].url == "http://10.0.1.10:8080");
@@ -196,7 +195,7 @@ import setline.model;
 @("config rejects the removed per-peer token field") unittest {
   auto path = "/tmp/setline-config-agent-peertoken-test.json";
   scope (exit) remove(path);
-  // peer 级 token 已取消：凭据统一走 agent 级共享 token，写了必须报错而不是被忽略。
+  // peer 级 token 已取消：读的准入改成来源地址，peer 只认 url/name，写了必须报错而不是被忽略。
   write(path, `{"agent":{"type":"haproxy","token":"shared",` ~
     `"peers":[{"url":"http://10.0.1.10:8080","token":"peer2"}]},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
@@ -214,6 +213,53 @@ import setline.model;
     `"sync":{"mode":"interval","intervalMillis":15000}},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
+
+
+@("config parses the peer readers allowed to read the route table") unittest {
+  auto path = "/tmp/setline-config-peerreaders-test.json";
+  scope (exit) remove(path);
+
+  write(path, `{"listen":"*:8080","peerReaders":["10.0.1.7"," ::FFFF:10.0.1.8 ","fe80::1"],` ~
+    `"routes":{}}`);
+  auto config = loadConfig(path);
+  // 写法归一化：去空白、转小写、去掉 IPv4-mapped 前缀，之后按文本比较。
+  assert(config.peerReaders == ["10.0.1.7", "10.0.1.8", "fe80::1"]);
+
+  write(path, `{"listen":"*:8080","routes":{}}`);
+  assert(loadConfig(path).peerReaders.length == 0);
+}
+
+@("config rejects unusable peer readers") unittest {
+  auto path = "/tmp/setline-config-peerreaders-bad-test.json";
+  scope (exit) remove(path);
+
+  // 主机名：配置解析会变成一次 DNS 查询，解析出来的地址和 TCP 对端也未必是同一个。
+  write(path, `{"listen":"*:8080","peerReaders":["app1.internal"],"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // CIDR：要按位比较，规则就不再是「一行地址」。
+  write(path, `{"listen":"*:8080","peerReaders":["10.0.1.0/24"],"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // 回环：本机来源本来就放行，列上它只会让经本机代理转发的请求也变成读方。
+  write(path, `{"listen":"*:8080","peerReaders":["127.0.0.1"],"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+  write(path, `{"listen":"*:8080","peerReaders":["::1"],"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  write(path, `{"listen":"*:8080","peerReaders":[],"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+  write(path, `{"listen":"*:8080","peerReaders":"10.0.1.7","routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+  write(path, `{"listen":"*:8080","peerReaders":[7000],"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // 没有监听就没有读方，名单是死配置。
+  write(path, `{"listen":false,"peerReaders":["10.0.1.7"],` ~
+    `"agent":{"type":"haproxy","output":"/tmp/setline"},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
 
 @("config rejects peer url without derivable address") unittest {
   auto path = "/tmp/setline-config-agent-noaddress-test.json";
@@ -308,6 +354,8 @@ import setline.model;
     `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
+
+
 
 @("config accepts listen false for a render-only deployment") unittest {
   auto path = "/tmp/setline-config-listen-false-test.json";

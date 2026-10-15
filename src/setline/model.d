@@ -107,23 +107,15 @@ struct AgentConfig {
   string output;
   /** 被聚合的远端 setline 实例。 */
   PeerConfig[] peers;
-  /** 读取所有 peer 路由表时共用的 `X-Setline-Token`；为空表示对端按开发模式放行。
-
-      peer 级不再有独立 token：整条采集链路（agent 读对端 `GET /_setline/routes`）
-      用同一个共享凭据，换 token 只需改这一处。
-  */
-  string token;
 }
 
 /** 完整运行配置。
 
-    配置描述监听地址、管理 token 和路由表。代理行为本身保持固定：按 URL 找路由、连接
+    配置描述监听地址、可读来源和路由表。代理行为本身保持固定：按 URL 找路由、连接
     本机后端、透明透传请求和响应，不提供缓存、URL 改写或复杂负载均衡策略。
 
-    `adminToken` 只保护**读**的**非本机**来源（`GET /_setline/routes` 与状态页），因为路由表
-    将来要开放给同网段的服务进程（例如同步 haproxy / nginx 的 agent）读取；本机来源免凭据，
-    与**写**接口同一条门——写也不认这条凭据，只接受 TCP 对端是本机的请求（改路由等于改流量走向，
-    不对外开放）。
+    setline 不持有任何凭据：管理接口的准入完全由**来源地址**决定（见 {@link peerReaders}），
+    与写接口同一条判据。
 */
 struct Config {
   ListenAddress listen;
@@ -137,16 +129,23 @@ struct Config {
         本机能改路由」是 TCP 层事实，不依赖请求头判定（那是纵深防御，可被代理改写 `Host`
         绕过）。跨机改路由不是需求，真要做也只能先把管理口显式放开。
       - **读**（`GET` 路由表、状态页、`status.json`）同时挂在数据面 `listen` 和管理口上，
-        规则不变：本机免凭据，其它来源要 `X-Setline-Token`。外界只需要知道业务端口就能
-        读，不必知道管理口在哪。
+        准入只看来源：本机来源，或地址写在 {@link peerReaders} 里的读方。外界只需要知道
+        业务端口就能读，不必知道管理口在哪。
 
-      跨机读还有两条路：前置代理按源地址放行 `/_setline`（代理必须自己拒掉其余来源），
-      或者把 `adminListen` 显式放开（例如 `*:10080`）并设 `adminToken`。缺省绑回环是因为
-      读已经能从 `listen` 走，管理口不需要暴露在网络上。
+      要把管理口的读放开给同网段的采集机，就显式绑定（例如 `*:10080`）并把那台机器写进
+      {@link peerReaders}；缺省绑回环是因为读已经能从 `listen` 走，管理口不需要暴露在网络上。
   */
   ListenAddress adminListen = ListenAddress("127.0.0.1", defaultAdminPort);
-  /** 非本机读接口的凭据；为空表示开发模式放行（生产绑 `*` 时必须设置）。 */
-  string adminToken;
+  /** 允许跨机读取路由表与状态页的来源地址（读写都只看地址，没有凭据）。
+
+      本机来源本来就免凭据（见 `isLocalAdminRequest`），这里写的是**远端读方**的地址，
+      典型场景就是边缘机上那个 `setline -f`：它按 `agent.peers[].url` 读各实例的
+      `GET /_setline/routes`，而 `peers[].url` 只是地址，不带任何凭据。
+
+      写数值地址（`10.0.1.7`、`fe80::1`），不支持主机名和 CIDR；列出回环地址会报错——
+      本机来源本来就放行，写上去是个空操作，容易让人以为它还有别的含义。
+  */
+  string[] peerReaders;
   int connectTimeoutMillis = 3000;
   /** 单次上游读取的不活动超时；超时后回收连接并在最终响应未开始时返回 504。 */
   int readTimeoutMillis = 15000;

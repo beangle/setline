@@ -39,7 +39,7 @@ struct BackendService {
   BackendInstance[] instances;
 }
 
-/** 从 URL 或本地文件读取文本，可选附加 HTTP 请求头（例如 `X-Setline-Token`）。 */
+/** 从 URL 或本地文件读取文本，可选附加 HTTP 请求头。 */
 string fetchText(string url, string[] headers = []) {
   enforce(url.length > 0, "url must not be empty");
   if (url.startsWith("file://")) {

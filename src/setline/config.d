@@ -27,7 +27,7 @@ import std.string : indexOf, stripRight;
 import setline.model;
 import setline.peer : peerAddress;
 import setline.router : sortRoutes, validateRoute;
-import setline.util : toLowerAscii;
+import setline.util : isAddressLiteral, isLoopbackAddress, normalizeAddressText, toLowerAscii;
 
 /** 从 JSON 文件加载 setline 配置。
 
@@ -123,8 +123,13 @@ Config parseConfigFile(string path) {
     enforce(adminListen.type != JSONType.true_, "adminListen must be port or host:port");
     config.adminListen = parseListen(adminListen, "adminListen");
   }
-  if ("adminToken" in root.object) {
-    config.adminToken = root["adminToken"].str;
+  // adminToken 已取消：读的准入改成按来源地址判定（顶层 peerReaders），链路上不再有凭据。
+  // 旧配置写了必须报错，而不是被忽略——否则运维以为读接口还受一份秘密保护。
+  enforce(!("adminToken" in root.object),
+    "adminToken has been removed: reads are admitted by source address (peerReaders)");
+  if ("peerReaders" in root.object) {
+    enforce(!config.listenDisabled, "peerReaders cannot be combined with listen:false");
+    config.peerReaders = parsePeerReaders(root["peerReaders"]);
   }
   if ("connectTimeoutMillis" in root.object) {
     config.connectTimeoutMillis = cast(int) root["connectTimeoutMillis"].integer;
@@ -359,10 +364,10 @@ AgentConfig parseAgentConfig(JSONValue value) {
   // bind 已取消：片段固定只出规则和后端，监听段永远归代理主配置。旧配置写了必须报错
   // 而不是被忽略——否则运维以为片段自带监听，实际拿到的是规则模式片段，接线必然对不上。
   enforce(!("bind" in obj), "agent.bind has been removed: the fragment never owns the listener");
-  if ("token" in obj) {
-    enforce(obj["token"].type == JSONType.string, "agent.token must be string");
-    config.token = obj["token"].str;
-  }
+  // token 已取消：跨机读的准入改成来源地址（顶层 peerReaders），链路上不再有要在两台机器
+  // 之间同步的凭据。旧配置写了必须报错，而不是被忽略。
+  enforce(!("token" in obj),
+    "agent.token has been removed: peers are admitted by source address, not by a shared token");
   if ("peers" in obj) {
     config.peers = parsePeerConfigs(obj["peers"]);
   }
@@ -390,6 +395,31 @@ bool usesLocalRoutes(const AgentConfig agent) {
   return agent.peers.length == 0;
 }
 
+/** 解析允许跨机读取的来源地址列表。
+
+    只接受数值地址字面量：主机名要查 DNS（配置解析就变成一次网络调用，而且名字解析出来的
+    地址和 TCP 对端地址未必一致），CIDR 要按位比较，两者都会把「谁能读路由表」从一行地址
+    变成一条需要解释的规则。回环地址一律拒绝：本机来源本来就放行，写上去是个空操作，
+    留着只会让人以为它还有别的含义。
+*/
+string[] parsePeerReaders(JSONValue value) {
+  enforce(value.type == JSONType.array, "peerReaders must be array");
+  enforce(value.array.length > 0, "peerReaders must not be empty");
+  string[] readers;
+  foreach (item; value.array) {
+    enforce(item.type == JSONType.string, "peerReaders item must be string");
+    auto address = normalizeAddressText(item.str);
+    enforce(address.length > 0, "peerReaders item must not be empty");
+    enforce(isAddressLiteral(address),
+      "peerReaders item must be an address literal (10.0.1.7, fe80::1): no host names, no CIDR: " ~
+      item.str);
+    enforce(!isLoopbackAddress(address),
+      "peerReaders must not list loopback: local reads are always allowed, so 127.0.0.1 is a no-op");
+    readers ~= address;
+  }
+  return readers;
+}
+
 /** 解析被聚合的远端 setline 实例列表。 */
 PeerConfig[] parsePeerConfigs(JSONValue value) {
   enforce(value.type == JSONType.array, "agent.peers must be array");
@@ -404,10 +434,10 @@ PeerConfig[] parsePeerConfigs(JSONValue value) {
     // 回源主机完全由 url 推导；推导不出来（例如 file:// 没有主机）要在这里就报错，
     // 而不是等 agent 跑起来才失败，那时 `setline -c` 已经宣布配置合法了。
     peerAddress(peer);
-    // peer 级 token 已取消：凭据统一走 agent 级共享 token，写在这里要明确报错，
+    // peer 级 token 已取消：读的准入改成来源地址，peer 只认 url 与 name，写在这里要明确报错，
     // 而不是被当成未知字段之外的合法项静默忽略。
     enforce(!("token" in item.object),
-      "agent.peers[].token has been removed: all peers share the agent-level token");
+      "agent.peers[].token has been removed: reads are admitted by source address");
     // peers 只认 url/name 两个字段：写错字段名要立刻报错，不能默默忽略。
     foreach (key, _; item.object) {
       enforce(key == "url" || key == "name",

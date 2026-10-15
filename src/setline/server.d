@@ -99,7 +99,7 @@ void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
   // 两个监听都绑上了才报地址：先打印、后绑定的话，绑失败时日志会声称一个不存在的监听。
   stdout.writefln("setline listening on http://%s:%s", listenAddress.host, listenAddress.port);
   stdout.writefln("setline admin listening on http://%s:%s", adminAddress.host, adminAddress.port);
-  reportAdminReachability(adminAddress, adminToken());
+  reportAdminReachability(adminAddress, peerReaders());
   // stdout 在 systemd/重定向下是块缓冲的，不刷就一直留在缓冲区里——而管理口地址只有这行和
   // 状态页 HTML 两个来源，日志晚一步等于没有。
   stdout.flush();
@@ -117,24 +117,22 @@ void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
   runEventLoop();
 }
 
-/** 打印管理口的安全姿态：绑非回环时说明管理口读的可达范围。
+/** 打印读写两侧的有效准入规则：读按来源地址，写只认本机。
 
-    缺省的 `adminListen` 是回环（`127.0.0.1:10080`），所以这行只在显式放开时才出现——
-    它是状态说明，不是故障告警：管理口的读（状态页、`status.json`、路由表）按网络可达性
-    暴露，写接口不受影响（这里只认本机来源）。想收敛管理口就读就加防火墙规则或
-    `adminToken`；不想暴露就把它绑回环，路由表读在数据面 `listen` 上另有一份。
+    缺省的 `adminListen` 是回环（`127.0.0.1:10080`），所以这里只在显式放开时才说明管理口
+    的可达范围——它是状态说明，不是故障告警。路由表的跨机读方写在 `peerReaders` 里，启动时
+    打出来是为了排错：名单写错地址的表现是读方拿到 403，而 403 本身看不出名单是什么。
 */
-private void reportAdminReachability(ListenAddress admin, string token) {
+private void reportAdminReachability(ListenAddress admin, const(string)[] readers) {
+  if (readers.length > 0) {
+    stdout.writefln("setline peer readers: %s", readers);
+  }
   if (isLoopbackHostName(admin.host)) {
     return;
   }
-  if (token.length > 0) {
-    stdout.writefln("setline admin reads are reachable from the network, gated by adminToken");
-  } else {
-    stdout.writefln(
-      "setline admin reads are open to anything that can reach %s:%s (no adminToken)",
-      admin.host, admin.port);
-  }
+  stdout.writefln(
+    "setline admin reads are open to anything that can reach %s:%s; writes stay loopback-only",
+    admin.host, admin.port);
 }
 
 shared private int gShutdownSignals;
@@ -416,7 +414,8 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
   // 的机器读路由表就够了，状态页和 `status.json` 没有跨机消费者，挂在这里只会白白放大暴露面
   // （它们含监听地址、超时、计数器和整张路由表）；写更是只在管理口上。其余 `/_setline/*`
   // ——包括非 GET 的 `/routes`——一律回 404，连路由表都不查（配置校验也不允许路由以
-  // _setline 开头）。
+  // _setline 开头）。来源是否放行由 handleAdmin 判定（本机，或 peerReaders 里的地址），
+  // 不在此处区分，免得同一个判据出现两份。
   if (path.startsWith(adminPrefix)) {
     if (request.method == "GET" && path == peerRoutesPath) {
       string fullRequest;

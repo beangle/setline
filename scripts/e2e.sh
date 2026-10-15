@@ -335,7 +335,7 @@ raw_admin_put() {
 }
 
 # 写接口的「本机」= 回环对端 + 回环 Host：经本机代理转发的远端请求带着公开主机名，
-# 不再被当成本机（原因见 docs/configuration.md 的 adminToken 一节）。
+# 不再被当成本机（原因见 docs/configuration.md 的 peerReaders 一节）。
 check_admin_write_gate() {
   local body='{"/evil":[9999]}' out
   out="$(raw_admin_put "127.0.0.1:$SETLINE_ADMIN_PORT" "" "$body" |
@@ -602,12 +602,28 @@ else
   run_case "$HAPROXY_BIN" "haproxy-$(haproxy_version "$HAPROXY_BIN")"
 fi
 
-# P2-4：管理接口的**写**只在独立监听上；**读**同时挂在数据面和管理口上，凭据门一致。
+# 本机的非回环 IPv4 地址：准入按来源地址判定，要真的端到端验证就得有非回环来源。
+local_addresses() {
+  { # 默认路由的源地址优先：它几乎肯定是 up 的，其它（网桥等）可能没载波。
+    ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}'
+    ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+    hostname -I 2>/dev/null | tr ' ' '\n'; } |
+    grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' | awk '!seen[$0]++'
+}
+
+# P2-4/P2-9：管理接口的**写**只在独立监听上；**读**同时挂在数据面和管理口上，准入只看来源地址
+# （本机，或 peerReaders 里列出的读方），全程没有凭据。
 check_admin_listen() {
   local label="admin-listen"
+  # 两个监听都绑所有地址，好让非回环来源真的出现；读方地址写进 peerReaders 才放行。
+  local lan_a lan_b
+  lan_a="$(local_addresses | head -1)"
+  lan_b="$(local_addresses | sed -n 2p)"
+  local readers=""
+  [ -z "$lan_a" ] || readers=",\"peerReaders\":[\"$lan_a\"]"
   cat >"$WORK/split.json" <<JSON
-{"listen":"127.0.0.1:$SPLIT_DATA_PORT","adminListen":"127.0.0.1:$SPLIT_ADMIN_PORT",
- "adminToken":"e2e-admin-token","routes":{"local.test":{"/":$BACKEND_PORT}}}
+{"listen":"*:$SPLIT_DATA_PORT","adminListen":"*:$SPLIT_ADMIN_PORT"$readers,
+ "routes":{"local.test":{"/":$BACKEND_PORT}}}
 JSON
   "$ROOT/target/setline" -f "$WORK/split.json" >"$WORK/split.log" 2>&1 &
   SPLIT_PID=$!
@@ -625,26 +641,19 @@ JSON
   done
   [ "$ok" = 0 ] || fail "$label split setline did not listen: $(cat "$WORK/split.log")"
 
-  # 数据面只承接 peer 协议一个端点：路由表读得到、门是同一套（非回环 Host 且没带 token
-  # → 401，带对了 → 200），而 status.json 这类没有跨机消费者的读直接 404。
-  local data_read data_read_token data_status data_write admin_root admin_status data_root
-  data_read="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: split.internal' \
+  # 数据面只承接 peer 协议一个端点：本机来源直接读得到（没有任何凭据），status.json 这类
+  # 没有跨机消费者的读则是 404。
+  local data_read data_status data_write admin_root admin_status data_root
+  data_read="$(curl -s -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/routes")"
-  [ "$data_read" = 401 ] ||
-    fail "$label data plane read without a token was not rejected ($data_read)"
-  data_read_token="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: split.internal' \
-    -H 'X-Setline-Token: e2e-admin-token' \
-    "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/routes")"
-  [ "$data_read_token" = 200 ] ||
-    fail "$label data plane read with a token was rejected ($data_read_token)"
-  data_status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: split.internal' \
-    -H 'X-Setline-Token: e2e-admin-token' \
+  [ "$data_read" = 200 ] ||
+    fail "$label local data plane read was rejected ($data_read)"
+  data_status="$(curl -s -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/status.json")"
   [ "$data_status" = 404 ] ||
     fail "$label data plane served status.json (got $data_status)"
-  # 写只在管理口上：数据面收到 PUT 一律 404，不管带没带 token。
-  data_write="$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Host: split.internal' \
-    -H 'X-Setline-Token: e2e-admin-token' \
+  # 写只在管理口上：数据面收到 PUT 一律 404，不管来源是谁。
+  data_write="$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
     "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/routes?host=evil.test")"
   [ "$data_write" = 404 ] ||
     fail "$label data plane accepted an admin write ($data_write)"
@@ -659,22 +668,47 @@ JSON
     "http://127.0.0.1:$SPLIT_DATA_PORT/ok")"
   [ "$data_root" = 200 ] || fail "$label data plane stopped proxying ($data_root)"
 
-  # 读接口只有 X-Setline-Token 一种凭据；是不是「本机」由回环对端 + 回环 Host 决定。
-  local read_code
-  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: setline.internal' \
-    "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/routes")"
-  [ "$read_code" = 401 ] || fail "$label non-local host read without token was not rejected ($read_code)"
-  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: setline.internal' \
-    -H 'X-Setline-Token: e2e-admin-token' "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/routes")"
-  [ "$read_code" = 200 ] || fail "$label token read was rejected ($read_code)"
+  # 读只看来源地址：本机来源带公开 Host 也读得到（本地调用方可能就是按公开名访问的），
+  # 所以前置代理不 deny /_setline 时读会被转发进来——这是记录在案的取舍，代理侧的 deny
+  # 才是入口那道门。写不一样：它既是公开 Host 又来自回环对端，正是「经本机代理转发」的形状，
+  # 一律 403。
+  local read_code write_code
+  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: split.internal' \
+    "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/routes")"
+  [ "$read_code" = 200 ] || fail "$label local read with a public host was rejected ($read_code)"
   read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1' \
-    -H 'X-Forwarded-Host: setline.internal' "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/status.json")"
-  [ "$read_code" = 401 ] || fail "$label proxied-host read without token was not rejected ($read_code)"
-  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1' \
-    -H 'X-Forwarded-Host: setline.internal' -H 'X-Setline-Token: e2e-admin-token' \
-    "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/status.json")"
-  [ "$read_code" = 200 ] || fail "$label proxied-host read with token was rejected ($read_code)"
-  echo "PASS[$label] reads take X-Setline-Token and the host decides what is local"
+    -H 'X-Forwarded-Host: split.internal' "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/status.json")"
+  [ "$read_code" = 200 ] || fail "$label local status read with a forwarded host was rejected ($read_code)"
+  write_code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Host: split.internal' \
+    "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/routes?host=evil.test")"
+  [ "$write_code" = 403 ] || fail "$label proxied write was not rejected ($write_code)"
+  write_code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Host: 127.0.0.1' \
+    -H 'X-Forwarded-Host: split.internal' \
+    "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/routes?host=evil.test")"
+  [ "$write_code" = 403 ] || fail "$label forwarded-host write was not rejected ($write_code)"
+
+  # 非回环来源：列进 peerReaders 的地址读得到，没列的读不到。这条只有在机器上真的有非回环
+  # 地址时才跑得起来（容器里常常只有回环）。
+  if [ -n "$lan_a" ]; then
+    grep -q "setline peer readers: .*$lan_a" "$WORK/split.log" ||
+      fail "$label startup log did not print the reader list: $(cat "$WORK/split.log")"
+    read_code="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_a:$SPLIT_DATA_PORT/_setline/routes")"
+    [ "$read_code" = 200 ] || fail "$label listed reader $lan_a was rejected ($read_code)"
+    read_code="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_a:$SPLIT_ADMIN_PORT/_setline/status.json")"
+    [ "$read_code" = 200 ] || fail "$label listed reader could not read status.json ($read_code)"
+    data_status="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_a:$SPLIT_DATA_PORT/_setline/status.json")"
+    [ "$data_status" = 404 ] || fail "$label listed reader got status.json off the data plane ($data_status)"
+    write_code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+      "http://$lan_a:$SPLIT_ADMIN_PORT/_setline/routes?host=evil.test")"
+    [ "$write_code" = 403 ] || fail "$label listed reader could write routes ($write_code)"
+    if [ -n "$lan_b" ]; then
+      read_code="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_b:$SPLIT_DATA_PORT/_setline/routes")"
+      [ "$read_code" = 403 ] || fail "$label unlisted address $lan_b was not rejected ($read_code)"
+    fi
+    echo "PASS[$label] peerReaders admits $lan_a${lan_b:+ and rejects $lan_b}"
+  else
+    echo "PASS[$label] no non-loopback address on this host: address allowlist not exercised"
+  fi
 
   local exit_status=0
   kill -TERM "$SPLIT_PID" 2>/dev/null || true

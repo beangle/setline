@@ -16,7 +16,9 @@
 
 module setline.util;
 
-import std.array : appender;
+import std.array : appender, split;
+import std.conv : to;
+import std.string : strip;
 
 enum defaultConfigPath = "setline.json";
 enum adminPrefix = "/_setline";
@@ -39,6 +41,73 @@ string toLowerAscii(string value) {
     }
   }
   return outp.data;
+}
+
+/** 规范化地址文本：去空白、转小写、去掉 IPv4-mapped IPv6 前缀，方便按文本比较。
+
+    双栈监听上的 IPv4 客户端对端会显示成 `::ffff:10.0.1.7`，去掉这个前缀之后它和配置里
+    写的 `10.0.1.7` 就是同一个地址。
+*/
+string normalizeAddressText(string address) {
+  auto value = toLowerAscii(address.strip);
+  enum mapped = "::ffff:";
+  if (value.length > mapped.length && value[0 .. mapped.length] == mapped &&
+      isIpv4Literal(value[mapped.length .. $])) {
+    return value[mapped.length .. $];
+  }
+  return value;
+}
+
+/** 地址文本是否为回环地址。 */
+bool isLoopbackAddress(string address) {
+  auto value = normalizeAddressText(address);
+  return value == "127.0.0.1" || value == "::1";
+}
+
+/** 地址文本是否为数值地址字面量：点分四段 IPv4，或含两个以上冒号的 IPv6。
+
+    刻意只认字面量：主机名要查 DNS、CIDR 要按位比较，两者都会把「谁可以读路由表」这件事
+    从一行地址变成一个需要解释的规则。调用方先 {@link normalizeAddressText} 再判。
+*/
+bool isAddressLiteral(string address) {
+  return isIpv4Literal(address) || isIpv6Literal(address);
+}
+
+/** 点分四段 IPv4，每段 0..255。 */
+private bool isIpv4Literal(string value) {
+  auto parts = value.split(".");
+  if (parts.length != 4) return false;
+  foreach (part; parts) {
+    if (part.length == 0 || part.length > 3) return false;
+    foreach (ch; part) {
+      if (ch < '0' || ch > '9') return false;
+    }
+    if (to!ushort(part) > 255) return false;
+  }
+  return true;
+}
+
+/** IPv6 文本（宽松形状检查）：只含十六进制与冒号，且至少两个冒号。 */
+private bool isIpv6Literal(string value) {
+  if (value.length < 2 || value.length > 45) return false;
+  size_t colons;
+  foreach (ch; value) {
+    if (ch == ':') {
+      colons++;
+    } else if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+  }
+  return colons >= 2;
+}
+
+/** 远端地址是否落在允许读取的地址列表里（按规范化文本比较）。 */
+bool isListedAddress(string remote, const string[] readers) {
+  auto value = normalizeAddressText(remote);
+  foreach (reader; readers) {
+    if (normalizeAddressText(reader) == value) return true;
+  }
+  return false;
 }
 
 /** 转义 HTML 文本节点和属性值中的特殊字符。 */

@@ -26,7 +26,8 @@ import setline.health;
 import setline.model;
 import setline.state;
 import setline.test_lock;
-import setline.util : escapeHtml;
+import setline.util : escapeHtml, isAddressLiteral, isListedAddress, isLoopbackAddress,
+  normalizeAddressText;
 
 @("admin parses the request host down to a name") unittest {
   assert(hostNameOf("127.0.0.1:8080") == "127.0.0.1");
@@ -115,49 +116,52 @@ import setline.util : escapeHtml;
     `&lt;tag attr=&quot;x&quot; data-y=&#39;z&#39;&gt;&amp;`);
 }
 
-@("admin detects localhost addresses") unittest {
-  assert(isLocalhostAddress("127.0.0.1"));
-  assert(isLocalhostAddress("::1"));
-  assert(isLocalhostAddress("::ffff:127.0.0.1"));
-  assert(!isLocalhostAddress("192.168.1.10"));
+@("admin normalizes and compares reader addresses") unittest {
+  // 双栈监听上的 IPv4 对端显示成 ::ffff:a.b.c.d，去前缀之后和配置里的写法是同一个地址。
+  assert(normalizeAddressText("  ::FFFF:10.0.1.7 ") == "10.0.1.7");
+  assert(normalizeAddressText("FE80::1") == "fe80::1");
+  assert(normalizeAddressText("::ffff:127.0.0.1") == "127.0.0.1");
+
+  assert(isLoopbackAddress("127.0.0.1"));
+  assert(isLoopbackAddress("::1"));
+  assert(isLoopbackAddress("::ffff:127.0.0.1"));
+  assert(!isLoopbackAddress("192.168.1.10"));
+
+  // 只认字面量：主机名要查 DNS，CIDR 要按位比较，都不能拿来当「谁可以读」。
+  assert(isAddressLiteral("10.0.1.7"));
+  assert(isAddressLiteral("fe80::1"));
+  assert(!isAddressLiteral("10.0.1.7:80"));
+  assert(!isAddressLiteral("10.0.1.0/24"));
+  assert(!isAddressLiteral("app1.internal"));
+  assert(!isAddressLiteral("10.0.1.256"));
+
+  assert(isListedAddress("10.0.1.7", ["10.0.1.7"]));
+  assert(isListedAddress("::ffff:10.0.1.7", ["10.0.1.7"]));
+  assert(!isListedAddress("10.0.1.8", ["10.0.1.7"]));
+  assert(!isListedAddress("10.0.1.7", []));
 }
 
-@("admin allows localhost route updates without token") unittest {
+@("admin allows localhost route updates without credentials") unittest {
   assert(isLocalRouteUpdateAllowed(true));
   assert(!isLocalRouteUpdateAllowed(false));
 }
 
-@("admin gates reads by source first, token only for non-local callers") unittest {
-  auto request = "GET /_setline/routes HTTP/1.1\r\n\r\n";
-
-  // 本机来源：不管有没有 token、配置了什么 token，一律放行（读写同一条门）
-  assert(isReadAllowed(true, request));
-  assert(isReadAllowed(true, "GET /_setline/routes HTTP/1.1\r\nX-Setline-Token: wrong\r\n\r\n"));
-
-  // 非本机来源：token 为空按开发模式放行
-  assert(isReadAllowed(false, request));
+@("admin gates reads by source: localhost or a listed reader") unittest {
+  // 本机来源放行，远端读方按地址放行，两者都不是才拒绝；读侧没有任何凭据参与判定。
+  assert(isReadAllowed(true, false));
+  assert(isReadAllowed(false, true));
+  assert(isReadAllowed(true, true));
+  assert(!isReadAllowed(false, false));
 }
 
-@("admin requires the read token only for non-local callers when it is set") unittest {
+@("admin publishes the configured peer readers to the read gate") unittest {
   withStateTestLock({
     Config config;
-    config.adminToken = "secret";
+    config.peerReaders = ["10.0.1.7", "fe80::1"];
     initialize(config);
     try {
-      auto request = "GET /_setline/routes HTTP/1.1\r\n\r\n";
-      // 非本机且没带凭据：拒绝；带对了才放行
-      assert(!isReadAllowed(false, request));
-      assert(isReadAllowed(false, "GET /_setline/routes HTTP/1.1\r\nX-Setline-Token: secret\r\n\r\n"));
-      assert(!isReadAllowed(false, "GET /_setline/routes HTTP/1.1\r\nX-Setline-Token: wrong\r\n\r\n"));
-
-      // 本机来源不受 token 影响：basctl 因此不需要在 server.xml 里存任何凭据
-      assert(isReadAllowed(true, request));
-
-      // 状态页和路由表同一条规则、同一种凭据：没有 Basic Auth 这一路。
-      auto status = "GET /_setline/status HTTP/1.1\r\nHost: setline.internal\r\n\r\n";
-      assert(!isReadAllowed(false, status));
-      assert(isReadAllowed(false, status[0 .. $ - 2] ~ "X-Setline-Token: secret\r\n\r\n"));
-      assert(isReadAllowed(true, "GET /_setline/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+      // 启动日志和读侧判定都直接读这份快照，所以它必须原样带过去。
+      assert(peerReaders() == ["10.0.1.7", "fe80::1"]);
     } finally {
       Config empty;
       initialize(empty);

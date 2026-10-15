@@ -177,15 +177,15 @@ Runtime route management is deliberately narrow. It supports four operations:
 - replace routes for one host
 
 These operations are available under the `_setline` admin namespace and are
-accepted only from localhost. Write operations do not require the admin token,
-but they must specify the route host. The localhost check uses the TCP peer
-address because proxy headers are user-controlled input at this security
-boundary.
+accepted only from localhost. Write operations carry no credential, but they
+must specify the route host. The localhost check uses the TCP peer address
+because proxy headers are user-controlled input at this security boundary.
 
 Read operations (`GET` routes and the status page) sit on the other side of the
-boundary: they keep the `adminToken` credential and stay reachable from other
-hosts, because the route table is meant to be read later by same-network
-services such as a haproxy/nginx config synchronization agent.
+boundary: they stay reachable from other hosts, because the route table is read
+by same-network peers - the agent that renders `agent.peers` into a haproxy or
+nginx config. Their gate is the source address (localhost, or an address listed
+in `peerReaders`), so setline holds no credential at all.
 
 Route updates rebuild a complete runtime snapshot and then replace the current
 state:

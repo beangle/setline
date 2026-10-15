@@ -220,17 +220,17 @@ keeps the data plane on loopback and leaves the admin listener alone:
 {
   "listen": "127.0.0.1:8080",
   "adminListen": "127.0.0.1:10080",
-  "adminToken": "please-change-me"
+  "peerReaders": ["10.0.1.7"]
 }
 ```
 
 `listen` is where the front proxy sends traffic, so it never needs to leave the
 machine - and because it also carries the peer protocol read (`GET
-/_setline/routes`), "who can reach the proxy" and "who can read the route table"
-are the same question. With no `adminToken`, that read is open to anything that
-reaches `listen`: keep the front proxy rejecting `/_setline`, set `adminToken`
-(one credential, `X-Setline-Token`, no Basic Auth), or point the proxy only at
-the application backends.
+/_setline/routes`), "who can reach the proxy" matters for the route table too.
+That read is open to anything that reaches `listen` from loopback (including
+requests a front proxy forwards), and to the addresses listed in `peerReaders`;
+keep the front proxy rejecting `/_setline`, list only the machines that render
+this setline's routes, or point the proxy only at the application backends.
 
 `adminListen` is what tools and collectors may also connect to; it serves the
 whole `/_setline/*` API (everything else is `404`) and does not route to
@@ -241,12 +241,13 @@ listener, timeouts, health-check tuning and counters, have no cross-machine
 consumer, and would only widen what a leaked `/_setline` exposes. Bind it to `*`
 only when a collector cannot go through the proxy.
 
-Local means a loopback TCP peer *and* a loopback request host, so a local proxy
-relaying a remote request (`remote client -> haproxy/nginx -> setline`) is
-treated as remote: its writes get `403` and its reads need the token. A proxy can
-rewrite `Host` to evade that, so keep denying the admin path at the proxy itself
-(`http-request deny if { path_beg /_setline }`,
-`location ^~ /_setline { return 404; }`).
+Writes require a loopback TCP peer *and* a loopback request host, so a local
+proxy relaying a remote request (`remote client -> haproxy/nginx -> setline`)
+cannot change routes: it gets `403`. A proxy can rewrite `Host` to evade that, so
+keep denying the admin path at the proxy itself (`http-request deny if { path_beg
+/_setline }`, `location ^~ /_setline { return 404; }`). Reads do not look at the
+host - a local caller may address setline by its public name - which is why that
+proxy-side deny is the read side's only protection.
 
 Tools work against either door: basctl writes (so `adminListen`), and the peer
 protocol reads the route table on `listen`. Sending a write to `listen` gets a
@@ -273,21 +274,21 @@ Supported runtime operations are:
 - replace routes for one host
 
 All route-changing calls must come from localhost and must specify the target
-route host. They do not require the admin token: the localhost check is the
-whole access control for writes. Keep these endpoints bound to trusted local
-automation such as service startup scripts or deployment hooks.
+route host. There is no credential: the localhost check is the whole access
+control for writes. Keep these endpoints bound to trusted local automation such
+as service startup scripts or deployment hooks.
 
-Reads take a different path. `GET /_setline/routes` requires `adminToken` for
-non-local callers and is served on `listen` as well as on `adminListen`, because
-same-network services (for example a haproxy/nginx config synchronization agent)
-are expected to read the route table; the status page and `status.json` keep the
-same credential but live on `adminListen` alone. Because the route table read
-rides the data plane, an empty `adminToken` leaves it open to whoever the front
-proxy lets through: set `adminToken`, keep `/_setline` denied at the proxy (a
-rule matching just `/_setline/routes` is enough), or keep `listen` on loopback.
+Reads take a different path: their gate is the source address (localhost, or an
+address listed in `peerReaders`), and `GET /_setline/routes` is served on
+`listen` as well as on `adminListen`, so a peer can read the route table without
+knowing the admin listener. The status page and `status.json` live on
+`adminListen` alone. Because the route table read rides the data plane, keep
+`/_setline` denied at the proxy (a rule matching just `/_setline/routes` is
+enough) or keep `listen` on loopback.
 
 That read path is what `agent.peers` uses: an edge proxy machine reads each
-peer's route table with `X-Setline-Token`, rewrites the peer's local ports to
+peer's route table (no credential - the peer's `peerReaders` lists the edge),
+rewrites the peer's local ports to
 `<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
 a HAProxy/Nginx fragment under the `agent.output` root directory
 (`<root>/{haproxy,nginx}/setline.{cfg,conf}`). Leave `agent.peers` empty and the

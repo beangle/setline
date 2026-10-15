@@ -26,7 +26,7 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 |---|---|---|---|
 | `listen` | 整数、字符串或 `false` | `127.0.0.1:8080` | 监听地址；`false` 表示不监听（纯渲染），见下节 |
 | `adminListen` | 整数或字符串 | `127.0.0.1:10080` | 写操作的独立监听，见「adminListen」一节 |
-| `adminToken` | 字符串 | 空 | 管理读接口的凭据，见「adminToken」一节 |
+| `peerReaders` | 字符串数组 | `[]` | 允许跨机读路由表与状态页的来源地址，见「peerReaders」一节 |
 | `connectTimeoutMillis` | 整数 > 0 | `3000` | 连接后端的 TCP 超时 |
 | `readTimeoutMillis` | 整数 > 0 | `15000` | 单次上游读取的不活动超时 |
 | `reusePort` | 布尔 | `false` | 同地址多进程监听时启用 Linux `SO_REUSEPORT` |
@@ -108,12 +108,12 @@ setline 进程可以绑定完全相同的地址。默认关闭，避免无意间
 只写端口时默认绑回环，不会意外对外暴露。要让别的机器直接连数据面（正常不该发生，前置
 代理是本机的话不需要）才写 `*:port` 或具体地址——那时任何能连上端口的人都绕过前置代理，
 直接按路由表打到本机业务端口，认证、限流、日志全都不再经过；**peer 协议的路由表读也搭在
-`listen` 上**（见下节），这个绑定方式同时决定了「谁能读路由表」，所以要么配 `adminToken`，要么
-只让前置代理按源地址放行 `/_setline`。
+`listen` 上**（见下节），这个绑定方式同时决定了「谁能读路由表」，所以要把读方写进 `peerReaders`，
+或者由前置代理按来源放行 `/_setline`。
 
 配了 `agent` 时业务流量根本不经过 setline：haproxy/nginx 按生成的片段直接回源业务端口。
-所以 `listen` 绑回环即可；跨机采集要么经前置代理读 `listen` 上的 `/_setline`（建议配
-`adminToken`），要么把 `adminListen` 显式放开让采集机直连。
+所以 `listen` 绑回环即可；跨机采集要么经前置代理读 `listen` 上的 `/_setline`，要么把
+`adminListen` 显式放开；两条路都要求把采集机地址写进 `peerReaders`。
 这条跨机读只有 `/_setline/routes` 一个端点（见下节）：数据面上没有状态页。
 
 **路由完全来自配置文件、不需要运行时下发时**，可以写 `"listen": false`：setline 不绑任何
@@ -130,25 +130,25 @@ setline 进程可以绑定完全相同的地址。默认关闭，避免无意间
 {
   "listen": "127.0.0.1:8080",
   "adminListen": "127.0.0.1:10080",
-  "adminToken": "please-change-me"
+  "peerReaders": ["10.0.1.7"]
 }
 ```
 
 | 接口 | 挂在哪 | 谁能访问 |
 |---|---|---|
-| `GET /_setline/routes`（peer 协议） | `listen` **和** `adminListen` | 本机免凭据，其它来源要 `X-Setline-Token` |
-| `GET /_setline/status`、`/status.html`、`/status.json` | 只有 `adminListen` | 本机免凭据，其它来源要 `X-Setline-Token` |
-| `PUT` / `DELETE /_setline/routes*`（写） | 只有 `adminListen` | 只接受本机请求，不看 token |
+| `GET /_setline/routes`（peer 协议） | `listen` **和** `adminListen` | 本机来源，或来源地址在 `peerReaders` 里 |
+| `GET /_setline/status`、`/status.html`、`/status.json` | 只有 `adminListen` | 本机来源，或来源地址在 `peerReaders` 里 |
+| `PUT` / `DELETE /_setline/routes*`（写） | 只有 `adminListen` | 只接受本机请求（回环对端 + 回环 Host） |
 
 为什么这么分：
 
 - **路由表读搭在业务端口上**：跨机采集（`agent.peers`）只需要知道 `listen`（它本来就
-  知道——那是代理回源的地址）就能读路由表，不用额外知道管理口在哪。前置代理转发
-  `/_setline` 时请求仍然是「远端来源」，所以那条路要凭据，或者由代理按源地址放行。
+  知道——那是代理回源的地址）就能读路由表，不用额外知道管理口在哪。它的准入是**来源地址**：
+  对端是远端机器，所以要把那台机器的地址写进 `peerReaders`。
 - **状态页和 `status.json` 只在管理口上**：它们没有跨机消费者，内容却是监听地址、超时、
   `maxConnections`、健康检查调参、计数器和整张路由表。挂在数据面上只会放大暴露面——前置
   代理漏掉 `deny /_setline` 时，泄露的东西从「一份路由表」变成「整幅运行画像」。跨机监控
-  要读 `status.json` 就直连管理口（显式放开 + `adminToken`），或者在代理本机采集。
+  要读 `status.json` 就直连管理口（显式放开并把采集机写进 `peerReaders`），或者在代理本机采集。
 - **写只在管理口上，而管理口缺省绑回环**：拨不动 `127.0.0.1:10080` 就改不了路由，
   「只有本机能改流量走向」成了 TCP 层事实，不再依赖「回环对端 + 回环 Host」那两维判定
   （Host 是请求头，前置代理改写它就能骗过判定；那两维只是纵深防御，不是边界）。
@@ -160,64 +160,77 @@ setline 进程可以绑定完全相同的地址。默认关闭，避免无意间
   的纯渲染部署则不要写 `adminListen`（写完就退出，没有进程服务它）。
 - `adminListen` 和 `listen` 不能落在同一个地址上（`10080` 是管理口的缺省端口，给数据面
   用会直接报错）。
-- 跨机读还有一条路：把 `adminListen` 显式放开（例如 `*:10080`）并设 `adminToken`。缺省
-  绑回环是因为路由表读已经能从 `listen` 走；真要读状态页就得开管理口，或者本机采集。
+- 跨机读还有一条路：把 `adminListen` 显式放开（例如 `*:10080`）并把读方写进 `peerReaders`。
+  缺省绑回环是因为路由表读已经能从 `listen` 走；真要读状态页就得开管理口，或者本机采集。
 
 同机的工具（basctl 等）照旧访问 `adminListen`：写请求只有那一个入口。
 
-## adminToken
+## peerReaders：读接口的准入
 
-`adminToken` 只保护**读**接口的**非本机**来源，这是最容易误解的一点：
+setline 不持有任何凭据：读接口的准入**只看来源地址**，写接口只看「是不是本机」。
 
-| 请求 | 来源 | 凭据 |
+| 请求 | 来源 | 结果 |
 |---|---|---|
-| `GET /_setline/routes`（`listen` 或 `adminListen` 都认） | 本机 | 不需要 |
-| `GET /_setline/routes` | 其他主机（含经本机代理转发的远端请求） | `X-Setline-Token: <adminToken>`，**读接口只有这一种凭据** |
-| `GET /_setline/status`、`/status.html`、`/status.json`（只有 `adminListen`） | 本机 / 其他主机 | 本机不需要；其他主机要 `X-Setline-Token` |
-| `PUT` / `DELETE /_setline/routes*`（只有 `adminListen`） | 仅本机 | 不需要，且**不看 token** |
+| `GET /_setline/routes`（`listen` 或 `adminListen` 都认） | 本机 | 放行 |
+| `GET /_setline/routes` | 其他主机，地址在 `peerReaders` 里 | 放行 |
+| `GET /_setline/routes` | 其他主机，地址不在名单里 | `403` |
+| `GET /_setline/status`、`/status.html`、`/status.json`（只有 `adminListen`） | 本机，或 `peerReaders` 里的地址 | 放行，其余 `403` |
+| `PUT` / `DELETE /_setline/routes*`（只有 `adminListen`） | 仅本机 | 不在此列：写接口自己判定，非本机一律 `403` |
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "adminListen": "127.0.0.1:10080",
+  "peerReaders": ["10.0.1.7", "10.0.1.8"]
+}
+```
 
 几条规则要记住：
 
-- **空 `adminToken` 等于放行。** 路由表读挂在 `listen` 上，所以**只要 `listen` 可被不可信
-  客户端访问（例如前置代理把 `/_setline` 也转发过来了），路由表就对外可读**；状态页和
-  `status.json` 不受影响，它们只在缺省绑回环的管理口上。要按网络收敛就让代理拒掉
-  `/_setline` 或只绑本机后端，要按凭据收敛就设 `adminToken`。
-- **写接口从不使用 token。** 改路由等于改流量走向，它的访问控制是「本机」判定，与服务端
-  是否配置 token 无关；带上正确的 `adminToken` 也不会让非本机写入生效。
-- **本机读免凭据**，与写同一条门，所以同机的工具（如 basctl）不需要存任何密码。
-- **「本机」= TCP 对端是回环**（`127.0.0.1` / `::1` / `::ffff:127.0.0.1`）**且请求声明的
-  主机也是回环名**（`Host` 或 `X-Forwarded-Host` 是 `127.0.0.1` / `::1` / `localhost`，
-  忽略端口）——两个条件缺一不可，不是「谁发起」。
-- 第二维专门盯本机代理：`远端客户端 → 本机 haproxy/nginx → setline` 时，转发请求带着
-  浏览器看到的公开主机名，于是不再算本机——写接口返回 `403`，读接口要 `X-Setline-Token`。
-  代理可以改写 `Host` 绕过，所以这一维是纵深防御，不是边界；前置代理仍建议自己拒掉管理
-  路径（haproxy：`http-request deny if { path_beg /_setline }`；nginx：
-  `location ^~ /_setline { return 404; }`）——路由表读就搭在被代理的 `listen` 上，这是防住
-  「公网读路由表」唯一的一道。这里的 `deny` 可以写成精确匹配 `/_setline/routes`；写和
-  状态页不需要这道：代理即使转发，也只有 404。
-- 没有 `Host` 的请求（HTTP/1.0、刻意省略）一律不算本机。
+- **为什么用地址而不是 token。** 这条链路上唯一的跨机读方是另一个 setline（`setline -f`
+  按 `agent.peers[].url` 拉路由表），机器对机器、读方固定。给它配一份要在两台机器上同步的
+  秘密，换不来比来源地址更实在的东西——token 走的是明文 HTTP，能抓到这条流量的中间人直接
+  拿到并可复用；地址无法被「嗅探复用」，只能被伪造，而伪造 TCP 源地址需要位置且拿不到回程。
+  代价是名单本身要维护：换机器要改被读端（读端只要 URL）。
+- **只认数值地址**：`10.0.1.7`、`fe80::1` 这种写法，不支持主机名（配置解析会变成一次 DNS
+  查询，且名字解析出的地址未必是 TCP 对端地址）与 CIDR（要按位比较，规则就不再是「一行
+  地址」）。写法会归一化：去空白、转小写、去掉 IPv4-mapped 前缀，所以双栈监听上
+  `::ffff:10.0.1.7` 与配置里的 `10.0.1.7` 是同一个地址。
+- **本机来源永远放行**，不需要写进名单（写了会报错：`127.0.0.1` 是个空操作）。同机的工具
+  （如 basctl）因此什么都不用配。
+- **读不看 `Host`，写才看。** 本机调用方可能按公开主机名访问，所以读只认来源地址；写要求
+  「TCP 对端是回环 **且** 请求声明的 Host 是回环名」（`Host` 或 `X-Forwarded-Host`，
+  忽略端口，没有 Host 一律不算本机）。
+- **前置代理必须自己拒掉管理路径。** 代理转发的请求来源是回环（代理在本机），读侧只看
+  来源，所以代理漏掉 deny 就等于把路由表（`listen` 上）或状态页（管理口上）转发出去：
+
+  ```haproxy
+  http-request deny if { path_beg /_setline }
+  ```
+  ```nginx
+  location ^~ /_setline { return 404; }
+  ```
+
+  写侧还有 Host 这一维兜底（代理通常原样转发浏览器的 Host），但它依赖代理行为，不算边界。
 - **写接口不区分本机上的用户或进程。** 只要能和 setline 的监听端口建立 TCP 连接，就能改
   路由；不要把 setline 和不可信的进程放在同一台机器或同一个网络命名空间里。
+- 来源判定的是**连接的对端地址**，所以读方经 NAT/L4 代理接入时，名单要写代理的地址（那一跳
+  之后的客户端都会被当成读方），这种拓扑下地址判定就不再合适。
 - 管理接口的请求体有 4 MiB 防御性上限（整体替换路由表也远够用），超限回 `413`。
 
 读路由表：
 
 ```bash
-# 本机，走管理口或数据面都行，不需要凭据
+# 本机，走管理口或数据面都行
 curl http://127.0.0.1:10080/_setline/routes
 curl -H 'Host: app.example.com' http://127.0.0.1:8080/_setline/routes
 
-# 其他主机，用 token（管理口；也可以换成被代理的 listen 地址）
-curl -H 'X-Setline-Token: change-me' http://setline.internal:10080/_setline/routes
-
-# 状态页/状态 JSON：同一种凭据、同一个头
-curl -H 'X-Setline-Token: change-me' http://setline.internal:10080/_setline/status.json
+# 其他主机：把来源地址写进被读端的 peerReaders 即可，客户端不带任何凭据
+curl http://setline.internal:8080/_setline/routes
 ```
 
-token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent」一节）。
-
-本机直接开浏览器就能看状态页（免凭据）；远程看状态页只能用能加自定义头的客户端，例如
-上面的 `curl`——浏览器地址栏没法带 `X-Setline-Token`。
+读方（`setline -f`）那一侧只需要 `agent.peers[].url`，没有配套的凭据字段（见「agent」一节）。
+浏览器地址栏看状态页只在本机可行；远程读状态页同样靠 `peerReaders`。
 
 ## routes
 
@@ -319,7 +332,6 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 | `type` | 字符串 | 无 | `haproxy` 或 `nginx`，**必填** |
 | `peers` | 数组 | `[]` | 被聚合的远端 setline 实例；留空即单机部署 |
 | `output` | 字符串 | 空 | 片段落盘**根目录**（绝对路径）；留空打到标准输出（**单机部署必填**） |
-| `token` | 字符串 | 空 | 读取所有 peer 路由表时共用的 `X-Setline-Token`（peer 级不再有独立 token） |
 
 `peers`/单机两种形态的边界：单机形态漏写 `output` 报
 `agent.output is required when agent.peers is not set`；`"peers": []`（空数组）报
@@ -335,10 +347,9 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 完整可跑的 agent 配置见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`
 的「setline 配置示例」。
 
-片段**固定只出规则和后端定义**，不含任何监听段：`bind` / `listen` 归代理主配置。
-曾经的 `agent.bind`（让片段自己持有监听）已取消，配置里写了会报
-`agent.bind has been removed`。接线步骤（haproxy 的 `-f <dir>` 与四条 map 查询、nginx 的
-`include`）见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
+片段**固定只出规则和后端定义**，不含任何监听段：`bind` / `listen` 归代理主配置，
+`agent` 下没有让片段自带监听的开关。接线步骤（haproxy 的 `-f <dir>` 与四条 map 查询、
+nginx 的 `include`）见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
 
 `type` 也是热加载分派的依据：`setline-apply.timer` 只启用一个，`setline-apply auto`
 会对每份配置执行 `setline -f <cfg> --agent-type`，按这里填的 `haproxy`/`nginx` 决定
@@ -353,7 +364,6 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
   "agent": {
     "type": "nginx",
     "output": "/var/lib/setline",
-    "token": "shared-token",
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" },
       { "name": "app2", "url": "http://10.0.1.11:8080" }
@@ -370,9 +380,8 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 peer 对象只认这两个字段，写错字段名（例如写一个不存在的 `address`）会在
 `setline -c` 时报错，而不是被默默忽略。
 
-peer 不带自己的凭据：agent 拿顶层 `token` 当所有 peer 共用的 `X-Setline-Token`
-（对端 `adminToken` 要与它一致）。曾经的 `peers[].token` 已取消，写了会报
-`agent.peers[].token has been removed`，避免每加一台机器就同步一份凭据。
+peer 不带凭据：读方只需 URL，被读端按来源地址放行。这里没有存凭据的字段，
+也就没有要在两台机器之间同步的秘密。
 
 每个 peer 路由表里的本机端口会被改写成 `<url 的主机>:<port>`；不同 peer 上 host 与
 前缀相同的路由会合并成同一个 upstream/backend 的多台 server。
@@ -467,7 +476,7 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 
 ### 最小本地开发
 
-绑回环、不设 token；管理口用缺省值，本机直连 10080 读状态页和路由表：
+绑回环、无凭据；管理口用缺省值，本机直连 10080 读状态页和路由表：
 
 ```json
 {
@@ -481,13 +490,13 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 }
 ```
 
-### 生产：对外监听 + 管理 token
+### 生产：对外监听 + 读方名单
 
 ```json
 {
   "listen": "*:8080",
   "adminListen": "127.0.0.1:10080",
-  "adminToken": "please-change-me",
+  "peerReaders": ["10.0.1.7"],
   "connectTimeoutMillis": 3000,
   "readTimeoutMillis": 15000,
   "reusePort": false,
@@ -514,7 +523,7 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 
 ### 运行时改路由
 
-写接口只接受本机来源，不传 token：
+写接口只接受本机来源（回环对端 + 回环 Host），不需要任何凭据：
 
 ```bash
 # 新增/替换一条
@@ -544,7 +553,6 @@ curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=app.example.com'
   "agent": {
     "type": "nginx",
     "output": "/var/lib/setline",
-    "token": "shared-token",
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" },
       { "name": "app2", "url": "http://10.0.1.11:8080" }
@@ -563,7 +571,6 @@ frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可�
   "agent": {
     "type": "haproxy",
     "output": "/var/lib/setline",
-    "token": "shared-token",
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" }
     ]
@@ -615,20 +622,23 @@ frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可�
 | `webSocketIdleTimeoutMillis must not be negative` | `webSocketIdleTimeoutMillis` 写成负数 |
 | `route prefix must start with /` | 前缀没以 `/` 开头 |
 | `route updates are only allowed from localhost`（HTTP `403`） | 写接口的来源不是回环对端，或 Host 不是回环名（多为经本机代理转发的远端请求） |
-| `missing or invalid token`（HTTP `401`） | 读接口的非本机来源没带或带错 `X-Setline-Token` |
+| `route reads are only allowed from localhost or a peerReaders address`（HTTP `403`） | 读接口的来源不是本机，也不在 `peerReaders` 里 |
 | `route prefix conflicts with admin API` | 前缀以 `/_setline` 开头 |
 | `route value must be port or ports` | 路由值不是整数也不是数组 |
 | `route port must be 1..65535` | 端口越界 |
 | `route host must not include port` | host 里写了端口 |
+| `adminToken has been removed: reads are admitted by source address (peerReaders)` | 写了已取消的 `adminToken`（读的准入改成来源地址，链路上不再有凭据） |
 | `agent.remote has been removed: use agent.peers or local routes` | 写了已取消的 `agent.remote`（数据来源只剩 `peers` 与本机路由表） |
 | `agent.workDir has been removed: agent.remote is gone` | 写了已取消的 `agent.workDir` |
 | `agent.type is required: haproxy or nginx` | 配了 `agent` 但没写 `type`（或写错） |
 | `agent.bind has been removed: the fragment never owns the listener` | 写了已取消的 `agent.bind`（监听段只归代理主配置） |
+| `agent.token has been removed: peers are admitted by source address, not by a shared token` | 写了已取消的 `agent.token`（读的准入改成来源地址） |
 | `agent.output is required when agent.peers is not set` | 单机模式没写 `output` |
 | `agent.output must be an absolute directory path` | `output` 写成相对路径（会随 CWD 漂移，破坏固定布局） |
 | `agent.output must not be empty` | `output` 写成空字符串（等同于没配） |
 | `agent.peers must not be empty` | 写了 `"peers": []` |
 | `agent.sync has been removed: drive setline from a systemd timer` | 写了已取消的 `agent.sync`（渲染节奏由 `setline-render.timer` 驱动） |
 | `request body exceeds <n> bytes`（HTTP `413`） | 管理接口 PUT 的 body 超过 4 MiB 防御性上限 |
-| `agent.peers[] has unknown field: <key>` | peer 里写了不存在的字段（例如已取消的 `address`） |
+| `agent.peers[] has unknown field: <key>` | peer 里写了不存在的字段（peer 只认 `url` 与 `name`） |
+| `agent.peers[].token has been removed: reads are admitted by source address` | 写了已取消的 `agent.peers[].token`（读的准入改成来源地址） |
 | `cannot derive backend host from agent.peers[].url` | peer 的 `url` 没有主机（`file://`、本地路径） |

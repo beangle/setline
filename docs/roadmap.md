@@ -37,10 +37,11 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 > **前提**：作为数据面代理时，setline 的 `listen` 必须只绑回环
 > （`"listen": "127.0.0.1:8080"`）。管理接口按方法分挂两个监听：写（`PUT`/`DELETE`）
 > 只在 `adminListen`（缺省 `127.0.0.1:10080`），数据面 `listen` 只承接 peer 协议
-> （`GET /_setline/routes`）一个读端点。因为那个读也走 `listen`，前置代理必须显式拒掉
-> `/_setline`（至少是 `/_setline/routes`），否则非本机读会按
-> `X-Setline-Token` 放行。一旦把 `listen` 绑 `*`，数据面就被绕过前置代理直接访问——
-> 上面「可以假设」的清单立刻失效，本文的「不做」条目也全部作废。
+> （`GET /_setline/routes`）一个读端点。读的准入是**来源地址**（本机，或 `peerReaders`
+> 里列出的读方），而经本机前置代理转发的请求来源就是回环，所以前置代理必须显式拒掉
+> `/_setline`（至少是 `/_setline/routes`），否则非本机读会被当成本机读放行。一旦把
+> `listen` 绑 `*`，数据面就被绕过前置代理直接访问——上面「可以假设」的清单立刻失效，
+> 本文的「不做」条目也全部作废。
 
 ## 不做清单（Out of scope）
 
@@ -215,15 +216,24 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 | P2-5 | WebSocket 隧道纳入超时与统计 | 已完成 | 新增 `webSocketIdleTimeoutMillis`（默认 `0` 不断开；只在**两个方向都没字节**时计时，单侧推送不算空闲）；`status.json` 增加 `activeWebSockets` 与 `counters.webSocketTunnels/webSocketIdleTimeouts/webSocketBytes*`。同时修掉隧道与优雅退出的冲突：101 之后不再算「在途请求」，否则一条隧道会把重启拖到 `TimeoutStopSec`。e2e 覆盖双向回显、单向流量不被误杀、静默隧道到点断开、隧道打开时 SIGTERM 仍能退出 |
 | P2-6 | 管理口强制独立（缺省端口见 P2-7） | 已完成 | `adminListen` 从可选开关变成固定形态：管理接口永远有自己的监听。`"adminListen": false` 报错（不再表示共用 `listen`）；`listen: false` 时不允许写 `adminListen`；`listen` 落在缺省管理端口上、又没显式写 `adminListen` 时单独报错。缺省端口选型：18080 被 podman/pasta 的随机端口转发撞上，9080 是 WebSphere 默认、8088 是 Hadoop YARN 默认，最后取本机空闲且无主流软件默认的 10080（当时绑 `*`，P2-7 起改为回环）。`serve()` 里改成两个监听都绑成功才打印地址，管理口绑不上时给出指名 `adminListen` 的报错。删掉 `Config.adminListenEnabled` / `adminListenSeparated()`。单测覆盖缺省值、`false`、重合、缺省端口冲突；e2e 补「管理口 status.json 不含 adminListen」并把主实例管理口固定到独立端口 |
 | P2-7 | peer 读挂数据面、写留管理口，管理口缺省回环 | 已完成 | 管理接口按方法分挂两个监听：**读**（`GET`）同时挂在数据面 `listen` 和管理口上（P2-8 收窄为只有 `/_setline/routes`），**写**（`PUT`/`DELETE /_setline/routes*`）只在管理口；数据面收到非 `GET` 的 `/_setline/*` 一律 `404`、连路由表都不查。外界于是只需知道业务端口就能读，管理口不必暴露，`adminListen` 缺省从 `*:10080` 改为 `127.0.0.1:10080`——读既然能从 `listen` 走，管理口只留写，而写绑回环让「只有本机能改路由」成为 TCP 层事实，不再依赖可被代理改写的 `Host` 判定（那条判定作为纵深防御保留）。`status.json` 不再输出 `adminListen`（面向机器读取），地址只出现在状态页 HTML 与启动日志；绑非回环时启动日志写明读接口的可达范围。单测覆盖缺省回环、`listen` 落在缺省管理端口上的冲突、`status.json` 无 `adminListen`；e2e 与 haproxy 用例改为「数据面读 200 / 数据面写 404 / 管理口读 200」 |
-| P2-8 | 数据面只承接 peer 协议一个端点 | 已完成 | 数据面 `listen` 上的 `/_setline` 从「所有读」收窄为**只有 `GET /_setline/routes`**（`setline.util.peerRoutesPath`），其余（`status`、`status.html`、`status.json`，以及任何非 GET）一律 `404`、不查路由表。理由：路由表接口是 peer 协议（`agent.peers` 采集）唯一需要的跨机读，有明确的形状和解析器；状态页与 `status.json` 没有跨机消费者，却含监听地址、超时、`maxConnections`、健康检查调参、计数器和整张路由表，而 `status.json` 还是我们仍在自由改动的内部结构（P2-7 刚删过 `adminListen` 字段）——把「跨网可达面」绑在它上面等于给自己加兼容性负担，也让前置代理漏掉 `deny /_setline` 时的泄露面从「路由表」放大成「整幅运行画像」。代价是跨机监控 `status.json` 失去数据面通路，必须直连 `adminListen`（显式放开 + `adminToken`）或在代理本机采集；这是有意的收窄，已写进 `docs/configuration.md` 与 `docs/deployment.md`。e2e：数据面 `/_setline/routes` 仍 401/200（按 token），数据面 `status.json` 无论带没带 token 都是 `404`；单测不涉及（该分派在 TCP 入口） |
+| P2-8 | 数据面只承接 peer 协议一个端点 | 已完成 | 数据面 `listen` 上的 `/_setline` 从「所有读」收窄为**只有 `GET /_setline/routes`**（`setline.util.peerRoutesPath`），其余（`status`、`status.html`、`status.json`，以及任何非 GET）一律 `404`、不查路由表。理由：路由表接口是 peer 协议（`agent.peers` 采集）唯一需要的跨机读，有明确的形状和解析器；状态页与 `status.json` 没有跨机消费者，却含监听地址、超时、`maxConnections`、健康检查调参、计数器和整张路由表，而 `status.json` 还是我们仍在自由改动的内部结构（P2-7 刚删过 `adminListen` 字段）——把「跨网可达面」绑在它上面等于给自己加兼容性负担，也让前置代理漏掉 `deny /_setline` 时的泄露面从「路由表」放大成「整幅运行画像」。代价是跨机监控 `status.json` 失去数据面通路，必须直连 `adminListen`（显式放开 + 把采集机写进 `peerReaders`，P2-9 起不再有 token）或在代理本机采集；这是有意的收窄，已写进 `docs/configuration.md` 与 `docs/deployment.md`。e2e：数据面 `/_setline/routes` 按来源放行（本机 200、未列入的地址 403），数据面 `status.json` 一律 `404`；单测不涉及（该分派在 TCP 入口） |
+| P2-9 | 用来源地址互信替掉读写两处的 token | 已完成 | 删除 setline 里所有凭据：`adminToken`、`agent.token` 与 `peers[].token`（不是弃用，是删除：整条链路只看来源地址），新增顶层 `peerReaders`（地址字面量数组）作为读接口唯一的跨机准入。规则收敛成两条：**读 = 本机来源 或 来源地址在 `peerReaders` 里**（不看 Host），**写 = 回环对端 且 回环 Host**（不变）。理由：这条链路上唯一的跨机读方是另一台 setline（`setline -f` 按 `agent.peers[].url` 拉路由表），机器对机器、读方固定；给它配一份要在两台机器上同步的秘密，换不来比源地址更实在的东西——token 走明文 HTTP，抓到流量即可复用，源地址无法被嗅探复用（伪造 TCP 源地址需要位置且拿不到回程）。代价是名单本身要维护（换读方要改被读端），且读方经 NAT/L4 代理接入时名单只能写代理地址（等于放行它后面所有人），这一点写进 `docs/configuration.md`。`peerReaders` 只收数值地址：主机名会把安全判定绑在 DNS 上，CIDR 要按位比较（规则就不再是「一行地址」），列出回环地址按空操作报错。启动日志打印生效名单（写错地址的表现是 403，而 403 本身看不出名单是什么）。单测：地址归一化（大小写 / 空白 / `::ffff:` 映射）、字面量校验、名单匹配、配置拒绝主机名与 CIDR 与回环与空数组与 `listen:false` 同用、两个旧 key 的报错；e2e：`peerReaders` 里列出的本机非回环地址读得到、没列的 403、列出的读方也改不了路由，读侧带公开 Host 仍是 200（记录在案的取舍：前置代理的 `deny /_setline` 才是那道门） |
 
 ## 已完成（判据来源）
 
+- setline 现在不持有任何凭据：读接口按来源地址放行（`peerReaders`），写接口按「回环对端 +
+  回环 Host」放行。删掉 `adminToken`、`agent.token`、`peers[].token` 与 `isAuthorized`，
+  读侧的 `X-Setline-Token` 头和 401 分支随之消失，读不再看 `Host`（本机调用方可能按公开
+  主机名访问），取而代之的是 `rejectUnlistedReader` 的 403。地址比较只做归一化文本匹配：
+  去空白、转小写、去掉 `::ffff:` 映射前缀（双栈监听上的 IPv4 对端），因此 `::ffff:10.0.1.7`
+  和配置里的 `10.0.1.7` 是同一个地址；`peerReaders` 只收字面量，主机名（DNS）与 CIDR
+  （按位比较）都在配置解析阶段报错，列回环地址按空操作报错。读方的 `agent.peers[].url`
+  与它之间不再有任何配套字段——两台机器上只有「地址」这一种配置。
 - 管理口与数据面分家：`adminListen` 缺省 `127.0.0.1:10080`，服务写（`PUT`/`DELETE`）、
   状态页与 `status.json`；数据面 `listen` 稳定只绑回环，只承接 peer 协议一个读端点
   （`GET /_setline/routes`），所以外界只认业务端口也能读路由表。放开绑定面不放开写：
   写接口只认本机来源，且缺省绑定就是回环——「只有本机能改路由」不靠 `Host` 判定；代价只在
-  读接口，用防火墙或 `adminToken` 收敛，绑非回环时启动日志会写明。管理口地址只出现在
+  读接口，用防火墙或 `peerReaders` 收敛（当时还是 `adminToken`），绑非回环时启动日志会写明。管理口地址只出现在
   状态页 HTML 和启动日志里：`status.json` 是给机器读的（采集机、面板），不暴露管理入口。
 - `agent.output` 从「文件路径」收敛为「根目录」：目录名（`<output>/haproxy` 或
   `<output>/nginx`）与文件名（`setline.cfg`/`setline.conf`，规则模式再派生 `.map` 或按
@@ -252,18 +262,18 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
   `remote → haproxy(默认转发全部路径) → setline` 时对端就是 `127.0.0.1`。实测经 haproxy
   `PUT /_setline/routes?host=evil.test` 返回 200、新路由被持久化进配置文件，`GET` 也不看
   `adminToken`；对照的非回环直连仍是读 401 / 写 403。结论写进 `docs/configuration.md`
-  （adminToken 一节）、`docs/runtime-routes-api.md`、`docs/deployment.md`、
+  （当时的 adminToken 一节，P2-9 起是 peerReaders 一节）、`docs/runtime-routes-api.md`、`docs/deployment.md`、
   `docs/project-constraints.md`；haproxy/nginx 接线文档补上必须的
   `http-request deny if { path_beg /_setline }` / `location ^~ /_setline { return 404; }`，
   e2e 的前置代理照此接线并新增断言（代理侧 403、本机管理口仍 200）。
 - 收紧管理接口的「本机」判定：从「TCP 对端是回环」改为「回环对端 **且** 请求声明的 Host 是
   回环名（`Host` / `X-Forwarded-Host`，忽略端口）」。这一维借用 micdn `getOrigin` 的口径，
-  专门盯本机代理转发的请求——转发过来的是浏览器看到的公开主机名，于是写接口 403、读接口要
-  `X-Setline-Token`。没有 Host 的请求一律不算本机。代理改写 Host 仍可绕过，所以定位是纵深
+  专门盯本机代理转发的请求——转发过来的是浏览器看到的公开主机名，于是写接口 403（读接口当时要
+  `X-Setline-Token`，P2-9 起读不看 Host）。没有 Host 的请求一律不算本机。代理改写 Host 仍可绕过，所以定位是纵深
   防御，haproxy/nginx 接线文档里的 `deny /_setline` 保留。单测覆盖 Host 解析与四种组合，
   e2e 新增 raw-socket 用例（回环 Host 写入 200 / 公开 Host 403 / 带 `X-Forwarded-Host` 403）。
-- 读接口统一成一种凭据：状态页与 `status.json` 不再用 HTTP Basic，全部改成
-  `X-Setline-Token`（就是 `adminToken`）；`sendBasicChallenge`、`isBasicAuthorized` 与
+- 读接口统一成一种凭据（P2-9 起连这一种也取消，改为按来源地址）：状态页与 `status.json`
+  不再用 HTTP Basic，全部改成 `X-Setline-Token`（就是当时的 `adminToken`）；`sendBasicChallenge`、`isBasicAuthorized` 与
   `std.base64` 依赖随之删除。写接口不变，仍是只认本机。e2e 的 split 实例配上 `adminToken`，
   断言「公开 Host 无 token 401 / 带 token 200 / 回环 Host + `X-Forwarded-Host` 401」。
 - 顺带补上管理接口的 body 上限：`completeHttpRequest` 过去按 `Content-Length` 无限读入内存，

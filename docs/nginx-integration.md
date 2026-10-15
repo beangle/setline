@@ -71,13 +71,13 @@ upstream app_app_example_com_api_edu {
   `status.json` 的唯一入口。basctl 用 `PUT` / `DELETE /_setline/routes*` 登记本机路由；
   它缺省绑回环，所以改路由是纯本机操作。
 
-所以 `listen` 平时绑回环（`"127.0.0.1:8080"`）就够；跨机采集走 `listen` 上的路由表读
-（经 nginx 时给它 `X-Setline-Token`，并在 nginx 上按源地址放行），或者把 `adminListen`
-显式放开让采集机直连。
+所以 `listen` 平时绑回环（`"127.0.0.1:8080"`）就够；跨机采集走 `listen` 上的路由表读，
+要么**在 nginx 上按源地址放行**，要么直接把采集机的地址写进被读端的 `peerReaders`
+（读方不带任何凭据，见 `docs/configuration.md` 的「peerReaders」一节）。
 
 真的要把 setline 当下级代理（客户端 → nginx → setline）时，**server 块必须自己拒掉管理
-路径**：路由表读搭在 `listen` 上，不拒的话任何能过 nginx 的客户端都能读到路由表（除非你
-设了 `adminToken` 并且确信 `Host` 判定没被改写绕过）。写和状态页不用担心：`PUT` 和
+路径**：路由表读搭在 `listen` 上，而读只看来源地址——经 nginx 转发的请求来源是回环，
+不拒的话任何能过 nginx 的客户端都能读到路由表。写和状态页不用担心：`PUT` 和
 `status.json` 只挂在管理口上，转发过来也只有 `404`。接线：
 
 ```nginx
@@ -120,7 +120,6 @@ setline、basctl **同机**时不配 `peers`，setline 边收 basctl 推的路�
   "agent": {
     "type": "nginx",
     "output": "/var/lib/setline",
-    "token": "shared-token",
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" },
       { "name": "app2", "url": "http://10.0.1.11:8080" }
@@ -135,7 +134,6 @@ setline、basctl **同机**时不配 `peers`，setline 边收 basctl 推的路�
 |---|---|---|
 | `type` | `nginx` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
 | `output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `nginx/` 并写固定文件名 `setline.conf`（upstream）与 `setline.<host>.conf` / `setline.default.conf` |
-| `token` | `shared-token` | 所有 peer 共用的 `X-Setline-Token`（peer 级不再有独立 token） |
 | `peers[].url` | `http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
 纯渲染机上 `setline` **跑一轮就退出**：进程里没有调度循环，重渲染由包里的

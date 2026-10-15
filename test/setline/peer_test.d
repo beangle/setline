@@ -100,15 +100,12 @@ PeerConfig peerWithUrl(string url) {
 
   AgentConfig agent;
   agent.type = "haproxy";
-  agent.token = "shared-token";
   agent.peers = [
     PeerConfig("peerA", "http://10.0.1.10:8080"),
     PeerConfig("peerB", "http://10.0.1.11:8080"),
   ];
-  // 本地读取路由表，避免单测依赖网络；顺便确认每个 peer 拿到的都是 agent 级共享 token，
-  // 而不是各自的凭据（peer 级 token 已取消）。
-  auto fetcher = (PeerConfig peer, string token) {
-    assert(token == "shared-token");
+  // 本地读取路由表，避免单测依赖网络。
+  auto fetcher = (PeerConfig peer) {
     return parsePeerRoutes(readText(buildPath(root, peer.name, "_setline", "routes")));
   };
 

@@ -1,7 +1,7 @@
 {
   "listen": "*:8080",
   "adminListen": "127.0.0.1:10080",
-  "adminToken": "change-me",
+  "peerReaders": ["10.0.1.7"],
   "connectTimeoutMillis": 3000,
   "readTimeoutMillis": 15000,
   "reusePort": false,

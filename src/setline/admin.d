@@ -31,26 +31,29 @@ import setline.jsonview;
 import setline.model : HostRoutes, Route;
 import setline.proxy;
 import setline.state;
-import setline.util : adminPrefix, escapeHtml, toLowerAscii;
+import setline.util : adminPrefix, escapeHtml, isListedAddress, isLoopbackAddress, toLowerAscii;
 
 /** 处理 `_setline` 管理接口请求。
 
     管理接口的方向不同，安全边界也不同：
 
-    - **写**（`PUT` / `DELETE` 路由）：只接受**本机**请求，**不需要 token**。改路由等于改流量
-      走向，不对外开放。它只挂在管理监听上（见 `docs/configuration.md`）。
-    - **读**（`GET` 路由表、状态页、`status.json`）：**本机**免凭据，其它来源一律看
-      `X-Setline-Token`（就是 `adminToken`）——读只有这一种凭据，没有 Basic Auth，也没有哪种
-      读接口例外。token 为空时按开发模式放行，把路由表暴露给不可信客户端（例如前置代理
-      不拒 `/_setline`）就必须设置。
+    - **写**（`PUT` / `DELETE` 路由）：只接受**本机**请求。改路由等于改流量走向，不对外开放。
+      它只挂在管理监听上（见 `docs/configuration.md`）。
+    - **读**（`GET` 路由表、状态页、`status.json`）：**本机**来源，或来源地址写在
+      `peerReaders` 里的远端读方。准入只看地址，全程没有凭据：路由表的跨机读方是另一个
+      setline（`agent.peers[].url`），给它配一份要在两台机器上同步的秘密，换不来比源地址
+      更实在的东西，却让「谁能读」变成两处配置。读也不看 Host——本机调用方可能就是按公开
+      主机名访问的；代价是「前置代理没 deny `/_setline`」的泄露路径只对读成立，而那条路径
+      本来就要靠代理侧的 deny 关掉（见 docs/haproxy-integration.md）。
 
     哪些读走哪个监听由 `setline.server` 决定：数据面 `listen` 只把 `GET /_setline/routes`
     （peer 协议，`setline.util.peerRoutesPath`）转发到这里，状态页与 `status.json` 只在管理口
     上——它们没有跨机消费者，含监听地址、超时和计数器，挂在数据面上只会放大暴露面。
 
-    **「本机」= TCP 对端是回环，且请求的 Host 也是回环名**（见 {@link isLocalAdminRequest}）。
+    **写的「本机」= TCP 对端是回环，且请求的 Host 也是回环名**（见 {@link isLocalAdminRequest}）。
     只看对端不够：`远端 → 本机 haproxy/nginx → setline` 时对端就是 `127.0.0.1`，但请求带着浏览器
-    看到的主机名。加上 Host 这一维之后，这类转发请求既进不了写接口，读接口也要凭据。
+    看到的主机名。加上 Host 这一维之后，这类转发请求进不了写接口——改路由等于改流量走向，
+    值得多一道不依赖代理配置的判定。读没有这一维：它只看来源地址。
 
     管理接口是当前少数需要完整读取 request body 的路径：GET 返回内存路由表快照，PUT 用
     JSON body 新增或替换一条路由。普通业务代理请求不会进入这里，因此不会因为管理接口的
@@ -58,10 +61,14 @@ import setline.util : adminPrefix, escapeHtml, toLowerAscii;
 */
 void handleAdmin(TCPConnection client, string method, string target, string request) {
   auto path = requestPath(target);
-  auto fromLocalhost = isLocalAdminRequest(client, request);
+  // 写要求「回环对端 + 回环 Host」（见 isLocalAdminRequest）；读只看来源地址，多一个
+  // peerReaders 名单。
+  auto writableFromLocal = isLocalAdminRequest(client, request);
+  auto readableFromLocal = isLocalhost(client);
+  auto fromPeerReader = isTrustedReader(client);
   if ((path == adminPrefix ~ "/status" || path == adminPrefix ~ "/status.html") && method == "GET") {
-    if (!isReadAllowed(fromLocalhost, request)) {
-      sendResponse(client, 401, "Unauthorized", "missing or invalid token");
+    if (!isReadAllowed(readableFromLocal, fromPeerReader)) {
+      rejectUnlistedReader(client);
       return;
     }
     sendRaw(client, "200 OK", "text/html; charset=utf-8", statusHtml());
@@ -69,8 +76,8 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/status.json" && method == "GET") {
-    if (!isReadAllowed(fromLocalhost, request)) {
-      sendResponse(client, 401, "Unauthorized", "missing or invalid token");
+    if (!isReadAllowed(readableFromLocal, fromPeerReader)) {
+      rejectUnlistedReader(client);
       return;
     }
     sendJson(client, statusJson());
@@ -78,8 +85,8 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "GET") {
-    if (!isReadAllowed(fromLocalhost, request)) {
-      sendResponse(client, 401, "Unauthorized", "missing or invalid token");
+    if (!isReadAllowed(readableFromLocal, fromPeerReader)) {
+      rejectUnlistedReader(client);
       return;
     }
     sendJson(client, hostRoutesJson(routesSnapshot()));
@@ -87,7 +94,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "PUT") {
-    if (!isLocalRouteUpdateAllowed(fromLocalhost)) {
+    if (!isLocalRouteUpdateAllowed(writableFromLocal)) {
       rejectRemoteRouteUpdate(client);
       return;
     }
@@ -104,7 +111,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "DELETE") {
-    if (!isLocalRouteUpdateAllowed(fromLocalhost)) {
+    if (!isLocalRouteUpdateAllowed(writableFromLocal)) {
       rejectRemoteRouteUpdate(client);
       return;
     }
@@ -126,7 +133,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes/all" && method == "PUT") {
-    if (!isLocalRouteUpdateAllowed(fromLocalhost)) {
+    if (!isLocalRouteUpdateAllowed(writableFromLocal)) {
       rejectRemoteRouteUpdate(client);
       return;
     }
@@ -160,7 +167,7 @@ void rejectRemoteRouteUpdate(TCPConnection client) {
 
     第二维借用 micdn `getOrigin` 的口径：先看代理声明的 `X-Forwarded-Host`，再看 `Host`。
     经本机代理转发的远端请求，这两个里至少有一个是浏览器看到的公开主机名，于是不再算本机
-    ——写接口拒绝，读接口要 `X-Setline-Token`。
+    ——写接口拒绝，也不被当成读方。
 
     代理可以改写 Host / 删掉转发头来伪装，所以这是**纵深防御**，不是安全边界；真正的边界是
     不让代理指向管理口（见 docs/configuration.md、docs/haproxy-integration.md）。
@@ -209,41 +216,35 @@ string routeHostFromTarget(string target) {
 }
 
 /**
- * 读接口（`GET` 路由表、状态页、`status.json`）的准入：**本机免凭据**，其它来源看
- * `X-Setline-Token`。所有读接口共用这一条规则，没有例外、也没有第二种凭据。
+ * 读接口（`GET` 路由表、状态页、`status.json`）的准入：**本机来源，或地址在 `peerReaders`
+ * 里的读方**。所有读接口共用这一条规则，没有例外、也没有第二种凭据。
  *
- * 第一个参数是 {@link isLocalAdminRequest} 的结果——做成纯函数是为了能在单测里覆盖"本机 /
- * 非本机 × 有 token / 无 token"四种组合：TCP 对端地址在单测里伪造不了。本机免凭据的理由与
- * 写接口同源：拨得动 localhost、且说的是回环主机名的请求本来就在这台机器上（basctl 因此
- * 不需要存任何凭据）。
+ * 两个参数分别是 {@link isLocalhost} 与 {@link isTrustedReader} 的结果——做成纯函数是为了
+ * 能在单测里覆盖四种组合：TCP 对端地址在单测里伪造不了。两端都不需要凭据：拨得动
+ * localhost 的本来就在这台机器上（basctl 因此不需要存任何东西），远端读方按地址放行。
  */
-bool isReadAllowed(bool fromLocalhost, string request) {
-  return fromLocalhost || isAuthorized(request);
+bool isReadAllowed(bool fromLocalhost, bool fromPeerReader) {
+  return fromLocalhost || fromPeerReader;
 }
 
-/** 校验管理接口 token。
+/** 回写一条 403，说明读接口只接受本机来源或 `peerReaders` 里的地址。
 
-    只保护**读**接口的**非本机**来源（`GET` 路由表、状态页、`status.json` 都用它）：本机来源由
-    {@link isReadAllowed} 直接放行，连 token 都不看；同网段的服务进程（例如同步 haproxy /
-    nginx 的 agent）读路由表，token 就是那条路径的凭据。未配置 token 时一律放行，方便开发
-    场景；生产上 `listen` 绑 `*` 时必须设置，否则路由表对外可读。写接口不走这里，它只认本机。
+    这里不用 404 装作端点不存在：peer 协议写在文档里，读方是需要可诊断答案的机器，而
+    「路径存在但来源不在名单里」并不比「路径不存在」多泄露什么。
 */
-bool isAuthorized(string request) {
-  auto token = adminToken();
-  if (token.length == 0) {
-    return true;
-  }
-  return headerValue(request, "X-Setline-Token") == token;
+void rejectUnlistedReader(TCPConnection client) {
+  sendResponse(client, 403, "Forbidden",
+    "route reads are only allowed from localhost or a peerReaders address");
 }
 
 /** 判断连接对端是否为 localhost。 */
 bool isLocalhost(TCPConnection client) {
-  return isLocalhostAddress(client.remoteAddress.toAddressString());
+  return isLoopbackAddress(client.remoteAddress.toAddressString());
 }
 
-/** 判断地址字符串是否表示本机回环地址。 */
-bool isLocalhostAddress(string address) {
-  return address == "127.0.0.1" || address == "::1" || address == "::ffff:127.0.0.1";
+/** 判断连接对端是否为 `peerReaders` 里列出的读方。 */
+bool isTrustedReader(TCPConnection client) {
+  return isListedAddress(client.remoteAddress.toAddressString(), peerReaders());
 }
 
 /** 从 request target 的 query string 中读取指定参数。

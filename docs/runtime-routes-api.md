@@ -17,15 +17,20 @@ All write APIs require:
 - caller TCP peer must be localhost: `127.0.0.1`, `::1`, or
   `::ffff:127.0.0.1`
 
-Write APIs do not require `X-Setline-Token` because they are accepted only from
-localhost — a route change redirects traffic, so this side is never exposed.
+Write APIs require a local caller, always: the TCP peer must be loopback
+(`127.0.0.1`, `::1`, `::ffff:127.0.0.1`) **and** the declared request host must be
+a loopback name (`Host` or `X-Forwarded-Host`, port ignored; no `Host` never
+counts). A route change redirects traffic, so this side is never exposed beyond
+the machine, and it needs no credential.
 
-Read APIs follow the same door: a **localhost caller needs no credential**, so a
-co-located tool (basctl) can inspect the route table without storing anything.
-For callers from other hosts the read stays open by design — the route table is
-meant to be read from other machines on the same network (for example an agent
-that renders it into a haproxy or nginx config) — and that path is guarded by
-`adminToken`.
+Read APIs are gated by **source address only**: a localhost caller is always
+allowed, a co-located tool (basctl) therefore stores nothing, and a caller from
+another host is allowed when its address is listed in `peerReaders`. There are no
+credentials anywhere in setline: no token header, no Basic Auth. The peer
+protocol is machine-to-machine with a single, fixed reader - another setline
+rendering a fragment from `agent.peers[].url` - so the reader is identified by
+where it connects from rather than by a secret that would have to be synced to
+both machines and travels in cleartext.
 
 Do not use `Forwarded` or `X-Forwarded-For` to satisfy the localhost
 requirement. The server checks the TCP peer address.
@@ -35,34 +40,29 @@ requirement. The server checks the TCP peer address.
 | Operation | Listener | Allowed source | Credential |
 |---|---|---|---|
 | `GET /_setline/routes` | `listen`, `adminListen` | local | none |
-| `GET /_setline/routes` | `listen`, `adminListen` | everything else | `X-Setline-Token` (empty token = open) |
-| status page / `status.json` | `adminListen` only | local | none |
-| status page / `status.json` | `adminListen` only | everything else | `X-Setline-Token` (empty token = open) |
-| `PUT` / `DELETE` routes | `adminListen` only | local only | none |
+| `GET /_setline/routes` | `listen`, `adminListen` | address in `peerReaders` | none |
+| status page / `status.json` | `adminListen` only | local, or `peerReaders` | none |
+| `PUT` / `DELETE` routes | `adminListen` only | local (loopback peer + loopback host) | none |
 
-Reads have exactly one credential: the `X-Setline-Token` header. There is no
-Basic Auth path, and no read endpoint is exempt from the rule.
+Reads are not gated by the request host: a local caller may well address setline
+by its public name, so `Host` is only part of the write gate.
 
-"Local" requires both a loopback TCP peer (`127.0.0.1` / `::1` / `::ffff:127.0.0.1`)
-and a loopback request host (`Host` or `X-Forwarded-Host` naming `127.0.0.1`,
-`::1`, or `localhost`, port ignored). Requests without a `Host` are never local.
-The host dimension targets local proxies: in `remote client -> local
-haproxy/nginx -> setline` the forwarded request carries the public host name, so
-it is treated as remote - the write gate answers `403` and reads need the token.
-A proxy can rewrite `Host` to evade that, so treat this as defense in depth and
-keep rejecting the admin path at the proxy (`http-request deny if { path_beg
+`peerReaders` takes address literals (`10.0.1.7`, `fe80::1`) and nothing else:
+no host names (resolving them at config parse time would tie a security decision
+to DNS, and a name rarely maps back to the TCP peer address) and no CIDR (that
+turns a one-line address into a rule that needs explaining). Loopback is always
+allowed, so listing it is rejected as a no-op. Because the check is on the
+connection's peer address, a reader that reaches setline through NAT or a layer-4
+proxy must list the proxy's address, which admits everything behind it - use
+direct addressing for that hop.
+
+Keep rejecting the admin path at the proxy (`http-request deny if { path_beg
 /_setline }`, `location ^~ /_setline { return 404; }`, or a rule matching just
-`/_setline/routes`): that route-table read is served by `listen`, so a proxy that
-forwards `/_setline` turns it into a public read unless `adminToken` is set. The
-gate also does not distinguish local users or processes, so do not share a host
-or network namespace with untrusted ones.
-
-An empty `adminToken` leaves reads open: the route table read rides `listen`, so
-anything that can reach the data plane (directly, or through a proxy that does
-not reject the path) can read it. Set `adminToken` for one shared credential,
-reject `/_setline` at the proxy, or keep `listen` on loopback. The status views
-are unaffected - they are served by `adminListen` alone, which defaults to
-`127.0.0.1:10080` - and so are writes, which always require a local caller.
+`/_setline/routes`). The route-table read is served by `listen`, and requests
+forwarded by a local proxy arrive from loopback, so a proxy that forwards
+`/_setline` hands the route table to its clients. The gate also does not
+distinguish local users or processes, so do not share a host or network
+namespace with untrusted ones.
 
 Admin request bodies are capped at a 4 MiB defensive limit and oversized ones get
 `413`.
@@ -79,11 +79,11 @@ Example (from localhost no credential is needed):
 curl http://127.0.0.1:10080/_setline/routes
 ```
 
-From another host, present the token:
+From another host, list the caller in `peerReaders` on the setline being read;
+the caller sends no credential:
 
 ```bash
-curl -H 'X-Setline-Token: change-me' \
-  http://setline.internal:10080/_setline/routes
+curl http://setline.internal:8080/_setline/routes
 ```
 
 Response:
@@ -230,10 +230,9 @@ Response is the new route list:
 - `200 OK`: request accepted.
 - `400 Bad Request`: invalid JSON, invalid host, invalid route, missing route,
   or unsupported field.
-- `401 Unauthorized`: missing or invalid `X-Setline-Token` on any read API
-  (routes and status alike).
+- `403 Forbidden`: read from an address that is neither loopback nor listed in
+  `peerReaders`.
 - `403 Forbidden`: a route change whose peer or `Host` is not loopback.
-- `403 Forbidden`: write request did not come from localhost.
 - `404 Not Found`: unknown admin endpoint.
 
 ## Status View
@@ -247,8 +246,8 @@ default) only. They carry listener addresses, timeouts, `maxConnections`,
 health-check tuning, counters and the whole route table, and no other machine
 needs them, so the data plane does not serve them: a `GET /_setline/status.json`
 sent to `listen` gets `404`, as does anything else under `/_setline` except the
-peer-protocol `GET /_setline/routes`. Same credential on both doors
-(`X-Setline-Token` for non-local callers), but not the same reach.
+peer-protocol `GET /_setline/routes`. Same read gate on both doors (localhost or
+a `peerReaders` address), but not the same reach.
 
 Returns listener info, active/max connections, timeouts, health-check tuning, the
 route table with per-port health, and cumulative counters. The admin listen
@@ -304,8 +303,7 @@ After a route update, port health state is refreshed:
 
 Runtime route updates are persisted by default. `setline` rewrites only the
 top-level `routes` field in the config file that was used at startup. Listener,
-The admin request body is capped at 4 MiB (`413` beyond that). token, timeout,
-health-check, and connection-limit settings are preserved.
+peer-reader, timeout, health-check, and connection-limit settings are preserved.
 
 The write happens before the in-memory route table is swapped. If the config
 file cannot be written, the API returns an error and the current in-memory

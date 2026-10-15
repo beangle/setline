@@ -137,19 +137,18 @@ The admin API can update the runtime route table:
 - replace routes for a single host
 
 Runtime route changes write the top-level `routes` field back to the startup
-config file by default. They never change listener, token, timeout,
+config file by default. They never change listener, peer-reader, timeout,
 health-check, or connection-limit settings.
 
 All route-changing requests must come from the local machine and must specify
-the target host. They do not require the admin token: writes are gated by the
-local check, not by a credential, because a route change redirects traffic. They
-are also served by `adminListen` only, which defaults to loopback - so the
-strongest guarantee is the bind, not the check. The admin token stays on the
-read side, and the reads are split across the two listeners: `GET
+the target host. There is no credential anywhere in setline: writes are gated by
+the local check, because a route change redirects traffic, and they are served by
+`adminListen` only, which defaults to loopback - so the strongest guarantee is
+the bind, not the check. Reads are gated by source address (localhost, or an
+address listed in `peerReaders`) and are split across the two listeners: `GET
 /_setline/routes` rides both `listen` and `adminListen`, because it is the
-endpoint meant to be consumed from other hosts on the same network later, for
-example by a proxy-config synchronization agent; the status page and
-`status.json` stay on `adminListen` alone.
+endpoint consumed from other hosts, by the agent that renders `agent.peers` into
+a proxy config; the status page and `status.json` stay on `adminListen` alone.
 
 "Local" requires two things: a loopback TCP peer address (`127.0.0.1` / `::1` /
 `::ffff:127.0.0.1`) and a loopback request host (`Host` or `X-Forwarded-Host`
@@ -157,22 +156,26 @@ naming `127.0.0.1`, `::1`, or `localhost`, port ignored). Requests without a
 `Host` are never local. Consequences that are part of the contract and must stay
 documented:
 
-- The host dimension exists because of local proxies: in `remote client -> local
-  haproxy/nginx -> setline` the forwarded request carries the browser's public
-  host name, so the route table can no longer be rewritten without a credential
-  or read without `adminToken` (it was, before this was added: relaying `PUT
-  /_setline/routes` through haproxy returned `200` and persisted the route,
-  which is covered by an e2e case now).
+- The host dimension covers writes only, and it exists because of local proxies:
+  in `remote client -> local haproxy/nginx -> setline` the forwarded request
+  carries the browser's public host name, so the route table can no longer be
+  rewritten (it was, before this was added: relaying `PUT /_setline/routes`
+  through haproxy returned `200` and persisted the route, which is covered by an
+  e2e case now). Reads do not use it: a local caller may legitimately address
+  setline by its public name, and the read path carries the route table rather
+  than the ability to change it.
 - A proxy that rewrites `Host` can still look local, so this is defense in
-  depth, not a boundary. Front proxies should reject `/_setline` themselves
+  depth, not a boundary. Front proxies must reject `/_setline` themselves
   (`http-request deny if { path_beg /_setline }`, `location ^~ /_setline {
   return 404; }`, or a rule matching just `/_setline/routes`): **the route table
-  read is served by `listen`**, so a proxy that forwards the path turns it into
-  a public read while `adminToken` is empty.
+  read is served by `listen`** and reads trust the connection's source address,
+  so a request forwarded by a local proxy arrives from loopback and is allowed -
+  the proxy's own deny is the only thing standing between its clients and the
+  route table.
 - The upshot of the split: the peer-protocol read (`GET /_setline/routes`) rides
-  the data plane, so its reachability is the proxy's reachability plus
-  `adminToken`; everything else - status, `status.json`, writes - lives only on
-  `adminListen`, which defaults to `127.0.0.1:10080`. Route changes are
+  the data plane, so its reachability is the proxy's reachability plus the
+  `peerReaders` list; everything else - status, `status.json`, writes - lives
+  only on `adminListen`, which defaults to `127.0.0.1:10080`. Route changes are
   therefore a local-only operation by default, and the loopback bind - not the
   `Host` heuristic - is what actually enforces it. Keeping the data-plane
   surface to the one endpoint the peer protocol needs is deliberate: the status
@@ -184,10 +187,12 @@ documented:
   changes redirect traffic, which in agent mode also means arbitrary
   `host:port` targets in the rendered proxy fragments.
 
-Reads have exactly one credential, `X-Setline-Token`; the status page uses the
-same header as the routes API. Admin request bodies are capped by a 4 MiB
-defensive limit (`413` beyond that); the data plane never buffers a body, only
-this control-plane path does.
+Reads have no credential: localhost, or an address listed in `peerReaders`. That
+list takes address literals only - host names would tie a security decision to
+DNS, CIDR would need bitwise matching - and a reader behind NAT or a layer-4
+proxy has to list that proxy, which admits everyone behind it. Admin request
+bodies are capped by a 4 MiB defensive limit (`413` beyond that); the data plane
+never buffers a body, only this control-plane path does.
 
 The new routes are written to disk before the in-memory route table is swapped.
 If persistence fails, the existing runtime routes remain active.

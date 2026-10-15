@@ -60,11 +60,9 @@ string peerAddress(PeerConfig peer) {
   return colon < 0 ? rest : rest[0 .. colon];
 }
 
-/** 读取单个 peer 的路由表，必要时带上 agent 级共享的 `X-Setline-Token`。 */
-HostRoutes[] fetchPeerRoutes(PeerConfig peer, string token = "") {
-  string[] headers;
-  if (token.length > 0) headers ~= "X-Setline-Token: " ~ token;
-  return parsePeerRoutes(fetchText(peerRoutesUrl(peer), headers));
+/** 读取单个 peer 的路由表；peer 协议不带凭据，对端按源地址放行（见 `Config.peerReaders`）。 */
+HostRoutes[] fetchPeerRoutes(PeerConfig peer) {
+  return parsePeerRoutes(fetchText(peerRoutesUrl(peer)));
 }
 
 /** 解析 `GET /_setline/routes` 的响应，形状为 `host -> [{prefix, port|ports}]`。 */
@@ -118,16 +116,16 @@ string requiredPeerString(JSONValue value, string key) {
 /** 读取所有 peer 的路由表并合并成边缘代理服务列表。
 
     `fetcher` 用来读取单个 peer 的路由表，默认走 HTTP；测试可以注入本地实现，避免依赖网络。
-    第二个参数是凭据：所有 peer 共用 `agent.token` 这一个共享 token，没有 peer 级覆盖。
+    读取不带凭据：对端按源地址决定是否放行，读方只需知道 URL。
 */
 BackendService[] collectPeerServices(AgentConfig agent,
-    HostRoutes[] delegate(PeerConfig, string) fetcher = toDelegate(&fetchPeerRoutes)) {
+    HostRoutes[] delegate(PeerConfig) fetcher = toDelegate(&fetchPeerRoutes)) {
   enforce(agent.peers.length > 0, "agent.peers must not be empty");
   BackendService[] services;
   foreach (peer; agent.peers) {
     auto host = peerAddress(peer);
     auto name = peer.name.length > 0 ? peer.name : host;
-    services = mergePeerTable(services, fetcher(peer, agent.token), host, name);
+    services = mergePeerTable(services, fetcher(peer), host, name);
   }
   return sortServices(services);
 }
