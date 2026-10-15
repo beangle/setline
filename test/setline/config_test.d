@@ -192,29 +192,6 @@ import setline.model;
   assert(config.agent.peers[1].url == "http://10.0.1.11:8080");
 }
 
-@("config rejects the removed per-peer token field") unittest {
-  auto path = "/tmp/setline-config-agent-peertoken-test.json";
-  scope (exit) remove(path);
-  // peer 级 token 已取消：读的准入改成来源地址，peer 只认 url/name，写了必须报错而不是被忽略。
-  write(path, `{"agent":{"type":"haproxy","token":"shared",` ~
-    `"peers":[{"url":"http://10.0.1.10:8080","token":"peer2"}]},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-}
-
-@("config rejects the removed agent.sync field") unittest {
-  auto path = "/tmp/setline-config-agent-badsync-test.json";
-  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080"}],` ~
-    `"sync":{"mode":"sometimes"}},"routes":{}}`);
-  scope (exit) remove(path);
-  // sync 已取消（渲染节奏交给 systemd timer），写了必须报错而不是被忽略。
-  assertThrown!Exception(loadConfig(path));
-
-  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080"}],` ~
-    `"sync":{"mode":"interval","intervalMillis":15000}},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-}
-
-
 @("config parses the peer readers allowed to read the route table") unittest {
   auto path = "/tmp/setline-config-peerreaders-test.json";
   scope (exit) remove(path);
@@ -259,7 +236,6 @@ import setline.model;
     `"agent":{"type":"haproxy","output":"/tmp/setline"},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
-
 
 @("config rejects peer url without derivable address") unittest {
   auto path = "/tmp/setline-config-agent-noaddress-test.json";
@@ -328,34 +304,6 @@ import setline.model;
   scope (exit) remove(path);
   assertThrown!Exception(loadConfig(path));
 }
-
-@("config rejects the removed agent.bind field") unittest {
-  auto path = "/tmp/setline-config-agent-nobind-test.json";
-  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline",` ~
-    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
-  scope (exit) remove(path);
-  assert(loadConfig(path).agent.type == "nginx");
-
-  // bind 已取消：片段固定只出规则和后端，写了必须报错而不是被忽略。
-  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline","bind":"*:8080",` ~
-    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-}
-
-@("config rejects the removed agent.remote and agent.workDir fields") unittest {
-  auto path = "/tmp/setline-config-agent-noremote-test.json";
-  scope (exit) remove(path);
-  // remote/workDir 已取消：数据来源只剩 peers 与「渲染本机路由表」。旧配置写了必须报错，
-  // 而不是被忽略——否则运维以为还在从 registry bundle 取后端。
-  write(path, `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json"},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-
-  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline","workDir":"/var/lib/setline-agent",` ~
-    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-}
-
-
 
 @("config accepts listen false for a render-only deployment") unittest {
   auto path = "/tmp/setline-config-listen-false-test.json";
@@ -458,4 +406,19 @@ import setline.model;
   assert(loadConfig(path).webSocketIdleTimeoutMillis == 0);
   write(path, `{"listen":"127.0.0.1:8080","webSocketIdleTimeoutMillis":-1,"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
+}
+
+@("config ignores keys it does not define") unittest {
+  auto path = "/tmp/setline-config-unknown-keys-test.json";
+  scope (exit) remove(path);
+
+  // 没有发布过，所以不为「曾经打算加」的键留兼容分支：配置里多出来的键既不报错也不生效，
+  // 与其它未知键一个待遇（这条钉住的是行为，不是某个具体键）。
+  write(path, `{"listen":"127.0.0.1:8080","adminToken":"secret","peerReaders":["10.0.1.7"],` ~
+    `"agent":{"type":"nginx","output":"/var/lib/setline","bind":"*:8080",` ~
+    `"sync":{"mode":"interval"},"token":"shared"},` ~
+    `"peers":[{"url":"http://10.0.1.10:8080"}],"routes":{}}`);
+  auto config = loadConfig(path);
+  assert(config.agent.type == "nginx");
+  assert(config.peerReaders == ["10.0.1.7"]);
 }

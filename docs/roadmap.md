@@ -217,7 +217,7 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 | P2-6 | 管理口强制独立（缺省端口见 P2-7） | 已完成 | `adminListen` 从可选开关变成固定形态：管理接口永远有自己的监听。`"adminListen": false` 报错（不再表示共用 `listen`）；`listen: false` 时不允许写 `adminListen`；`listen` 落在缺省管理端口上、又没显式写 `adminListen` 时单独报错。缺省端口选型：18080 被 podman/pasta 的随机端口转发撞上，9080 是 WebSphere 默认、8088 是 Hadoop YARN 默认，最后取本机空闲且无主流软件默认的 10080（当时绑 `*`，P2-7 起改为回环）。`serve()` 里改成两个监听都绑成功才打印地址，管理口绑不上时给出指名 `adminListen` 的报错。删掉 `Config.adminListenEnabled` / `adminListenSeparated()`。单测覆盖缺省值、`false`、重合、缺省端口冲突；e2e 补「管理口 status.json 不含 adminListen」并把主实例管理口固定到独立端口 |
 | P2-7 | peer 读挂数据面、写留管理口，管理口缺省回环 | 已完成 | 管理接口按方法分挂两个监听：**读**（`GET`）同时挂在数据面 `listen` 和管理口上（P2-8 收窄为只有 `/_setline/routes`），**写**（`PUT`/`DELETE /_setline/routes*`）只在管理口；数据面收到非 `GET` 的 `/_setline/*` 一律 `404`、连路由表都不查。外界于是只需知道业务端口就能读，管理口不必暴露，`adminListen` 缺省从 `*:10080` 改为 `127.0.0.1:10080`——读既然能从 `listen` 走，管理口只留写，而写绑回环让「只有本机能改路由」成为 TCP 层事实，不再依赖可被代理改写的 `Host` 判定（那条判定作为纵深防御保留）。`status.json` 不再输出 `adminListen`（面向机器读取），地址只出现在状态页 HTML 与启动日志；绑非回环时启动日志写明读接口的可达范围。单测覆盖缺省回环、`listen` 落在缺省管理端口上的冲突、`status.json` 无 `adminListen`；e2e 与 haproxy 用例改为「数据面读 200 / 数据面写 404 / 管理口读 200」 |
 | P2-8 | 数据面只承接 peer 协议一个端点 | 已完成 | 数据面 `listen` 上的 `/_setline` 从「所有读」收窄为**只有 `GET /_setline/routes`**（`setline.util.peerRoutesPath`），其余（`status`、`status.html`、`status.json`，以及任何非 GET）一律 `404`、不查路由表。理由：路由表接口是 peer 协议（`agent.peers` 采集）唯一需要的跨机读，有明确的形状和解析器；状态页与 `status.json` 没有跨机消费者，却含监听地址、超时、`maxConnections`、健康检查调参、计数器和整张路由表，而 `status.json` 还是我们仍在自由改动的内部结构（P2-7 刚删过 `adminListen` 字段）——把「跨网可达面」绑在它上面等于给自己加兼容性负担，也让前置代理漏掉 `deny /_setline` 时的泄露面从「路由表」放大成「整幅运行画像」。代价是跨机监控 `status.json` 失去数据面通路，必须直连 `adminListen`（显式放开 + 把采集机写进 `peerReaders`，P2-9 起不再有 token）或在代理本机采集；这是有意的收窄，已写进 `docs/configuration.md` 与 `docs/deployment.md`。e2e：数据面 `/_setline/routes` 按来源放行（本机 200、未列入的地址 403），数据面 `status.json` 一律 `404`；单测不涉及（该分派在 TCP 入口） |
-| P2-9 | 用来源地址互信替掉读写两处的 token | 已完成 | 删除 setline 里所有凭据：`adminToken`、`agent.token` 与 `peers[].token`（不是弃用，是删除：整条链路只看来源地址），新增顶层 `peerReaders`（地址字面量数组）作为读接口唯一的跨机准入。规则收敛成两条：**读 = 本机来源 或 来源地址在 `peerReaders` 里**（不看 Host），**写 = 回环对端 且 回环 Host**（不变）。理由：这条链路上唯一的跨机读方是另一台 setline（`setline -f` 按 `agent.peers[].url` 拉路由表），机器对机器、读方固定；给它配一份要在两台机器上同步的秘密，换不来比源地址更实在的东西——token 走明文 HTTP，抓到流量即可复用，源地址无法被嗅探复用（伪造 TCP 源地址需要位置且拿不到回程）。代价是名单本身要维护（换读方要改被读端），且读方经 NAT/L4 代理接入时名单只能写代理地址（等于放行它后面所有人），这一点写进 `docs/configuration.md`。`peerReaders` 只收数值地址：主机名会把安全判定绑在 DNS 上，CIDR 要按位比较（规则就不再是「一行地址」），列出回环地址按空操作报错。启动日志打印生效名单（写错地址的表现是 403，而 403 本身看不出名单是什么）。单测：地址归一化（大小写 / 空白 / `::ffff:` 映射）、字面量校验、名单匹配、配置拒绝主机名与 CIDR 与回环与空数组与 `listen:false` 同用、两个旧 key 的报错；e2e：`peerReaders` 里列出的本机非回环地址读得到、没列的 403、列出的读方也改不了路由，读侧带公开 Host 仍是 200（记录在案的取舍：前置代理的 `deny /_setline` 才是那道门） |
+| P2-9 | 用来源地址互信替掉读写两处的 token | 已完成 | 删除 setline 里所有凭据：`adminToken`、`agent.token` 与 `peers[].token`（不是弃用，是删除：整条链路只看来源地址），新增顶层 `peerReaders`（地址字面量数组）作为读接口唯一的跨机准入。规则收敛成两条：**读 = 本机来源 或 来源地址在 `peerReaders` 里**（不看 Host），**写 = 回环对端 且 回环 Host**（不变）。理由：这条链路上唯一的跨机读方是另一台 setline（`setline -f` 按 `agent.peers[].url` 拉路由表），机器对机器、读方固定；给它配一份要在两台机器上同步的秘密，换不来比源地址更实在的东西——token 走明文 HTTP，抓到流量即可复用，源地址无法被嗅探复用（伪造 TCP 源地址需要位置且拿不到回程）。代价是名单本身要维护（换读方要改被读端），且读方经 NAT/L4 代理接入时名单只能写代理地址（等于放行它后面所有人），这一点写进 `docs/configuration.md`。`peerReaders` 只收数值地址：主机名会把安全判定绑在 DNS 上，CIDR 要按位比较（规则就不再是「一行地址」），列出回环地址按空操作报错。启动日志打印生效名单（写错地址的表现是 403，而 403 本身看不出名单是什么）。单测：地址归一化（大小写 / 空白 / `::ffff:` 映射）、字面量校验、名单匹配、配置拒绝主机名与 CIDR 与回环与空数组与 `listen:false` 同用，以及「未定义的键既不报错也不生效」；e2e：`peerReaders` 里列出的本机非回环地址读得到、没列的 403、列出的读方也改不了路由，读侧带公开 Host 仍是 200（记录在案的取舍：前置代理的 `deny /_setline` 才是那道门） |
 
 ## 已完成（判据来源）
 
@@ -244,20 +244,19 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 - 去掉 `agent.bind`：片段固定只出规则和后端定义，监听段永远归代理主配置。它跟上一
   条正好相反——布局已经由程序固定，再留一个会改变「同一路径下内容契约」的开关，只会
   让 `-f <dir>` / `include` 的接线在两种语义之间摇摆。渲染器里的自包含分支
-  （`renderProxyConfig`/`renderHaproxy`/`renderNginx` 与 `nginxListenPort`）一并删除；
-  旧配置写了 `agent.bind` 报 `agent.bind has been removed`，不静默忽略。
+  （`renderProxyConfig`/`renderHaproxy`/`renderNginx` 与 `nginxListenPort`）一并删除。
+  这个键从来没有发布过，所以也不为它留「写了就报错」的兼容分支：`agent` 下多写的键与
+  其它未定义字段一个待遇，既不报错也不生效。
 - 去掉 `agent.sync`：进程每次只渲染一轮就退出，周期刷新交给 systemd timer（包内的
   `setline-render.timer`，每 30s 拉起 `setline-render.service`）。节奏统一由 systemd 管（
   `systemctl list-timers`/`journalctl` 可见），不再需要 `mode`/`intervalMillis` 两个
-  配置项与进程内调度循环；旧配置写了 `agent.sync` 报 `agent.sync has been removed`。
+  配置项与进程内调度循环。
 - 去掉 `agent.remote` 与配套的 `agent.workDir`：数据来源收敛为两种——`peers` 合并对端
   路由表，或不配 `peers` 直接渲染本机路由表。registry manifest + 版本化 bundle
   （`backends.json`、sha256 校验、`workDir/releases/<version>` 解包）是一套与 `peers`
   平行、更重的集中发布链路，最终产出的片段却和 `peers` 完全一样，等于为同一个渲染器
   维护两种输入。解析与安装代码（`AgentManifest`/`loadBackendsJson`/`parseAgentManifest`/
-  `installBundle`/`downloadFile`/`resolveUrl`/`parseBackends` 等）随之删除；旧配置写了
-  `agent.remote` 报 `agent.remote has been removed`，写了 `agent.workDir` 报
-  `agent.workDir has been removed`，不静默忽略。
+  `installBundle`/`downloadFile`/`resolveUrl`/`parseBackends` 等）随之删除。
 - 复核「本机才能写路由」这条边界，确认它挡不住本机代理：写接口的判断依据是 TCP 对端地址，
   `remote → haproxy(默认转发全部路径) → setline` 时对端就是 `127.0.0.1`。实测经 haproxy
   `PUT /_setline/routes?host=evil.test` 返回 200、新路由被持久化进配置文件，`GET` 也不看

@@ -627,18 +627,14 @@ frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可�
 | `route value must be port or ports` | 路由值不是整数也不是数组 |
 | `route port must be 1..65535` | 端口越界 |
 | `route host must not include port` | host 里写了端口 |
-| `adminToken has been removed: reads are admitted by source address (peerReaders)` | 写了已取消的 `adminToken`（读的准入改成来源地址，链路上不再有凭据） |
-| `agent.remote has been removed: use agent.peers or local routes` | 写了已取消的 `agent.remote`（数据来源只剩 `peers` 与本机路由表） |
-| `agent.workDir has been removed: agent.remote is gone` | 写了已取消的 `agent.workDir` |
 | `agent.type is required: haproxy or nginx` | 配了 `agent` 但没写 `type`（或写错） |
-| `agent.bind has been removed: the fragment never owns the listener` | 写了已取消的 `agent.bind`（监听段只归代理主配置） |
-| `agent.token has been removed: peers are admitted by source address, not by a shared token` | 写了已取消的 `agent.token`（读的准入改成来源地址） |
 | `agent.output is required when agent.peers is not set` | 单机模式没写 `output` |
 | `agent.output must be an absolute directory path` | `output` 写成相对路径（会随 CWD 漂移，破坏固定布局） |
 | `agent.output must not be empty` | `output` 写成空字符串（等同于没配） |
 | `agent.peers must not be empty` | 写了 `"peers": []` |
-| `agent.sync has been removed: drive setline from a systemd timer` | 写了已取消的 `agent.sync`（渲染节奏由 `setline-render.timer` 驱动） |
 | `request body exceeds <n> bytes`（HTTP `413`） | 管理接口 PUT 的 body 超过 4 MiB 防御性上限 |
 | `agent.peers[] has unknown field: <key>` | peer 里写了不存在的字段（peer 只认 `url` 与 `name`） |
-| `agent.peers[].token has been removed: reads are admitted by source address` | 写了已取消的 `agent.peers[].token`（读的准入改成来源地址） |
 | `cannot derive backend host from agent.peers[].url` | peer 的 `url` 没有主机（`file://`、本地路径） |
+
+多写的键**既不报错也不生效**：校验只对着本文列出的字段跑，`agent` 下写一个不存在的开关
+不会拦住启动（`agent.peers[]` 是例外：peer 只认 `url` 与 `name`，写别的会报错）。
