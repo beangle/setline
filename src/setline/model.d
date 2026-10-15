@@ -61,53 +61,54 @@ struct HealthConfig {
 
 /** 一台被聚合的远端 setline 实例。
 
-    agent 读取它的 `GET /__setline/routes` 路由表，把 `url` 里的主机和每条路由自带的
+    agent 读取它的 `GET /_setline/routes` 路由表，把 `url` 里的主机和每条路由自带的
     本机端口拼成 `<主机>:<port>`，再和其他实例的同前缀路由合并成一份边缘代理配置。
 
     - `url` 同时决定读端和数据面：`http://10.0.1.10:8080` 表示去 `10.0.1.10:8080` 读
       路由表，边缘代理回源的目标主机也是 `10.0.1.10`（URL 端口只是管理入口，业务端口
       由每条路由自带）。因此 `url` 必须带主机，`file://` 这类没有主机的来源不能当 peer。
     - `name` 只用于生成可读的服务名；留空时从 `url` 的主机推导。
-    - `token` 是该实例的 `X-Setline-Token`；留空时回退到 agent 级 `token`。
+    - 凭据不在这里：所有 peer 共用 agent 级 `token`（见 `AgentConfig.token`），
+      整套集群按同一个共享 token 发放，避免每加一台机器就同步一份凭据。
 */
 struct PeerConfig {
   string name;
   string url;
-  string token;
-}
-
-/** agent 的同步机制。
-
-    `once` 只跑一轮就退出，适合交给 cron / systemd timer 周期调用；`interval` 按
-    `intervalMillis` 常驻重复，避免依赖外部调度器。
-*/
-struct SyncConfig {
-  string mode = "once";
-  int intervalMillis = 30000;
 }
 
 /** 边缘代理渲染配置。
 
-    数据来源三种：`peers` 聚合远端 setline 的路由表，`url`（`agent.remote`）下载
-    registry bundle，两者都不能同时配置；**两个都不配**时渲染本进程的路由表，也就是
-    haproxy/nginx 与 setline、basctl 同机的单机部署，此时必须有 `output`。
-    `bind` 留空时片段不写监听段，只出规则和后端。
+    数据来源两种：`peers` 聚合远端 setline 的路由表；不配 `peers` 时渲染本进程的路由表，
+    也就是 haproxy/nginx 与 setline、basctl 同机的单机部署，此时必须有 `output`。
+
+    `peers` 形态下 setline 每次只渲染一轮就退出，周期性刷新交给 systemd
+    timer（包里的 `setline-render.timer`），进程里不带自己的调度循环——节奏统一由 systemd 管，
+    `systemctl status`/`journalctl` 里看得见，也不用再维护一个配置项。
+
+    曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）
+    与配套的 `agent.workDir`：集中打包发布听起来好用，实际与 `peers` 提供的「从运行中的
+    实例现拉路由表」是两套冗余来源，维护成本翻倍，已一并取消（见 docs/roadmap.md）。
+
+    片段固定只出规则和后端定义，**从不写监听段**：`bind` / `listen` 归代理主配置，
+    setline 不去碰别人持有的监听（曾经有个 `agent.bind` 开关，已取消，见 docs/roadmap.md）。
 */
 struct AgentConfig {
   string type;
-  string url;
-  string workDir = "/tmp/setline-agent";
-  /** 生成片段的落盘路径；为空时写到标准输出。 */
-  string output;
-  /** 边缘代理监听串：haproxy 用作 `bind`，nginx 取其端口。
+  /** 生成片段的落盘**根目录**；为空时写到标准输出。
 
-      留空表示「片段不管监听」：只生成规则和后端定义，`bind` / `listen` 归代理主配置。
+      目录名与文件名都由 setline 决定（见 `layoutSnippets`）：按 `type` 落到
+      `<output>/haproxy/` 或 `<output>/nginx/`，文件名固定为 `setline.cfg`
+      （haproxy）/ `setline.conf`（nginx），规则模式再派生 `.map` 或按 host 分文件。
+      运维只负责给一个可写目录，不开放文件粒度配置。
   */
-  string bind;
+  string output;
   /** 被聚合的远端 setline 实例。 */
   PeerConfig[] peers;
-  SyncConfig sync;
-  /** peers 未单独设置 token 时的默认 `X-Setline-Token`。 */
+  /** 读取所有 peer 路由表时共用的 `X-Setline-Token`；为空表示对端按开发模式放行。
+
+      peer 级不再有独立 token：整条采集链路（agent 读对端 `GET /_setline/routes`）
+      用同一个共享凭据，换 token 只需改这一处。
+  */
   string token;
 }
 

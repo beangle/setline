@@ -21,13 +21,15 @@
 
 ## 启用与使用
 
-包只**安装**这三件东西（`/usr/lib/setline/setline-apply`、`setline-apply.service`、
-`setline-apply.timer`），**不会**替你 enable。写了 `agent` 的机器装完后要自己把 timer
-拉起来，否则片段写出去了没人校验、没人 reload：
+包只**安装**这些 unit（`setline.service`/`setline-render.{service,timer}`、`setline-apply.service`/
+`setline-apply.timer` 与 `/usr/lib/setline/setline-apply`），**不会**替你 enable。写了
+`agent` 的机器装完后要自己把 timer 拉起来，否则片段写出去了没人校验、没人 reload：
 
 ```bash
 # 1. 启用：开机自启 + 立刻跑第一轮
 sudo systemctl enable --now setline-apply.timer
+#    纯渲染机（agent 配了 peers、没有 listen）再加一个重渲染 timer：
+sudo systemctl enable --now setline-render.timer
 
 # 2. 确认它在转：下次触发时间、上一次的结果
 systemctl list-timers setline-apply.timer

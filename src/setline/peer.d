@@ -21,14 +21,13 @@ import std.exception : enforce;
 import std.file : exists, mkdirRecurse, readText, rename, write;
 import std.functional : toDelegate;
 import std.json;
-import std.path : baseName, buildPath, dirName, stripExtension;
+import std.path : baseName, buildPath, dirName;
 import std.stdio : stdout;
 import std.string : indexOf, stripRight;
 
 import setline.config : normalizeRouteHost, normalizeRoutePrefix, parsePort;
-import setline.edge : BackendInstance, BackendService, fetchText, hostsOf, loadBackendsJson,
-  parseBackends, renderHaproxyBackends, renderHaproxyMap, renderNginxLocations, renderNginxUpstreams,
-  renderProxyConfig;
+import setline.edge : BackendInstance, BackendService, fetchText, hostsOf,
+  renderHaproxyBackends, renderHaproxyMap, renderNginxLocations, renderNginxUpstreams;
 import setline.model : AgentConfig, HostRoutes, PeerConfig, Route;
 import setline.util : adminPrefix;
 
@@ -61,15 +60,14 @@ string peerAddress(PeerConfig peer) {
   return colon < 0 ? rest : rest[0 .. colon];
 }
 
-/** 读取单个 peer 的路由表，必要时带上 `X-Setline-Token`。 */
-HostRoutes[] fetchPeerRoutes(PeerConfig peer, string defaultToken = "") {
-  auto token = peer.token.length > 0 ? peer.token : defaultToken;
+/** 读取单个 peer 的路由表，必要时带上 agent 级共享的 `X-Setline-Token`。 */
+HostRoutes[] fetchPeerRoutes(PeerConfig peer, string token = "") {
   string[] headers;
   if (token.length > 0) headers ~= "X-Setline-Token: " ~ token;
   return parsePeerRoutes(fetchText(peerRoutesUrl(peer), headers));
 }
 
-/** 解析 `GET /__setline/routes` 的响应，形状为 `host -> [{prefix, port|ports}]`。 */
+/** 解析 `GET /_setline/routes` 的响应，形状为 `host -> [{prefix, port|ports}]`。 */
 HostRoutes[] parsePeerRoutes(string text) {
   auto root = parseJSON(text);
   enforce(root.type == JSONType.object, "peer routes must be object");
@@ -203,52 +201,59 @@ BackendService[] collectLocalServices(HostRoutes[] routes) {
   return sortServices(mergePeerTable([], routes, localBackendHost, localServicePrefix));
 }
 
-/** 按数据来源取得后端服务：`peers` 合并、`remote` registry bundle（二者互斥），
-    或本机路由表（单机部署，见 {@link collectLocalServices}）。 */
+/** 按数据来源取得后端服务：`peers` 合并对端路由表，或本机路由表（单机部署，
+    见 {@link collectLocalServices}）。 */
 BackendService[] collectAgentServices(AgentConfig agent, HostRoutes[] localRoutes = []) {
   if (agent.peers.length > 0) return collectPeerServices(agent);
-  if (agent.url.length == 0) return collectLocalServices(localRoutes);
-  return parseBackends(loadBackendsJson(agent));
+  return collectLocalServices(localRoutes);
 }
 
 /** 渲染 agent 要写出的全部片段。
 
-    数据来源是远端（`peers`/`remote`）时 `localRoutes` 用不上；单机部署时由调用方把
+    数据来源是对端 setline（`peers`）时 `localRoutes` 用不上；单机部署时由调用方把
     本进程的路由表传进来。
 
-    `bind` 非空时只输出一份自包含片段（片段自己持有监听）；`bind` 留空时只输出规则与
-    后端定义，监听段归代理主配置，文件布局见 docs/haproxy-integration.md 与
-    docs/nginx-integration.md。
+    片段固定只出规则与后端定义，监听段归代理主配置（setline 不写 `bind` / `listen`），
+    文件布局见 docs/haproxy-integration.md 与 docs/nginx-integration.md，落盘位置见
+    {@link layoutSnippets}。
 */
 Snippet[] renderAgentSnippets(AgentConfig agent, HostRoutes[] localRoutes = []) {
   enforce(agent.type.length > 0, "agent.type is required");
-  return layoutSnippets(collectAgentServices(agent, localRoutes), agent.type, agent.output, agent.bind);
+  return layoutSnippets(collectAgentServices(agent, localRoutes), agent.type, agent.output);
 }
 
-/** 把服务列表排布成片段文件；规则模式下文件名由 `output` 派生。 */
-Snippet[] layoutSnippets(BackendService[] services, string kind, string output, string bind) {
-  if (bind.length > 0) {
-    return [Snippet(output, renderProxyConfig(services, kind, bind))];
-  }
-  auto stem = output.length > 0 ? stripExtension(baseName(output)) : "setline";
-  auto dir = output.length > 0 ? dirName(output) : "";
+/** 片段文件名的主干；与 `setline-apply`、代理主配置的接线约定绑定，不开放配置。 */
+private enum snippetStem = "setline";
+
+/** 把服务列表排布成片段文件，全部落在 `outputRoot/<type>/` 下（文件名固定）。
+
+    `outputRoot` 是**目录**而不是文件：目录名由目标代理类型决定，只有 `haproxy`/`nginx`
+    两个固定取值，运维只需要给它一个可写的根目录（如 `/var/lib/setline`）。文件名主干
+    固定为 `setline`，扩展名按代理区分——haproxy 的 `-f <dir>` 只加载 `*.cfg`，nginx
+    的 `include` 习惯写 `*.conf`。
+
+    `outputRoot` 为空时只返回文件名（片段打到标准输出，见 {@link writeSnippets}）。
+*/
+Snippet[] layoutSnippets(BackendService[] services, string kind, string outputRoot) {
+  if (kind != "haproxy" && kind != "nginx") throw new Exception("render kind must be haproxy or nginx");
+  auto dir = outputRoot.length > 0 ? buildPath(outputRoot, kind) : "";
+  auto mainName = snippetStem ~ (kind == "haproxy" ? ".cfg" : ".conf");
   if (kind == "haproxy") {
-    auto mapPath = joinPath(dir, stem ~ ".map");
+    auto mapPath = joinPath(dir, snippetStem ~ ".map");
     return [
-      Snippet(output, renderHaproxyBackends(services)),
+      Snippet(joinPath(dir, mainName), renderHaproxyBackends(services)),
       Snippet(mapPath, renderHaproxyMap(services, mapPath)),
     ];
   }
-  if (kind != "nginx") throw new Exception("render kind must be haproxy or nginx");
-  Snippet[] snippets = [Snippet(output, renderNginxUpstreams(services))];
+  Snippet[] snippets = [Snippet(joinPath(dir, mainName), renderNginxUpstreams(services))];
   foreach (host; hostsOf(services)) {
-    auto name = host == "*" ? stem ~ ".default.conf" : stem ~ "." ~ host ~ ".conf";
+    auto name = host == "*" ? snippetStem ~ ".default.conf" : snippetStem ~ "." ~ host ~ ".conf";
     snippets ~= Snippet(joinPath(dir, name), renderNginxLocations(services, host));
   }
   return snippets;
 }
 
-/** 拼接片段路径；目录为空时（只打印到标准输出）只用文件名。 */
+/** 拼接片段路径；目录为空时（`outputRoot` 没配、只打印到标准输出）只用文件名。 */
 string joinPath(string dir, string name) {
   return dir.length > 0 ? buildPath(dir, name) : name;
 }
@@ -265,13 +270,13 @@ bool writeSnippet(string path, string text) {
   return true;
 }
 
-/** 写出一批片段；`output` 为空时打到标准输出（每个文件前加一行标题）。
+/** 写出一批片段；`outputRoot` 为空时打到标准输出（每个文件前加一行标题）。
 
-    单机部署与 `sync` 轮询共用这里：每个文件按内容哈希幂等写出，日志里逐个文件报告
-    updated / unchanged。
+    单机部署与纯渲染机共用这里：每个文件按内容哈希幂等写出，日志里逐个文件报告
+    updated / unchanged。目录不存在时由 {@link writeSnippet} 逐级创建。
 */
-void writeSnippets(Snippet[] snippets, string output) {
-  if (output.length == 0) {
+void writeSnippets(Snippet[] snippets, string outputRoot) {
+  if (outputRoot.length == 0) {
     foreach (snippet; snippets) {
       stdout.writefln("# ==== %s ====", baseName(snippet.path));
       stdout.write(snippet.text);

@@ -37,23 +37,33 @@ The binary package installs:
 - `/usr/lib/systemd/system/setline-apply.service` + `setline-apply.timer`
 - `/etc/setline/setline.json`
 
-Only `setline.service` is started by the user; the packages install the
-`setline-apply` units but never enable them. Machines whose config has an
-`agent` block need
+The packages install the units but never enable them. A machine whose config
+has an `agent` block needs
 
 ```bash
-sudo systemctl enable --now setline-apply.timer
+sudo systemctl enable --now setline-apply.timer  # validate + reload when fragments change
 ```
 
 otherwise the generated fragment is never validated or reloaded. How to run it
 by hand, its exit codes and the `/etc/setline/apply.conf` overrides are in
-`docs/agent-reload.md`.
+`docs/agent-reload.md`. A pure render machine (`agent.peers`, no `listen`) drives rendering with `setline-render.timer` instead of a resident
+process: the timer re-runs `setline-render.service` every 30s, because one run
+renders one round and exits. A single-host deployment (`listen` set) is the
+opposite - it keeps `setline.service` resident (`sudo systemctl enable --now
+setline.service`) and re-renders on every route change, so do **not** enable
+`setline-render.timer` there: two renderers writing the same files are
+redundant.
 
 The systemd service runs:
 
 ```text
 /usr/bin/setline -f /etc/setline/setline.json
 ```
+
+`setline-render.service` runs the same command as `setline` (the unprivileged
+user) and exits after one round; drop a
+`/etc/systemd/system/setline-render.service.d/*.conf` with an `ExecStart=`
+override if the config lives elsewhere.
 
 Runtime route updates rewrite the configured JSON file, so package install
 scripts make `/etc/setline/setline.json` writable by the `setline` service user.
@@ -76,7 +86,7 @@ unit 里的启动限流写成 `[Service]` 段的旧拼写 `StartLimitInterval=` 
 `StartLimitIntervalSec=` 229 是唯一越界的），没有别的 CentOS 7 兼容问题。
 
 不过 haproxy 这一侧有独立的最低版本要求：**HAProxy ≥ 2.0**（`-f <目录>` 从 1.7 起才有，
-本项目基线取 2.0；规则模式和自包含模式在 2.0 以上通用，已在 2.0.33、2.2.9、3.0.25
+本项目基线取 2.0；片段只用 2.0 起就有的老指令，已在 2.0.33、2.2.9、3.0.25
 实测）。CentOS 7 自带的 **1.5.18 低于这个门槛**（它不认 `-f <目录>`，CentOS 7 也没有
 `/etc/haproxy/conf.d`），要在这类机器上用 haproxy 集成得先升级，或换用 nginx。版本门槛
 和替代方案见 `docs/haproxy-integration.md` 的「版本要求」。nginx 集成不受影响（接线自检
@@ -97,7 +107,7 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
 那行只有两种形态：
 
 1. `Config /etc/setline/setline.json is invalid: <原因>` —— JSON 语法或字段问题（未知字段、
-   `agent.peers` 与 `agent.remote` 同时出现、`routes` 结构不对……）。用 `-c` 单独校验，
+   `routes` 结构不对、写了已取消的字段……）。用 `-c` 单独校验，
    不需要起服务、不需要 root：
 
    ```bash

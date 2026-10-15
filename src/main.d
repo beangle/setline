@@ -16,8 +16,6 @@
 
 module main;
 
-import core.thread : Thread;
-import core.time : msecs;
 import core.sys.posix.sys.resource : RLIMIT_NOFILE, getrlimit, rlimit;
 import std.file : readText;
 import std.getopt : defaultGetoptPrinter, getopt;
@@ -89,9 +87,10 @@ int main(string[] args) {
     }
 
     auto config = loadConfig(configPath);
-    // 配了 peers/remote 的机器是「纯渲染机」：不监听，按 sync 拉对端路由表。
+    // 配了 peers 的机器是「纯渲染机」：不监听，渲染一轮就退出，
+    // 周期刷新由 setline-render.timer（systemd）驱动。
     if (config.agent.type.length > 0 && !usesLocalRoutes(config.agent)) {
-      return runAgent(config.agent);
+      return renderAgentOnce(config.agent);
     }
 
     initialize(config, configPath);
@@ -106,7 +105,7 @@ int main(string[] args) {
         try {
           renderLocalAgent(agent, routes);
         } catch (Exception e) {
-          stderr.writefln("setline agent sync failed: %s", e.msg);
+          stderr.writefln("setline agent render failed: %s", e.msg);
         }
       }
       setRoutesChangedHook(&renderLocal);
@@ -149,27 +148,14 @@ private void renderLocalAgent(AgentConfig agent, HostRoutes[] routes) {
   writeSnippets(renderAgentSnippets(agent, routes), agent.output);
 }
 
-/** 运行 agent 模式：渲染片段并按 `agent.sync` 决定跑一轮还是常驻重复。 */
-int runAgent(AgentConfig agent) {
-  if (agent.sync.mode == "interval" && agent.output.length > 0) {
-    while (true) {
-      try {
-        syncAgentOnce(agent);
-      } catch (Exception e) {
-        stderr.writefln("setline agent sync failed: %s", e.msg);
-      }
-      Thread.sleep(agent.sync.intervalMillis.msecs);
-    }
-  }
-  syncAgentOnce(agent);
-  return 0;
-}
-
-/** 执行一轮 agent 同步：渲染片段并写入 output，未配置 output 时写到标准输出。
+/** 纯渲染机（peers，没有监听）：渲染一轮片段并写入 output 根目录。
 
     规则模式下会有多个片段文件（例如 haproxy 的 backend 片段加路由 map），
-    全部按内容哈希幂等写出，未变化的文件不会被触碰。
+    全部按内容哈希幂等写出，未变化的文件不会被触碰；目录不存在时逐级创建。
+    未配置 output 时写到标准输出。重渲染由外层 systemd timer 每隔一段时间再跑一次，
+    进程里不做调度。
 */
-void syncAgentOnce(AgentConfig agent) {
+int renderAgentOnce(AgentConfig agent) {
   writeSnippets(renderAgentSnippets(agent), agent.output);
+  return 0;
 }

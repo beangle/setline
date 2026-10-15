@@ -1,0 +1,21 @@
+[Unit]
+Description=Render setline agent fragments once
+Documentation=file:///usr/share/doc/setline/deployment.md
+Documentation=file:///usr/share/doc/setline/haproxy-integration.md
+Documentation=file:///usr/share/doc/setline/nginx-integration.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+# 由 setline-render.timer 周期驱动。动作幂等（片段内容没变就不碰文件、写没写都会
+# 报告），而某一台 peer 暂时读不到时这一轮会失败——必须关掉启动限流，否则默认的
+# StartLimitBurst=5/120s 会把连续几次失败挡成 failed，timer 就不再重试了。
+# 拼写用旧式的 [Service] StartLimitInterval=，理由见 setline.service 与 docs/deployment.md。
+StartLimitInterval=0
+# 渲染只读配置文件、写片段，不监听端口，所以不需要 setline.service 那份 fd 预算；
+# 也绝不能以 root 运行——它以 setline 身份写片段，属主才不会乱。
+User=setline
+Group=beangle
+UMask=0002
+ExecStart=/usr/bin/setline -f /etc/setline/setline.json
+TimeoutStartSec=60s

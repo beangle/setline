@@ -17,79 +17,49 @@
 module setline.edge_test;
 
 import std.algorithm : canFind;
-import std.exception : assertThrown;
-import std.file : exists, mkdirRecurse, rmdirRecurse, write;
-import std.path : buildPath;
-import std.process : execute;
 
 import setline.edge;
-import setline.model;
 
-@("edge parses backends json") unittest {
-  auto services = parseBackends(`{
-    "services": [{
-      "name": "edu-learning",
-      "host": "LOCAL.EXAMPLE.COM",
-      "content_path": "/m/edu/learning/",
-      "health_path": "/health",
-      "instances": [
-        {"ip": "10.0.1.10", "port": 18001},
-        {"host": "10.0.1.11", "port": 18002}
-      ]
-    }]
-  }`);
-
-  assert(services.length == 1);
-  assert(services[0].name == "edu-learning");
-  assert(services[0].host == "local.example.com");
-  assert(services[0].contentPath == "/m/edu/learning");
-  assert(services[0].instances.length == 2);
-  assert(services[0].instances[0].host == "10.0.1.10");
-  assert(services[0].instances[1].port == 18002);
-
-  auto bare = parseBackends(`{"services":[{"name":"a","contentPath":"/a",
-    "instances":[{"host":"10.0.1.30","port":18003}]}]}`);
-  assert(renderHaproxyBackends(bare).canFind("server a_0 10.0.1.30:18003 check"));
-
-  // payload 里的 healthPath / health_path 一律忽略：片段只发 TCP `check`，绝不发 httpchk。
-  assert(!renderHaproxyBackends(services).canFind("option httpchk"));
-  assert(renderHaproxyBackends(services).canFind("server edu_learning_0 10.0.1.10:18001 check"));
+/** 构造一个后端实例，省掉测试里的结构体字面量。 */
+BackendInstance at(string host, ushort port) {
+  return BackendInstance(host, port);
 }
 
-@("edge renders haproxy config") unittest {
-  auto services = parseBackends(`{
-    "services": [{
-      "name": "edu-learning",
-      "contentPath": "/m/edu/learning",
-      "healthPath": "/health",
-      "instances": [{"host": "10.0.1.10", "port": 18001}]
-    }]
-  }`);
+/** 构造一个后端服务；services 列表顺序就是渲染顺序。 */
+BackendService service(string name, string host, string contentPath, BackendInstance[] instances) {
+  BackendService result;
+  result.name = name;
+  result.host = host;
+  result.contentPath = contentPath;
+  result.instances = instances;
+  return result;
+}
 
-  auto rendered = renderHaproxy(services);
-  assert(rendered.canFind("frontend http_in"));
-  assert(rendered.canFind("  mode http\n"));
-  assert(rendered.canFind("acl path_edu_learning path_beg /m/edu/learning"));
-  assert(rendered.canFind("backend be_edu_learning"));
-  // 后端健康检查固定 TCP check，不生成 option httpchk。
-  assert(!rendered.canFind("option httpchk"));
-  assert(rendered.canFind("server edu_learning_0 10.0.1.10:18001 check"));
-  // 不再生成 del-header：规则模式的查找键放在事务变量里，请求里没有 setline 的内部头。
-  assert(!rendered.canFind("del-header"));
+@("edge renders haproxy backends with TCP checks only") unittest {
+  auto services = [
+    service("edu-learning", "local.example.com", "/m/edu/learning", [at("10.0.1.10", 18001)]),
+    service("app", "*", "/a", [at("10.0.1.30", 18003)]),
+  ];
+
+  auto backends = renderHaproxyBackends(services);
+  assert(backends.canFind("backend be_edu_learning"));
+  assert(backends.canFind("server edu_learning_0 10.0.1.10:18001 check"));
+  assert(backends.canFind("backend be_app"));
+  assert(backends.canFind("server app_0 10.0.1.30:18003 check"));
+  // 片段只发 TCP `check`，绝不发 httpchk：HTTP 检查会把应用返回 404/401 的根路径判成 DOWN。
+  assert(!backends.canFind("option httpchk"));
+  assert(!backends.canFind("del-header"));
 }
 
 @("edge renders haproxy routing map usable from 2.0") unittest {
-  auto services = parseBackends(`{
-    "services": [
-      {"name": "app", "host": "APP.Example.COM", "contentPath": "/api/edu",
-       "instances": [{"host": "10.0.1.10", "port": 18001}]},
-      {"name": "fallback", "contentPath": "/",
-       "instances": [{"host": "10.0.1.20", "port": 18002}]}
-    ]
-  }`);
+  auto services = [
+    service("app", "app.example.com", "/api/edu", [at("10.0.1.10", 18001)]),
+    service("fallback", "*", "/", [at("10.0.1.20", 18002)]),
+  ];
 
   auto map = renderHaproxyMap(services, "/var/lib/setline/haproxy/setline.map");
-  // 键里的 host 要小写并去掉端口，才和 setline 自己的 normalizeRequestHost 一致。
+  // 键里的 host 必须小写（与 setline 的 normalizeRequestHost 口径一致）；map 的键由
+  // 上游路由表解析时归一化，这里直接给规范形式。
   // 免改请求头：键拼在事务变量里，请求原样透传给后端。
   assert(map.canFind("#   http-request set-var(txn.setline_path) path"));
   assert(map.canFind("#   http-request set-var(txn.setline_route) " ~
@@ -104,52 +74,22 @@ import setline.model;
   assert(!map.canFind("set-var-fmt"));
   assert(!map.canFind("set-header"));
   assert(!map.canFind("X-Setline-Route"));
-
-  auto backends = renderHaproxyBackends(services);
-  assert(backends.canFind("backend be_app"));
-  assert(!backends.canFind("del-header"));
 }
 
-@("edge renders nginx config") unittest {
-  auto services = parseBackends(`{
-    "services": [{
-      "name": "permission-service",
-      "contentPath": "/api/permission",
-      "instances": [{"host": "10.0.2.10", "port": 19001}]
-    }]
-  }`);
+@("edge renders nginx upstreams and locations separately") unittest {
+  auto services = [
+    service("permission-service", "*", "/api/permission", [at("10.0.2.10", 19001)]),
+  ];
 
-  auto rendered = renderNginx(services);
-  assert(rendered.canFind("upstream permission_service"));
-  assert(rendered.canFind("server 10.0.2.10:19001;"));
-  assert(rendered.canFind("location /api/permission"));
-  assert(rendered.canFind("proxy_pass http://permission_service;"));
-}
+  // 规则模式把 upstream 与 location 拆成两份：前者只能出现在 http{}，后者只能出现在 server{}。
+  auto upstreams = renderNginxUpstreams(services);
+  assert(upstreams.canFind("upstream permission_service"));
+  assert(upstreams.canFind("server 10.0.2.10:19001;"));
+  assert(!upstreams.canFind("listen "));
+  assert(!upstreams.canFind("location "));
 
-@("edge rejects empty backends") unittest {
-  assertThrown!Exception(parseBackends(`{"services":[]}`));
-}
-
-@("edge loads backends from manifest bundle") unittest {
-  auto root = "/tmp/setline-edge-bundle-test";
-  if (exists(root)) rmdirRecurse(root);
-  scope (exit) if (exists(root)) rmdirRecurse(root);
-
-  auto sourceDir = buildPath(root, "source");
-  mkdirRecurse(sourceDir);
-  write(buildPath(sourceDir, "backends.json"), `{"services":[{"name":"edu","contentPath":"/api/edu",` ~
-    `"instances":[{"host":"10.0.3.10","port":18003}]}]}`);
-
-  auto bundlePath = buildPath(root, "bundle.tar.gz");
-  auto tarResult = execute(["tar", "-czf", bundlePath, "-C", sourceDir, "."]);
-  assert(tarResult.status == 0);
-  auto manifestPath = buildPath(root, "latest.json");
-  write(manifestPath, `{"version":"2026.06.08.001","bundleUrl":"bundle.tar.gz","sha256":"` ~
-    fileSha256(bundlePath) ~ `"}`);
-
-  auto config = AgentConfig("haproxy", "file://" ~ manifestPath, buildPath(root, "work"));
-  auto text = loadBackendsJson(config);
-  auto services = parseBackends(text);
-  assert(services.length == 1);
-  assert(services[0].instances[0].port == 18003);
+  auto locations = renderNginxLocations(services, "*");
+  assert(locations.canFind("location /api/permission"));
+  assert(locations.canFind("proxy_pass http://permission_service;"));
+  assert(!locations.canFind("listen "));
 }

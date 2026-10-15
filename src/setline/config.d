@@ -347,25 +347,16 @@ AgentConfig parseAgentConfig(JSONValue value) {
     enforce(obj["type"].type == JSONType.string, "agent.type must be string");
     config.type = normalizeAgentType(obj["type"].str);
   }
-  if ("remote" in obj) {
-    enforce(obj["remote"].type == JSONType.string, "agent.remote must be string");
-    config.url = obj["remote"].str;
-    enforce(config.url.length > 0, "agent.remote must not be empty");
-  }
-  if ("workDir" in obj) {
-    enforce(obj["workDir"].type == JSONType.string, "agent.workDir must be string");
-    config.workDir = obj["workDir"].str;
-    enforce(config.workDir.length > 0, "agent.workDir must not be empty");
-  }
   if ("output" in obj) {
     enforce(obj["output"].type == JSONType.string, "agent.output must be string");
     config.output = obj["output"].str;
     enforce(config.output.length > 0, "agent.output must not be empty");
+    // 片段总是落到 <output>/<type>/ 下；相对路径会跟着 CWD 漂移，让固定布局失效。
+    enforce(config.output[0] == '/', "agent.output must be an absolute directory path");
   }
-  if ("bind" in obj) {
-    enforce(obj["bind"].type == JSONType.string, "agent.bind must be string");
-    config.bind = obj["bind"].str;
-  }
+  // bind 已取消：片段固定只出规则和后端，监听段永远归代理主配置。旧配置写了必须报错
+  // 而不是被忽略——否则运维以为片段自带监听，实际拿到的是规则模式片段，接线必然对不上。
+  enforce(!("bind" in obj), "agent.bind has been removed: the fragment never owns the listener");
   if ("token" in obj) {
     enforce(obj["token"].type == JSONType.string, "agent.token must be string");
     config.token = obj["token"].str;
@@ -373,27 +364,28 @@ AgentConfig parseAgentConfig(JSONValue value) {
   if ("peers" in obj) {
     config.peers = parsePeerConfigs(obj["peers"]);
   }
-  if ("sync" in obj) {
-    config.sync = parseSyncConfig(obj["sync"]);
-  }
-  // remote 是「下载 registry bundle」，peers 是「合并对端路由表」，两种数据来源互斥。
-  enforce(config.url.length == 0 || config.peers.length == 0,
-    "agent.remote and agent.peers cannot be used together");
+  // sync 已取消：节奏交给 systemd timer，进程每次只跑一轮。旧配置写了必须报错，
+  // 否则运维以为还在周期刷新，实际片段写完一轮后就不再更新。
+  enforce(!("sync" in obj), "agent.sync has been removed: drive setline from a systemd timer");
+  // remote / workDir 已取消：数据来源只剩「合并对端路由表（peers）」和「渲染本机路由表」。
+  // 旧配置写了必须报错，否则运维以为还在从 registry bundle 取后端，实际拿到的是本机路由。
+  enforce(!("remote" in obj), "agent.remote has been removed: use agent.peers or local routes");
+  enforce(!("workDir" in obj), "agent.workDir has been removed: agent.remote is gone");
   enforce(config.type.length > 0, "agent.type is required: haproxy or nginx");
-  // 两个来源都不配 = 单机部署（渲染本机路由表），此时必须有 output：路由一变就重渲染，
+  // 不配 peers = 单机部署（渲染本机路由表），此时必须有 output 根目录：路由一变就重渲染，
   // 没有 output 只会把片段反复打到标准输出。
   enforce(!usesLocalRoutes(config) || config.output.length > 0,
-    "agent.output is required when agent.peers and agent.remote are not set");
+    "agent.output is required when agent.peers is not set");
   return config;
 }
 
-/** agent 是否渲染**本机**路由表，也就是 `peers` 和 `remote` 都没配的单机部署形态。
+/** agent 是否渲染**本机**路由表，也就是没配 `peers` 的单机部署形态。
 
     `peers` 要求边缘代理和管理入口能互相访问，haproxy/nginx 与 setline、basctl 同机时
     没必要绕这一圈：路由表就在本进程里，直接渲染即可。
 */
 bool usesLocalRoutes(const AgentConfig agent) {
-  return agent.peers.length == 0 && agent.url.length == 0;
+  return agent.peers.length == 0;
 }
 
 /** 解析被聚合的远端 setline 实例列表。 */
@@ -407,13 +399,16 @@ PeerConfig[] parsePeerConfigs(JSONValue value) {
     peer.url = optionalPeerString(item, "url");
     enforce(peer.url.length > 0, "agent.peers[].url is required");
     peer.name = optionalPeerString(item, "name");
-    peer.token = optionalPeerString(item, "token");
     // 回源主机完全由 url 推导；推导不出来（例如 file:// 没有主机）要在这里就报错，
     // 而不是等 agent 跑起来才失败，那时 `setline -c` 已经宣布配置合法了。
     peerAddress(peer);
-    // peers 只认 url/name/token 三个字段：写错字段名要立刻报错，不能默默忽略。
+    // peer 级 token 已取消：凭据统一走 agent 级共享 token，写在这里要明确报错，
+    // 而不是被当成未知字段之外的合法项静默忽略。
+    enforce(!("token" in item.object),
+      "agent.peers[].token has been removed: all peers share the agent-level token");
+    // peers 只认 url/name 两个字段：写错字段名要立刻报错，不能默默忽略。
     foreach (key, _; item.object) {
-      enforce(key == "url" || key == "name" || key == "token",
+      enforce(key == "url" || key == "name",
         "agent.peers[] has unknown field: " ~ key);
     }
     peers ~= peer;
@@ -426,24 +421,6 @@ string optionalPeerString(JSONValue item, string key) {
   if (!(key in item.object)) return "";
   enforce(item[key].type == JSONType.string, "agent.peers[]." ~ key ~ " must be string");
   return item[key].str;
-}
-
-/** 解析 agent 同步机制。 */
-SyncConfig parseSyncConfig(JSONValue value) {
-  enforce(value.type == JSONType.object, "agent.sync must be object");
-  auto obj = value.object;
-  SyncConfig sync;
-  if ("mode" in obj) {
-    enforce(obj["mode"].type == JSONType.string, "agent.sync.mode must be string");
-    sync.mode = obj["mode"].str;
-  }
-  enforce(sync.mode == "once" || sync.mode == "interval",
-    "agent.sync.mode must be once or interval");
-  if ("intervalMillis" in obj) {
-    sync.intervalMillis = cast(int) obj["intervalMillis"].integer;
-  }
-  enforce(sync.intervalMillis > 0, "agent.sync.intervalMillis must be positive");
-  return sync;
 }
 
 /** 解析字符串端口并校验范围。 */

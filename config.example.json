@@ -17,8 +17,7 @@
   },
   "agent": {
     "type": "haproxy",
-    "output": "/var/lib/setline/haproxy/setline.cfg",
-    "bind": ""
+    "output": "/var/lib/setline"
   },
   "routes": {
     "*": {

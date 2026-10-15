@@ -212,6 +212,29 @@ setline；setline 只负责按 host 和路径前缀选一个本机端口、把�
 
 ## 已完成（判据来源）
 
+- `agent.output` 从「文件路径」收敛为「根目录」：目录名（`<output>/haproxy` 或
+  `<output>/nginx`）与文件名（`setline.cfg`/`setline.conf`，规则模式再派生 `.map` 或按
+  host 分文件）都由 setline 生成，不再开放文件粒度配置——它同时是 `setline-apply` 的
+  `HAPROXY_FRAGMENT_DIR`/`NGINX_FRAGMENT_DIR` 与代理主配置 `include`/`-f` 的接线约定。
+  子目录按需创建；`output` 非空时要求绝对路径（相对路径会随 CWD 漂移）。运维视角只剩
+  「给一个可写根目录」，单测覆盖三种形态的派生路径与 stdout（空 `output`）模式。
+- 去掉 `agent.bind`：片段固定只出规则和后端定义，监听段永远归代理主配置。它跟上一
+  条正好相反——布局已经由程序固定，再留一个会改变「同一路径下内容契约」的开关，只会
+  让 `-f <dir>` / `include` 的接线在两种语义之间摇摆。渲染器里的自包含分支
+  （`renderProxyConfig`/`renderHaproxy`/`renderNginx` 与 `nginxListenPort`）一并删除；
+  旧配置写了 `agent.bind` 报 `agent.bind has been removed`，不静默忽略。
+- 去掉 `agent.sync`：进程每次只渲染一轮就退出，周期刷新交给 systemd timer（包内的
+  `setline-render.timer`，每 30s 拉起 `setline-render.service`）。节奏统一由 systemd 管（
+  `systemctl list-timers`/`journalctl` 可见），不再需要 `mode`/`intervalMillis` 两个
+  配置项与进程内调度循环；旧配置写了 `agent.sync` 报 `agent.sync has been removed`。
+- 去掉 `agent.remote` 与配套的 `agent.workDir`：数据来源收敛为两种——`peers` 合并对端
+  路由表，或不配 `peers` 直接渲染本机路由表。registry manifest + 版本化 bundle
+  （`backends.json`、sha256 校验、`workDir/releases/<version>` 解包）是一套与 `peers`
+  平行、更重的集中发布链路，最终产出的片段却和 `peers` 完全一样，等于为同一个渲染器
+  维护两种输入。解析与安装代码（`AgentManifest`/`loadBackendsJson`/`parseAgentManifest`/
+  `installBundle`/`downloadFile`/`resolveUrl`/`parseBackends` 等）随之删除；旧配置写了
+  `agent.remote` 报 `agent.remote has been removed`，写了 `agent.workDir` 报
+  `agent.workDir has been removed`，不静默忽略。
 - 片段只声明 backend：不再生成 `option httpchk`（会按状态码误判 DOWN）。
 - 规则模式不再往请求里塞内部头：查找键改用 `set-var` + `concat` 存在事务变量里，
   请求原样透传给后端（2.0 起通用，无需 `set-var-fmt`）。

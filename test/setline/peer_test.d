@@ -91,45 +91,52 @@ PeerConfig peerWithUrl(string url) {
   scope (exit) if (exists(root)) rmdirRecurse(root);
 
   foreach (name; ["peerA", "peerB"]) {
-    mkdirRecurse(buildPath(root, name, "__setline"));
+    mkdirRecurse(buildPath(root, name, "_setline"));
   }
-  write(buildPath(root, "peerA", "__setline", "routes"),
+  write(buildPath(root, "peerA", "_setline", "routes"),
     `{"app.example.com":[{"prefix":"/api/edu","port":9002}]}`);
-  write(buildPath(root, "peerB", "__setline", "routes"),
+  write(buildPath(root, "peerB", "_setline", "routes"),
     `{"app.example.com":[{"prefix":"/api/edu","port":9002}]}`);
 
   AgentConfig agent;
   agent.type = "haproxy";
+  agent.token = "shared-token";
   agent.peers = [
-    PeerConfig("peerA", "http://10.0.1.10:8080", ""),
-    PeerConfig("peerB", "http://10.0.1.11:8080", ""),
+    PeerConfig("peerA", "http://10.0.1.10:8080"),
+    PeerConfig("peerB", "http://10.0.1.11:8080"),
   ];
-  // 本地读取路由表，避免单测依赖网络。
+  // 本地读取路由表，避免单测依赖网络；顺便确认每个 peer 拿到的都是 agent 级共享 token，
+  // 而不是各自的凭据（peer 级 token 已取消）。
   auto fetcher = (PeerConfig peer, string token) {
-    return parsePeerRoutes(readText(buildPath(root, peer.name, "__setline", "routes")));
+    assert(token == "shared-token");
+    return parsePeerRoutes(readText(buildPath(root, peer.name, "_setline", "routes")));
   };
 
   auto services = collectPeerServices(agent, fetcher);
   assert(services.length == 1);
   assert(services[0].instances.length == 2);
 
-  auto rendered = renderProxyConfig(services, agent.type, agent.bind);
+  auto rendered = renderHaproxyBackends(services);
   assert(rendered.canFind("backend be_peerA_app_example_com_api_edu"));
   assert(rendered.canFind("server peerA_app_example_com_api_edu_0 10.0.1.10:9002 check"));
   assert(rendered.canFind("server peerA_app_example_com_api_edu_1 10.0.1.11:9002 check"));
   assert(!rendered.canFind("\ndefaults"));
 }
 
-@("peer renders nginx fragment with include hint") unittest {
+@("peer renders nginx upstreams and locations") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api","port":9001}]}`),
     "10.0.1.10", "app");
   sortServices(services);
 
-  auto rendered = renderProxyConfig(services, "nginx", "*:8080");
-  assert(rendered.canFind("upstream"));
-  assert(rendered.canFind("listen 8080;"));
-  assert(rendered.canFind("Include this file inside the nginx http {} block."));
+  // 片段不带监听段：upstream 进 http{}，location 进主配置的 server{}。
+  auto upstreams = renderNginxUpstreams(services);
+  assert(upstreams.canFind("upstream app_app_example_com_api"));
+  assert(!upstreams.canFind("listen "));
+
+  auto locations = renderNginxLocations(services, "app.example.com");
+  assert(locations.canFind("location /api {"));
+  assert(locations.canFind("proxy_pass http://app_app_example_com_api;"));
 }
 
 @("peer writes snippet only when changed") unittest {
@@ -158,19 +165,20 @@ PeerConfig peerWithUrl(string url) {
 
   AgentConfig agent;
   agent.type = "haproxy";
-  agent.output = "/tmp/setline-conf/local/setline.cfg";
+  agent.output = "/tmp/setline-conf/local";
   auto snippets = renderAgentSnippets(agent, routes);
   assert(snippets.length == 2);
-  assert(snippets[0].path == "/tmp/setline-conf/local/setline.cfg");
+  assert(snippets[0].path == "/tmp/setline-conf/local/haproxy/setline.cfg");
   assert(snippets[0].text.canFind("backend be_local_localhost_tools"));
   assert(snippets[0].text.canFind("server local_localhost_tools_0 127.0.0.1:20000 check"));
+  assert(snippets[1].path == "/tmp/setline-conf/local/haproxy/setline.map");
   assert(snippets[1].text.canFind("localhost~/tools be_local_localhost_tools"));
 }
 
 @("single-host agent renders business ports, never the setline listen port") unittest {
   auto path = "/tmp/setline-peer-local-listen-test.json";
-  write(path, `{"listen":"*:18080","agent":{"type":"haproxy",` ~
-    `"output":"/tmp/setline-conf/local-listen/setline.cfg"},` ~
+  write(path, `{"listen":"*:18090","agent":{"type":"haproxy",` ~
+    `"output":"/tmp/setline-conf/local-listen"},` ~
     `"routes":{"app.example.com":{"/api/edu":[9002,9003]}}}`);
   scope (exit) if (exists(path)) remove(path);
 
@@ -179,12 +187,12 @@ PeerConfig peerWithUrl(string url) {
   auto snippets = renderAgentSnippets(config.agent, config.routes);
   assert(snippets[0].text.canFind("server local_app_example_com_api_edu_0 127.0.0.1:9002 check"));
   assert(snippets[0].text.canFind("server local_app_example_com_api_edu_1 127.0.0.1:9003 check"));
-  foreach (snippet; snippets) assert(!snippet.text.canFind("18080"));
+  foreach (snippet; snippets) assert(!snippet.text.canFind("18090"));
 
   auto nginx = layoutSnippets(collectLocalServices(config.routes), "nginx",
-    "/tmp/setline-conf/local-listen/setline.conf", "");
+    "/tmp/setline-conf/local-listen");
   assert(nginx.length == 2);
-  foreach (snippet; nginx) assert(!snippet.text.canFind("18080"));
+  foreach (snippet; nginx) assert(!snippet.text.canFind("18090"));
 }
 
 @("peer renders rules-only snippets without a listener") unittest {
@@ -193,7 +201,7 @@ PeerConfig peerWithUrl(string url) {
     `"*":[{"prefix":"/","port":9090}]}`), "10.0.1.10", "app");
   services = sortServices(services);
 
-  auto haproxy = layoutSnippets(services, "haproxy", "/tmp/setline-conf/haproxy/setline.cfg", "");
+  auto haproxy = layoutSnippets(services, "haproxy", "/tmp/setline-conf");
   assert(haproxy.length == 2);
   assert(haproxy[0].path == "/tmp/setline-conf/haproxy/setline.cfg");
   assert(haproxy[0].text.canFind("backend be_app_app_example_com_api_edu"));
@@ -203,7 +211,7 @@ PeerConfig peerWithUrl(string url) {
   assert(haproxy[1].text.canFind("app.example.com~/api/edu be_app_app_example_com_api_edu"));
   assert(haproxy[1].text.canFind("\n/ be_app__\n"));
 
-  auto nginx = layoutSnippets(services, "nginx", "/tmp/setline-conf/nginx/setline.conf", "");
+  auto nginx = layoutSnippets(services, "nginx", "/tmp/setline-conf");
   assert(nginx.length == 3);
   assert(nginx[0].path == "/tmp/setline-conf/nginx/setline.conf");
   assert(nginx[0].text.canFind("upstream app_app_example_com_api_edu"));
@@ -214,14 +222,23 @@ PeerConfig peerWithUrl(string url) {
   assert(nginx[2].text.canFind("location / {"));
 }
 
-@("peer renders a self-contained snippet when bind is set") unittest {
+@("peer keeps snippet names relative when output root is unset") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api","port":9001}]}`),
     "10.0.1.10", "app");
   services = sortServices(services);
 
-  auto snippets = layoutSnippets(services, "haproxy", "/tmp/setline-conf/haproxy/setline.cfg", "*:8080");
-  assert(snippets.length == 1);
-  assert(snippets[0].text.canFind("bind *:8080"));
-  assert(!snippets[0].text.canFind("map_beg"));
+  // 没有 output 根目录 = 片段打到标准输出：路径只剩文件名，标题行才不会带一串目录。
+  auto haproxy = layoutSnippets(services, "haproxy", "");
+  assert(haproxy.length == 2);
+  assert(haproxy[0].path == "setline.cfg");
+  assert(haproxy[1].path == "setline.map");
+  assert(haproxy[1].text.canFind("map_beg(setline.map)"));
+
+  auto nginx = layoutSnippets(services, "nginx", "");
+  assert(nginx.length == 2);
+  assert(nginx[0].path == "setline.conf");
+  assert(nginx[1].path == "setline.app.example.com.conf");
+
+  assertThrown!Exception(layoutSnippets(services, "caddy", "/tmp/setline-conf"));
 }

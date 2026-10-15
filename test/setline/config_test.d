@@ -106,14 +106,15 @@ import setline.model;
 @("config parses agent settings") unittest {
   auto path = "/tmp/setline-config-agent-test.json";
   write(path,
-    `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json",` ~
-    `"workDir":"/var/lib/setline-agent"},"routes":{}}`);
+    `{"agent":{"type":"nginx","output":"/var/lib/setline",` ~
+    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
   assert(config.agent.type == "nginx");
-  assert(config.agent.url == "https://registry.example.com/latest.json");
-  assert(config.agent.workDir == "/var/lib/setline-agent");
+  assert(config.agent.output == "/var/lib/setline");
+  assert(config.agent.peers.length == 1);
+  assert(usesLocalRoutes(config.agent) == false);
 }
 
 @("config parses route ports") unittest {
@@ -173,33 +174,44 @@ import setline.model;
   assertThrown!Exception(normalizeRouteHost("local1.example.com:8080"));
 }
 
-@("config parses agent peers and sync") unittest {
+@("config parses agent peers") unittest {
   auto path = "/tmp/setline-config-agent-peers-test.json";
   write(path,
-    `{"agent":{"type":"haproxy","output":"/etc/haproxy/setline.cfg","bind":"*:8080",` ~
-    `"token":"shared","sync":{"mode":"interval","intervalMillis":15000},` ~
+    `{"agent":{"type":"haproxy","output":"/etc/haproxy",` ~
+    `"token":"shared",` ~
     `"peers":[{"name":"app1","url":"http://10.0.1.10:8080"},` ~
-    `{"url":"http://10.0.1.11:8080","token":"peer2"}]},"routes":{}}`);
+    `{"url":"http://10.0.1.11:8080"}]},"routes":{}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
   assert(config.agent.type == "haproxy");
-  assert(config.agent.output == "/etc/haproxy/setline.cfg");
-  assert(config.agent.bind == "*:8080");
+  assert(config.agent.output == "/etc/haproxy");
   assert(config.agent.token == "shared");
-  assert(config.agent.sync.mode == "interval");
-  assert(config.agent.sync.intervalMillis == 15000);
   assert(config.agent.peers.length == 2);
   assert(config.agent.peers[0].name == "app1");
   assert(config.agent.peers[0].url == "http://10.0.1.10:8080");
-  assert(config.agent.peers[1].token == "peer2");
+  assert(config.agent.peers[1].url == "http://10.0.1.11:8080");
 }
 
-@("config rejects bad agent sync mode") unittest {
+@("config rejects the removed per-peer token field") unittest {
+  auto path = "/tmp/setline-config-agent-peertoken-test.json";
+  scope (exit) remove(path);
+  // peer 级 token 已取消：凭据统一走 agent 级共享 token，写了必须报错而不是被忽略。
+  write(path, `{"agent":{"type":"haproxy","token":"shared",` ~
+    `"peers":[{"url":"http://10.0.1.10:8080","token":"peer2"}]},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config rejects the removed agent.sync field") unittest {
   auto path = "/tmp/setline-config-agent-badsync-test.json";
   write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080"}],` ~
     `"sync":{"mode":"sometimes"}},"routes":{}}`);
   scope (exit) remove(path);
+  // sync 已取消（渲染节奏交给 systemd timer），写了必须报错而不是被忽略。
+  assertThrown!Exception(loadConfig(path));
+
+  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080"}],` ~
+    `"sync":{"mode":"interval","intervalMillis":15000}},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
 
@@ -228,12 +240,12 @@ import setline.model;
 @("config allows single-host agent without peers") unittest {
   auto path = "/tmp/setline-config-agent-local-test.json";
   write(path, `{"listen":"127.0.0.1:8080","agent":{"type":"haproxy",` ~
-    `"output":"/var/lib/setline/haproxy/setline.cfg"},"routes":{}}`);
+    `"output":"/var/lib/setline"},"routes":{}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
   assert(config.agent.type == "haproxy");
-  assert(config.agent.output == "/var/lib/setline/haproxy/setline.cfg");
+  assert(config.agent.output == "/var/lib/setline");
   assert(config.agent.peers.length == 0);
   assert(usesLocalRoutes(config.agent));
 }
@@ -247,37 +259,60 @@ import setline.model;
   assertThrown!Exception(loadConfig(path));
 
   // 有 output 也不能省 type：由它决定渲染 haproxy 还是 nginx。
-  write(path, `{"agent":{"output":"/tmp/setline.conf"},"routes":{}}`);
+  write(path, `{"agent":{"output":"/tmp/setline"},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+}
+
+@("config requires an absolute agent output root") unittest {
+  auto path = "/tmp/setline-config-agent-relative-output-test.json";
+  scope (exit) remove(path);
+
+  // output 是片段根目录（内部再拼 <type>/），相对路径会随 CWD 漂移，直接拦掉。
+  write(path, `{"listen":"127.0.0.1:8080","agent":{"type":"haproxy","output":"setline"},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // 空字符串等同于没配：单机模式仍然要求一个根目录。
+  write(path, `{"listen":"127.0.0.1:8080","agent":{"type":"haproxy","output":""},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
 
 @("config rejects misspelled agent type") unittest {
   auto path = "/tmp/setline-config-agent-badtype-test.json";
-  write(path, `{"agent":{"type":"nginux","remote":"https://registry.example.com/latest.json"},"routes":{}}`);
+  write(path, `{"agent":{"type":"nginux","peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
   scope (exit) remove(path);
   assertThrown!Exception(loadConfig(path));
 }
 
-@("config allows rules-only agent without bind") unittest {
+@("config rejects the removed agent.bind field") unittest {
   auto path = "/tmp/setline-config-agent-nobind-test.json";
-  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline/nginx/setline.conf",` ~
+  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline",` ~
     `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
   scope (exit) remove(path);
-  assert(loadConfig(path).agent.bind == "");
+  assert(loadConfig(path).agent.type == "nginx");
+
+  // bind 已取消：片段固定只出规则和后端，写了必须报错而不是被忽略。
+  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline","bind":"*:8080",` ~
+    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
 }
 
-@("config rejects agent with both remote and peers") unittest {
-  auto path = "/tmp/setline-config-agent-both-test.json";
-  write(path, `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json",` ~
-    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
+@("config rejects the removed agent.remote and agent.workDir fields") unittest {
+  auto path = "/tmp/setline-config-agent-noremote-test.json";
   scope (exit) remove(path);
+  // remote/workDir 已取消：数据来源只剩 peers 与「渲染本机路由表」。旧配置写了必须报错，
+  // 而不是被忽略——否则运维以为还在从 registry bundle 取后端。
+  write(path, `{"agent":{"type":"nginx","remote":"https://registry.example.com/latest.json"},"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  write(path, `{"agent":{"type":"nginx","output":"/var/lib/setline","workDir":"/var/lib/setline-agent",` ~
+    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
 
 @("config accepts listen false for a render-only deployment") unittest {
   auto path = "/tmp/setline-config-listen-false-test.json";
   write(path, `{"listen":false,"agent":{"type":"haproxy",` ~
-    `"output":"/var/lib/setline/haproxy/setline.cfg"},"routes":{"app.example.com":{"/":9001}}}`);
+    `"output":"/var/lib/setline"},"routes":{"app.example.com":{"/":9001}}}`);
   scope (exit) remove(path);
 
   auto config = loadConfig(path);
@@ -294,7 +329,7 @@ import setline.model;
   assertThrown!Exception(loadConfig(path));
 
   // `true` 不是合法值：能监听就必须写地址。
-  write(path, `{"listen":true,"agent":{"type":"haproxy","output":"/tmp/setline.cfg"}}`);
+  write(path, `{"listen":true,"agent":{"type":"haproxy","output":"/tmp/setline"}}`);
   assertThrown!Exception(loadConfig(path));
 }
 

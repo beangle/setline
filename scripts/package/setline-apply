@@ -144,8 +144,8 @@ validate() {
 }
 
 # 片段目录必须是服务实际加载的配置的一部分，否则 reload 是静默空转。
-# 规则模式（bind 留空）还会多一层：haproxy 的 *.map、nginx 的每个片段文件都必须真的
-# 被主配置引用，否则配置合法但规则根本没生效。
+# 还会多一层：haproxy 的 *.map、nginx 的每个片段文件都必须真的被主配置引用，
+# 否则配置合法但规则根本没生效。
 check_wiring() {
   if [ "$PROXY" = "haproxy" ]; then
     command -v systemctl >/dev/null 2>&1 || { warn "systemctl missing, cannot verify wiring"; return 0; }

@@ -99,6 +99,8 @@ install -D -m 0755 target/setline %{buildroot}/usr/bin/setline
 strip --strip-unneeded %{buildroot}/usr/bin/setline
 install -D -m 0644 scripts/package/setline.json %{buildroot}/usr/share/setline/setline.json.default
 install -D -m 0644 scripts/package/setline.service %{buildroot}/usr/lib/systemd/system/setline.service
+install -D -m 0644 scripts/package/setline-render.service %{buildroot}/usr/lib/systemd/system/setline-render.service
+install -D -m 0644 scripts/package/setline-render.timer %{buildroot}/usr/lib/systemd/system/setline-render.timer
 
 %pre
 getent group beangle >/dev/null 2>&1 || groupadd -r beangle
@@ -125,6 +127,8 @@ systemctl daemon-reload 2>/dev/null || :
 %preun
 if [ "\$1" = 0 ]; then
   systemctl stop setline 2>/dev/null || :
+  # 关掉纯渲染机的周期刷新 timer，避免卸载后留下悬空 unit。
+  systemctl disable --now setline-render.timer 2>/dev/null || :
 fi
 
 %postun
@@ -136,6 +140,8 @@ systemctl daemon-reload 2>/dev/null || :
 %attr(0755,root,root) /usr/bin/setline
 %attr(0644,root,root) /usr/share/setline/setline.json.default
 %attr(0644,root,root) /usr/lib/systemd/system/setline.service
+%attr(0644,root,root) /usr/lib/systemd/system/setline-render.service
+%attr(0644,root,root) /usr/lib/systemd/system/setline-render.timer
 
 %changelog
 $(printf '%s' "$changes")

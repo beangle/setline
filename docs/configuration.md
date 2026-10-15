@@ -35,7 +35,7 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 | `webSocketIdleTimeoutMillis` | 整数 ≥ 0 | `0` | WebSocket 隧道两个方向都静默多久后断开；`0` 表示不断开 |
 | `maxConnections` | 整数 > 0 | `65535` | 并发客户端连接上限，超出返回 `503` |
 | `healthCheck` | 对象 | 见下 | 后端健康检查（始终开启，只调参数） |
-| `agent` | 对象 | 无 | 边缘代理片段渲染模式，见「agent」一节（配了 `peers`/`remote` 才是纯渲染机） |
+| `agent` | 对象 | 无 | 边缘代理片段渲染模式，见「agent」一节（配了 `peers` 才是纯渲染机） |
 | `routes` | 对象 | `{}` | host → 路径前缀 → 端口，见「routes」一节 |
 
 `maxConnections` 是并发**连接**上限，不是请求数上限：一条连接从 `accept` 到 `close` 一直
@@ -240,59 +240,61 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 
 ## agent
 
-`agent` 让 setline 渲染供边缘代理（haproxy / nginx）使用的配置片段。数据来源有三种，
-由是否配置 `peers` / `remote` 决定：
+`agent` 让 setline 渲染供边缘代理（haproxy / nginx）使用的配置片段。数据来源有两种，
+由是否配置 `peers` 决定：
 
 | 配置 | 形态 | setline 自身 | 触发重渲染的时机 |
 |---|---|---|---|
-| `peers`（与 `remote` 互斥） | 纯渲染机：合并多台对端 setline 的路由表 | **不监听**，按 `sync` 拉取 | `sync` 周期，或外层 timer 跑一轮 |
-| `remote`（与 `peers` 互斥） | 纯渲染机：下载 registry bundle | **不监听**，按 `sync` 拉取 | `sync` 周期，或外层 timer 跑一轮 |
-| 都不配（**单机部署**） | haproxy/nginx、setline、basctl 同机 | **照常监听**，但只当控制面入口 | 启动时渲染一次，之后每次经管理接口改路由立即重渲染 |
+| `peers` | 纯渲染机：合并多台对端 setline 的路由表 | **不监听**，跑一轮就退出 | `setline-render.timer` 周期驱动（包内 unit） |
+| 不配 `peers`（**单机部署**） | haproxy/nginx、setline、basctl 同机 | **照常监听**，但只当控制面入口 | 启动时渲染一次，之后每次经管理接口改路由立即重渲染 |
 
 单机部署下 setline 是路由表的**登记处**（接收 basctl 推来的路由）和**渲染器**，同时
 保留一个本机代理用于调试：业务流量并不经过它，同机的 haproxy/nginx 按片段直接回源
 业务端口（见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md` 的
 「数据面与控制面」）。因此不需要 `peers`（不要求边缘代理和管理入口互相访问），也不需要
-轮询 timer —— 路由一变片段就重渲染。此时 `output` 必填。
+外部 timer —— 路由一变片段就重渲染。此时 `output` 必填。
 
 如果连「登记处」都不需要（路由只在配置文件里，没有 basctl 推），在这套基础上加
-`"listen": false`：setline 不绑监听，启动时渲染一次片段后退出，交给 `setline-apply.timer`
-应用。三种形态的 `listen` 取值归纳如下：
+`"listen": false`：setline 不绑监听，启动时渲染一次片段后退出。
+
+纯渲染机（`peers`）也走「跑一轮就退出」：**setline 进程里没有调度循环**，
+周期刷新由 systemd timer 驱动（包里的 `setline-render.timer`，每 30s 拉起一次
+`setline-render.service`）。节奏统一由 systemd 管，`systemctl list-timers` / `journalctl`
+里看得见，配置里也不再需要 `sync`。纯渲染机启用 `setline-render.timer`；单机部署启用
+`setline.service` 常驻，两者不要同时开（两个渲染器写同一批文件是多余的）。
+三种形态的 `listen` 取值归纳如下：
 
 | 数据来源 | `listen` | 进程行为 |
 |---|---|---|
-| `peers` / `remote` | 不用写（写了也不监听） | 按 `sync` 拉取并渲染，不监听 |
+| `peers` | 不用写（写了也不监听） | 渲染一轮后退出，由 `setline-render.timer` 周期拉起 |
 | 配置文件（单机部署，需运行时改路由） | 地址或端口 | 监听控制面，改路由立即重渲染 |
 | 配置文件（纯渲染，无运行时变更） | `false` | 渲染一次后退出，不监听 |
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `type` | 字符串 | 无 | `haproxy` 或 `nginx`，**必填** |
-| `peers` | 数组 | `[]` | 被聚合的远端 setline 实例；与 `remote` 互斥 |
-| `remote` | 字符串 | 无 | registry manifest 的 URL 或本地路径；与 `peers` 互斥 |
-| `output` | 字符串 | 空 | 片段落盘路径；留空打到标准输出（**单机部署必填**） |
-| `bind` | 字符串 | 空 | 留空 = 片段不管监听，只出规则和后端；有值 = 片段自己持有监听 |
-| `token` | 字符串 | 空 | peers 未单独设置 token 时的默认值 |
-| `workDir` | 字符串 | `/tmp/setline-agent` | `remote` 模式的下载与解包目录 |
-| `sync` | 对象 | `{"mode":"once"}` | 同步机制，见下 |
+| `peers` | 数组 | `[]` | 被聚合的远端 setline 实例；留空即单机部署 |
+| `output` | 字符串 | 空 | 片段落盘**根目录**（绝对路径）；留空打到标准输出（**单机部署必填**） |
+| `token` | 字符串 | 空 | 读取所有 peer 路由表时共用的 `X-Setline-Token`（peer 级不再有独立 token） |
 
-`peers`/`remote`/单机三种形态的边界：同时配 `peers` 与 `remote` 报
-`agent.remote and agent.peers cannot be used together`；单机形态漏写 `output` 报
-`agent.output is required when agent.peers and agent.remote are not set`；`"peers": []`
-（空数组）报 `agent.peers must not be empty`。都靠 `setline -c -f <cfg>` 就能看到，
-不用起服务。
+`peers`/单机两种形态的边界：单机形态漏写 `output` 报
+`agent.output is required when agent.peers is not set`；`"peers": []`（空数组）报
+`agent.peers must not be empty`。都靠 `setline -c -f <cfg>` 就能看到，不用起服务。
+
+`output` 只给一个根目录即可，里面放什么由 setline 决定：按 `type` 落到
+`<output>/haproxy/` 或 `<output>/nginx/`，文件名固定为 `setline.cfg`（haproxy）或
+`setline.conf`（nginx）；haproxy 另写一份路由 map，nginx 按 host 再分几个 location
+文件（见「output 的目录布局」）。目录不存在时会逐级创建，因此运维只要保证根目录可写（`setline-apply` 的
+`HAPROXY_FRAGMENT_DIR`/`NGINX_FRAGMENT_DIR` 默认正是 `/var/lib/setline/haproxy` 与
+`/var/lib/setline/nginx`）。
+
 完整可跑的 agent 配置见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`
 的「setline 配置示例」。
 
-`agent.bind` 决定片段形态：
-
-| `bind` | 模式 | 生成内容 | 监听段归属 |
-|---|---|---|---|
-| 留空（推荐） | 规则模式 | 后端定义 + 路由规则（haproxy 是 map，nginx 是每个 host 的 location） | 代理主配置 |
-| 有值（如 `*:80`） | 自包含模式 | 后端定义 + 带 `bind`/`listen` 的监听段 | 片段本身 |
-
-接线步骤（`-f <dir>`、`include`、规则模式需要的一次性配置）见
-`docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
+片段**固定只出规则和后端定义**，不含任何监听段：`bind` / `listen` 归代理主配置。
+曾经的 `agent.bind`（让片段自己持有监听）已取消，配置里写了会报
+`agent.bind has been removed`。接线步骤（haproxy 的 `-f <dir>` 与四条 map 查询、nginx 的
+`include`）见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
 
 `type` 也是热加载分派的依据：`setline-apply.timer` 只启用一个，`setline-apply auto`
 会对每份配置执行 `setline -f <cfg> --agent-type`，按这里填的 `haproxy`/`nginx` 决定
@@ -306,11 +308,11 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 {
   "agent": {
     "type": "nginx",
-    "output": "/var/lib/setline/nginx/setline.conf",
+    "output": "/var/lib/setline",
     "token": "shared-token",
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" },
-      { "name": "app2", "url": "http://10.0.1.11:8080", "token": "app2-token" }
+      { "name": "app2", "url": "http://10.0.1.11:8080" }
     ]
   }
 }
@@ -320,10 +322,13 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 |---|---|---|
 | `url` | 是 | 对端 setline 的基地址，既用于读路由表，也提供回源主机；见下节 |
 | `name` | 否 | 只影响生成的服务名，便于人工阅读 |
-| `token` | 否 | 该 peer 的 `X-Setline-Token`，缺省回退到 `agent.token` |
 
-peer 对象只认这三个字段，写错字段名（例如写一个不存在的 `address`）会在
+peer 对象只认这两个字段，写错字段名（例如写一个不存在的 `address`）会在
 `setline -c` 时报错，而不是被默默忽略。
+
+peer 不带自己的凭据：agent 拿顶层 `token` 当所有 peer 共用的 `X-Setline-Token`
+（对端 `adminToken` 要与它一致）。曾经的 `peers[].token` 已取消，写了会报
+`agent.peers[].token has been removed`，避免每加一台机器就同步一份凭据。
 
 每个 peer 路由表里的本机端口会被改写成 `<url 的主机>:<port>`；不同 peer 上 host 与
 前缀相同的路由会合并成同一个 upstream/backend 的多台 server。
@@ -349,19 +354,18 @@ peer 对象只认这三个字段，写错字段名（例如写一个不存在的
 
 `name` 留空时也取这个主机，只影响生成的服务名，便于人工阅读。
 
-### 单机部署（不配 peers / remote）
+### 单机部署（不配 peers）
 
 haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回源的后端和 setline 要
 调度的后端是同一批进程，没有必要让 setline 绕一圈去拉自己的路由表。`agent` 里只写
-`type` 和 `output`，不写 `peers` 也不写 `remote`，setline 就进入单机模式：
+`type` 和 `output`，不写 `peers`，setline 就进入单机模式：
 
 ```json
 {
   "listen": "127.0.0.1:8080",
   "agent": {
     "type": "haproxy",
-    "output": "/var/lib/setline/haproxy/setline.cfg",
-    "bind": ""
+    "output": "/var/lib/setline"
   },
   "routes": {
     "app.example.com": {
@@ -371,45 +375,45 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 }
 ```
 
-和纯渲染机（配了 `peers`/`remote`）的三点区别：
+和纯渲染机（配了 `peers`）的三点区别：
 
 - setline **照常监听** `listen`，作为 basctl 推路由的登记处（控制面，业务流量不经过它）；
-- 片段在**启动时渲染一次**，之后每次经管理接口（`PUT` / `DELETE /__setline/routes*`）
-  改路由就**立即重渲染**，不需要 `sync` 定时器，也不依赖外面再跑一个 `setline -f`；
+- 片段在**启动时渲染一次**，之后每次经管理接口（`PUT` / `DELETE /_setline/routes*`）
+  改路由就**立即重渲染**，不需要外部 timer，也不依赖外面再跑一个 `setline -f`；
 - `output` **必填**：没有外部驱动，留空只会把片段反复打到标准输出。
 
-写片段失败（目录不存在、权限不足）只打一行 `setline agent sync failed: ...`，setline
+写片段失败（根目录不可写、磁盘满等）只打一行 `setline agent render failed: ...`，setline
 照常运行（业务流量本来就不经过它），下次改路由会再试——不会因为片段写不出去而让业务断掉。
+子目录（`haproxy/`、`nginx/`）由 setline 按需创建，不需要事先手建。
 
 回源主机固定为 `127.0.0.1` —— 单机部署下路由端口都在本机。生成的服务名用 `local`
 前缀（例如 `local_app_example_com_api_edu`），与 peer 模式的服务名区分开。
 
 单机模式下 `setline-apply.timer` 仍然有用：片段变了就 reload 代理，片段没变则无动作。
 
-### sync
+### output 的目录布局
 
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `mode` | 字符串 | `once` | `once` 渲染一轮即退出；`interval` 常驻按周期重复 |
-| `intervalMillis` | 整数 > 0 | `30000` | `interval` 模式的周期 |
+`output` 是**根目录**，下面的目录名和文件名都由 setline 决定，不开放配置——它们同时是
+`setline-apply` 与代理主配置接线的约定（`include` / `-f` 的路径写死了），运维只需要给
+一个可写的根目录，别再手工拼文件名。目录不存在时逐级创建。
 
-`interval` 需要同时配置 `output`；没有 `output` 时会退化成跑一轮就退出。
+目录名按 `type` 取固定值 `haproxy`/`nginx`；文件名主干固定为 `setline`，扩展名按代理
+区分，这个不是风格问题：
 
-### output 的文件名
+- haproxy 的 `-f <dir>` **只加载 `.cfg`**，所以主片段叫 `setline.cfg`；
+- nginx 的 `include` 通常写成 `*.conf`，所以主片段叫 `setline.conf`。
 
-片段文件名按目标代理选扩展名，这个不是风格问题：
+除主片段外还会派生几个文件：
 
-- haproxy 的 `-f <dir>` **只加载 `.cfg`**，所以片段要叫 `*.cfg`（例如 `setline.cfg`）。
-- nginx 的 `include` 通常写成 `*.conf`，所以片段要叫 `*.conf`（例如 `setline.conf`）。
-
-规则模式（`bind` 留空）会多写几个派生文件，都以 `output` 的文件名为前缀：
-
-| 代理 | 文件 | 作用 |
+| 代理 | 文件（相对 `<output>`） | 作用 |
 |---|---|---|
-| haproxy | `<output>` | 只有 `backend` 段 |
-| haproxy | `<stem>.map` | 路由表，主配置 frontend 用 `map_beg()` 查它 |
-| nginx | `<output>` | 只有 `upstream` 段，在 `http {}` 里 include |
-| nginx | `<stem>.<host>.conf` | 该 host 的 `location`，在对应 `server {}` 里 include；`*` 回退路由是 `<stem>.default.conf` |
+| haproxy | `haproxy/setline.cfg` | 只有 `backend` 段 |
+| haproxy | `haproxy/setline.map` | 路由表，主配置 frontend 用 `map_beg()` 查它 |
+| nginx | `nginx/setline.conf` | 只有 `upstream` 段，在 `http {}` 里 include |
+| nginx | `nginx/setline.<host>.conf` | 该 host 的 `location`，在对应 `server {}` 里 include；`*` 回退路由是 `nginx/setline.default.conf` |
+
+`output` 覆盖范围是**整个 `<type>` 子目录**，所以不要把别的文件放进
+`<output>/haproxy/`（`setline-apply` 按目录整体校验和还原，见 `docs/agent-reload.md`）。
 
 写好后还需要一次性接线（nginx 加 `include`，haproxy 加 `-f`），校验与热加载由
 `setline-apply` 负责，见 `docs/haproxy-integration.md`、`docs/nginx-integration.md`
@@ -504,18 +508,17 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 }
 ```
 
-### agent：生成 haproxy 片段（规则模式）
+### agent：生成 haproxy 片段
 
-生成 `setline.cfg`（backend）加 `setline.map`（路由表），主配置的 frontend 加四行
-（`set-var` + `concat` + 两条 `map_beg()` 查询）即可，`bind` 仍归主配置。
+生成 `haproxy/setline.cfg`（backend）加 `haproxy/setline.map`（路由表），主配置的
+frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可。
 
 ```json
 {
   "agent": {
     "type": "haproxy",
-    "output": "/var/lib/setline/haproxy/setline.cfg",
+    "output": "/var/lib/setline",
     "token": "shared-token",
-    "sync": { "mode": "once" },
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" }
     ]
@@ -534,32 +537,13 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
   "listen": "127.0.0.1:8080",
   "agent": {
     "type": "haproxy",
-    "output": "/var/lib/setline/haproxy/setline.cfg",
-    "bind": ""
+    "output": "/var/lib/setline"
   },
   "routes": {
     "app.example.com": {
       "/api/edu": [9002, 9003],
       "/": 9090
     }
-  }
-}
-```
-
-### agent：自包含片段（片段自己持有监听）
-
-给 `bind` 一个值，片段就会带上 `frontend`/`server` 的监听段；此时不需要主配置再做
-`map_beg()` 或 `location` 接线。
-
-```json
-{
-  "agent": {
-    "type": "nginx",
-    "output": "/var/lib/setline/nginx/setline.conf",
-    "bind": "*:80",
-    "peers": [
-      { "name": "app1", "url": "http://10.0.1.10:8080" }
-    ]
   }
 }
 ```
@@ -587,10 +571,14 @@ curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
 | `route value must be port or ports` | 路由值不是整数也不是数组 |
 | `route port must be 1..65535` | 端口越界 |
 | `route host must not include port` | host 里写了端口 |
-| `agent.remote and agent.peers cannot be used together` | 同时配了 bundle 和 peers 两种来源 |
+| `agent.remote has been removed: use agent.peers or local routes` | 写了已取消的 `agent.remote`（数据来源只剩 `peers` 与本机路由表） |
+| `agent.workDir has been removed: agent.remote is gone` | 写了已取消的 `agent.workDir` |
 | `agent.type is required: haproxy or nginx` | 配了 `agent` 但没写 `type`（或写错） |
-| `agent.output is required when agent.peers and agent.remote are not set` | 单机模式没写 `output` |
+| `agent.bind has been removed: the fragment never owns the listener` | 写了已取消的 `agent.bind`（监听段只归代理主配置） |
+| `agent.output is required when agent.peers is not set` | 单机模式没写 `output` |
+| `agent.output must be an absolute directory path` | `output` 写成相对路径（会随 CWD 漂移，破坏固定布局） |
+| `agent.output must not be empty` | `output` 写成空字符串（等同于没配） |
 | `agent.peers must not be empty` | 写了 `"peers": []` |
-| `agent.sync.mode must be once or interval` | 同步模式拼错 |
+| `agent.sync has been removed: drive setline from a systemd timer` | 写了已取消的 `agent.sync`（渲染节奏由 `setline-render.timer` 驱动） |
 | `agent.peers[] has unknown field: <key>` | peer 里写了不存在的字段（例如已取消的 `address`） |
 | `cannot derive backend host from agent.peers[].url` | peer 的 `url` 没有主机（`file://`、本地路径） |

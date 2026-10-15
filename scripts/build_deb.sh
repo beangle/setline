@@ -63,6 +63,8 @@ cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/sh
 cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
 cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
+cp -f "$SETLINE_HOME/scripts/package/setline-render.service" usr/lib/systemd/system/setline-render.service
+cp -f "$SETLINE_HOME/scripts/package/setline-render.timer" usr/lib/systemd/system/setline-render.timer
 cp -f "$SETLINE_HOME/scripts/package/setline-apply.service" usr/lib/systemd/system/setline-apply.service
 cp -f "$SETLINE_HOME/scripts/package/setline-apply.timer" usr/lib/systemd/system/setline-apply.timer
 
@@ -92,7 +94,7 @@ DEBCOPYRIGHT
 
 chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/setline usr/lib/systemd usr/lib/systemd/system
 chmod 0755 usr/bin/setline usr/lib/setline/setline-apply
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/apply.conf.example usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/apply.conf.example usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-render.service usr/lib/systemd/system/setline-render.timer usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
 
 mkdir -p DEBIAN
 
@@ -155,7 +157,7 @@ if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
   # 卸载时清掉 timer 的 enable 链接，否则会留下指向已删除脚本的悬空 unit，
   # timer 继续按周期失败。setline-apply@*.timer 是老版本的按代理模板单元，
   # 升级上来的机器可能还开着，一并清掉。
-  for unit in /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
+  for unit in /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
     [ -e "$unit" ] || continue
     systemctl disable --now "$(basename "$unit" .timer)" 2>/dev/null || true
   done
