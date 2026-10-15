@@ -213,6 +213,11 @@ import setline.http;
   assertThrown!HttpHeadTooLargeException(scanner.feed(current));
 }
 
+@("http caps the admin request body at the defensive limit") unittest {
+  validateAdminBodySize(maxAdminBodySize);
+  assertThrown!RequestBodyTooLargeException(validateAdminBodySize(maxAdminBodySize + 1));
+}
+
 @("http parses multiple intermediate responses before final response") unittest {
   string pending =
     "HTTP/1.1 100 Continue\r\n\r\n" ~

@@ -29,13 +29,13 @@ import setline.config : normalizeRouteHost, normalizeRoutePrefix, parsePort;
 import setline.edge : BackendInstance, BackendService, fetchText, hostsOf,
   renderHaproxyBackends, renderHaproxyMap, renderNginxLocations, renderNginxUpstreams;
 import setline.model : AgentConfig, HostRoutes, PeerConfig, Route;
-import setline.util : adminPrefix;
+import setline.util : adminPrefix, peerRoutesPath;
 
 /** 计算 peer 路由表接口 URL；给出的既可以是 setline 基地址，也可以是完整的 routes URL。 */
 string peerRoutesUrl(PeerConfig peer) {
   enforce(peer.url.length > 0, "agent.peers[].url must not be empty");
-  if (peer.url.canFind(adminPrefix ~ "/routes")) return peer.url;
-  return peer.url.stripRight("/") ~ adminPrefix ~ "/routes";
+  if (peer.url.canFind(peerRoutesPath)) return peer.url;
+  return peer.url.stripRight("/") ~ peerRoutesPath;
 }
 
 /** 计算 peer 在边缘代理上的后端主机，也就是 URL 的主机部分（不含端口和路径）。
@@ -118,6 +118,7 @@ string requiredPeerString(JSONValue value, string key) {
 /** 读取所有 peer 的路由表并合并成边缘代理服务列表。
 
     `fetcher` 用来读取单个 peer 的路由表，默认走 HTTP；测试可以注入本地实现，避免依赖网络。
+    第二个参数是凭据：所有 peer 共用 `agent.token` 这一个共享 token，没有 peer 级覆盖。
 */
 BackendService[] collectPeerServices(AgentConfig agent,
     HostRoutes[] delegate(PeerConfig, string) fetcher = toDelegate(&fetchPeerRoutes)) {

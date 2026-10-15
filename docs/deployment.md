@@ -208,33 +208,56 @@ idle. A client connection that stops sending requests releases its upstream
 connection back to the pool; the pool itself expires idle connections on the same
 timeout.
 
-### Splitting the admin plane
+### The admin plane
 
-The recommended production shape keeps the data plane on loopback and gives the
-admin API its own address:
+The admin API is split across the two listeners. The data plane (`listen`)
+serves exactly one endpoint, `GET /_setline/routes`; the status page,
+`status.json` and every write live only on `adminListen` (`127.0.0.1:10080` by
+default, so writes stay a local operation). The recommended production shape
+keeps the data plane on loopback and leaves the admin listener alone:
 
 ```json
 {
   "listen": "127.0.0.1:8080",
-  "adminListen": "*:8081",
+  "adminListen": "127.0.0.1:10080",
   "adminToken": "please-change-me"
 }
 ```
 
 `listen` is where the front proxy sends traffic, so it never needs to leave the
-machine. `adminListen` is what a collector on another host reads; it serves only
-`/__setline/*` (everything else is `404`) and does not route to backends. Writes
-still come only from a loopback TCP peer, so a `*`-bound admin listener exposes
-exactly the read API, gated by `adminToken`.
+machine - and because it also carries the peer protocol read (`GET
+/_setline/routes`), "who can reach the proxy" and "who can read the route table"
+are the same question. With no `adminToken`, that read is open to anything that
+reaches `listen`: keep the front proxy rejecting `/_setline`, set `adminToken`
+(one credential, `X-Setline-Token`, no Basic Auth), or point the proxy only at
+the application backends.
 
-Without `adminListen` the two planes share one port, which forces the data plane
-out of loopback as soon as a remote collector needs the route table. Tools that
-push or read routes (basctl, peers) must point at `adminListen` once it is set:
-the two listeners are two separate entry points.
+`adminListen` is what tools and collectors may also connect to; it serves the
+whole `/_setline/*` API (everything else is `404`) and does not route to
+backends. It carries the writes, which still require a local caller, so the
+default `127.0.0.1:10080` keeps route changes a purely local operation. It is
+also the only door for the status page and `status.json`: those describe the
+listener, timeouts, health-check tuning and counters, have no cross-machine
+consumer, and would only widen what a leaked `/_setline` exposes. Bind it to `*`
+only when a collector cannot go through the proxy.
+
+Local means a loopback TCP peer *and* a loopback request host, so a local proxy
+relaying a remote request (`remote client -> haproxy/nginx -> setline`) is
+treated as remote: its writes get `403` and its reads need the token. A proxy can
+rewrite `Host` to evade that, so keep denying the admin path at the proxy itself
+(`http-request deny if { path_beg /_setline }`,
+`location ^~ /_setline { return 404; }`).
+
+Tools work against either door: basctl writes (so `adminListen`), and the peer
+protocol reads the route table on `listen`. Sending a write to `listen` gets a
+`404` - the admin listener is the only place where routes can be changed - and
+so does a status read, which only `adminListen` serves.
 
 Startup still validates the address pair: `adminListen` may not duplicate
-`listen` (including `*:port` versus a concrete address on the same port) and may
-not be combined with `"listen": false`.
+`listen` (including `*:port` versus a concrete address on the same port), and
+`"adminListen": false` is rejected — it no longer means "share `listen`". A
+`"listen": false` deployment must not set `adminListen` at all, and a `listen`
+that would land on 10080 without an explicit `adminListen` is rejected too.
 
 ## Runtime Route Updates
 
@@ -254,17 +277,22 @@ route host. They do not require the admin token: the localhost check is the
 whole access control for writes. Keep these endpoints bound to trusted local
 automation such as service startup scripts or deployment hooks.
 
-Reads take a different path. `GET /__setline/routes` and the status page require
-`adminToken` and are not limited to localhost, because same-network services
-(for example a haproxy/nginx config synchronization agent) are expected to read
-the route table. Set `adminToken` whenever `listen` binds `*`.
+Reads take a different path. `GET /_setline/routes` requires `adminToken` for
+non-local callers and is served on `listen` as well as on `adminListen`, because
+same-network services (for example a haproxy/nginx config synchronization agent)
+are expected to read the route table; the status page and `status.json` keep the
+same credential but live on `adminListen` alone. Because the route table read
+rides the data plane, an empty `adminToken` leaves it open to whoever the front
+proxy lets through: set `adminToken`, keep `/_setline` denied at the proxy (a
+rule matching just `/_setline/routes` is enough), or keep `listen` on loopback.
 
 That read path is what `agent.peers` uses: an edge proxy machine reads each
 peer's route table with `X-Setline-Token`, rewrites the peer's local ports to
 `<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
-a HAProxy/Nginx fragment to `agent.output`. `agent.remote` is the alternative
-source (a registry bundle) and cannot be combined with `agent.peers`. By default
-the fragment carries only rules and backends, so the proxy's own config keeps
+a HAProxy/Nginx fragment under the `agent.output` root directory
+(`<root>/{haproxy,nginx}/setline.{cfg,conf}`). Leave `agent.peers` empty and the
+same output is rendered from the local route table instead. By default the
+fragment carries only rules and backends, so the proxy's own config keeps
 the listener; how to wire each proxy is in `docs/haproxy-integration.md` and
 `docs/nginx-integration.md`.
 
@@ -304,7 +332,7 @@ required open files = 2 * maxConnections + 64
   has served one request keeps its upstream connection until the front proxy
   closes the client connection.
 - `64` — overhead that does not scale with traffic: the data listener and the
-  optional `adminListen` listener, eventcore's epoll/eventfd/timerfd handles, the
+  admin listener (`adminListen`), eventcore's epoll/eventfd/timerfd handles, the
   health probes (one connection at a time), the `--sync-map` admin socket, and
   the idle upstream pool that recycling leaves behind (at most 32 connections per
   backend port; the pool ceiling is 4..32, see "Upstream connection affinity").

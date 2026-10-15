@@ -17,11 +17,10 @@
 module setline.admin;
 
 import std.array : appender, split;
-import std.base64 : Base64;
 import std.conv : to;
 import std.exception : enforce;
 import std.json : JSONValue, parseJSON;
-import std.string : indexOf, startsWith;
+import std.string : indexOf, lastIndexOf, startsWith, strip;
 
 import vibe.core.net : TCPConnection;
 
@@ -32,18 +31,26 @@ import setline.jsonview;
 import setline.model : HostRoutes, Route;
 import setline.proxy;
 import setline.state;
-import setline.util : adminPrefix, escapeHtml;
+import setline.util : adminPrefix, escapeHtml, toLowerAscii;
 
-/** 处理 `__setline` 管理接口请求。
+/** 处理 `_setline` 管理接口请求。
 
     管理接口的方向不同，安全边界也不同：
 
-    - **写**（`PUT` / `DELETE` 路由）：只接受 TCP 对端是本机的请求，**不需要 token**。改路由等于
-      改流量走向，不对外开放，判断依据是 TCP 对端地址而不是可伪造的 `Forwarded` 头。
-    - **读**（`GET` 路由表、状态页）：**本机来源免凭据**（与写接口同一条门，本机的读写不该有两种
-      待遇），非本机来源才看 `adminToken`。将来同网段的服务进程（例如把路由同步成 haproxy /
-      nginx 配置的 agent）要读这份路由表，token 就是那条路径的凭据；token 为空时按开发模式放行，
-      生产上 `listen` 绑 `*` 时必须设置，否则路由表对外可读。
+    - **写**（`PUT` / `DELETE` 路由）：只接受**本机**请求，**不需要 token**。改路由等于改流量
+      走向，不对外开放。它只挂在管理监听上（见 `docs/configuration.md`）。
+    - **读**（`GET` 路由表、状态页、`status.json`）：**本机**免凭据，其它来源一律看
+      `X-Setline-Token`（就是 `adminToken`）——读只有这一种凭据，没有 Basic Auth，也没有哪种
+      读接口例外。token 为空时按开发模式放行，把路由表暴露给不可信客户端（例如前置代理
+      不拒 `/_setline`）就必须设置。
+
+    哪些读走哪个监听由 `setline.server` 决定：数据面 `listen` 只把 `GET /_setline/routes`
+    （peer 协议，`setline.util.peerRoutesPath`）转发到这里，状态页与 `status.json` 只在管理口
+    上——它们没有跨机消费者，含监听地址、超时和计数器，挂在数据面上只会放大暴露面。
+
+    **「本机」= TCP 对端是回环，且请求的 Host 也是回环名**（见 {@link isLocalAdminRequest}）。
+    只看对端不够：`远端 → 本机 haproxy/nginx → setline` 时对端就是 `127.0.0.1`，但请求带着浏览器
+    看到的主机名。加上 Host 这一维之后，这类转发请求既进不了写接口，读接口也要凭据。
 
     管理接口是当前少数需要完整读取 request body 的路径：GET 返回内存路由表快照，PUT 用
     JSON body 新增或替换一条路由。普通业务代理请求不会进入这里，因此不会因为管理接口的
@@ -51,9 +58,10 @@ import setline.util : adminPrefix, escapeHtml;
 */
 void handleAdmin(TCPConnection client, string method, string target, string request) {
   auto path = requestPath(target);
+  auto fromLocalhost = isLocalAdminRequest(client, request);
   if ((path == adminPrefix ~ "/status" || path == adminPrefix ~ "/status.html") && method == "GET") {
-    if (!isStatusAllowed(isLocalhost(client), request)) {
-      sendBasicChallenge(client);
+    if (!isReadAllowed(fromLocalhost, request)) {
+      sendResponse(client, 401, "Unauthorized", "missing or invalid token");
       return;
     }
     sendRaw(client, "200 OK", "text/html; charset=utf-8", statusHtml());
@@ -61,8 +69,8 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/status.json" && method == "GET") {
-    if (!isStatusAllowed(isLocalhost(client), request)) {
-      sendBasicChallenge(client);
+    if (!isReadAllowed(fromLocalhost, request)) {
+      sendResponse(client, 401, "Unauthorized", "missing or invalid token");
       return;
     }
     sendJson(client, statusJson());
@@ -70,7 +78,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "GET") {
-    if (!isReadAllowed(isLocalhost(client), request)) {
+    if (!isReadAllowed(fromLocalhost, request)) {
       sendResponse(client, 401, "Unauthorized", "missing or invalid token");
       return;
     }
@@ -79,7 +87,10 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "PUT") {
-    if (!isLocalRouteUpdateAllowed(client)) return;
+    if (!isLocalRouteUpdateAllowed(fromLocalhost)) {
+      rejectRemoteRouteUpdate(client);
+      return;
+    }
     try {
       auto host = routeHostFromTarget(target);
       auto route = parseSingleRoute(parseJSON(bodyOf(request)));
@@ -93,7 +104,10 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "DELETE") {
-    if (!isLocalRouteUpdateAllowed(client)) return;
+    if (!isLocalRouteUpdateAllowed(fromLocalhost)) {
+      rejectRemoteRouteUpdate(client);
+      return;
+    }
     try {
       auto host = routeHostFromTarget(target);
       auto prefix = queryValue(target, "prefix");
@@ -112,7 +126,10 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes/all" && method == "PUT") {
-    if (!isLocalRouteUpdateAllowed(client)) return;
+    if (!isLocalRouteUpdateAllowed(fromLocalhost)) {
+      rejectRemoteRouteUpdate(client);
+      return;
+    }
     try {
       auto host = routeHostFromTarget(target);
       auto root = parseJSON(bodyOf(request));
@@ -129,13 +146,59 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   sendResponse(client, 404, "Not Found", "unknown admin endpoint");
 }
 
-/** 判断当前连接是否允许执行本地路由更新（写接口只认本机，与 token 无关）。 */
-bool isLocalRouteUpdateAllowed(TCPConnection client) {
-  if (isLocalhost(client)) {
-    return true;
-  }
+/** 判断当前请求是否允许执行本地路由更新（写接口只认本机，与 token 无关）。 */
+bool isLocalRouteUpdateAllowed(bool fromLocalhost) {
+  return fromLocalhost;
+}
+
+/** 回写一条 403，说明写接口只接受本机请求。 */
+void rejectRemoteRouteUpdate(TCPConnection client) {
   sendResponse(client, 403, "Forbidden", "route updates are only allowed from localhost");
-  return false;
+}
+
+/** 判定请求是否算「本机」：TCP 对端是回环，且请求声明的主机也是回环名。
+
+    第二维借用 micdn `getOrigin` 的口径：先看代理声明的 `X-Forwarded-Host`，再看 `Host`。
+    经本机代理转发的远端请求，这两个里至少有一个是浏览器看到的公开主机名，于是不再算本机
+    ——写接口拒绝，读接口要 `X-Setline-Token`。
+
+    代理可以改写 Host / 删掉转发头来伪装，所以这是**纵深防御**，不是安全边界；真正的边界是
+    不让代理指向管理口（见 docs/configuration.md、docs/haproxy-integration.md）。
+*/
+bool isLocalAdminRequest(TCPConnection client, string request) {
+  return isLocalhost(client) && isLoopbackRequestHost(request);
+}
+
+/** 请求声明的主机是否为回环名：优先 `X-Forwarded-Host`（代理声明），其次 `Host`。 */
+bool isLoopbackRequestHost(string request) {
+  auto declared = headerValue(request, "X-Forwarded-Host");
+  auto hostPort = declared.length > 0 ? declared : headerValue(request, "Host");
+  return isLoopbackHostName(hostPort);
+}
+
+/** `host[:port]` 是否为回环名：`127.0.0.1`、`[::1]`、`::1`、`localhost`，忽略端口与大小写。
+
+    没有 Host（HTTP/1.0 或刻意省略）一律不算本机：管理接口不欢迎这种请求。
+*/
+bool isLoopbackHostName(string hostPort) {
+  auto name = hostNameOf(hostPort);
+  return name == "127.0.0.1" || name == "::1" || name == "localhost";
+}
+
+/** 从 `host[:port]` 取主机名：去掉端口与 IPv6 方括号，转小写；解析不出来返回空串。 */
+string hostNameOf(string hostPort) {
+  auto value = hostPort.strip;
+  if (value.length == 0) return "";
+  if (value[0] == '[') {
+    auto close = value.indexOf(']');
+    return close > 0 ? value[1 .. close].toLowerAscii : "";
+  }
+  auto colon = value.indexOf(':');
+  // 单个冒号才是 host:port；多个冒号是不带方括号的 IPv6 字面量（没有端口可拆）。
+  if (colon >= 0 && colon == value.lastIndexOf(':')) {
+    return value[0 .. colon].toLowerAscii;
+  }
+  return value.toLowerAscii;
 }
 
 /** 从管理接口 target 中读取并规范化 host 参数。 */
@@ -146,27 +209,24 @@ string routeHostFromTarget(string target) {
 }
 
 /**
- * 读接口（`GET /__setline/routes`）的准入：**本机来源免凭据**，非本机才看 token。
+ * 读接口（`GET` 路由表、状态页、`status.json`）的准入：**本机免凭据**，其它来源看
+ * `X-Setline-Token`。所有读接口共用这一条规则，没有例外、也没有第二种凭据。
  *
- * 第一个参数是 `isLocalhost(client)` 的结果——做成纯函数是为了能在单测里覆盖"本机 / 非本机 ×
- * 有 token / 无 token"四种组合：TCP 对端地址在单测里伪造不了。本机免凭据的理由与写接口同源：
- * 拨得动 localhost 的本来就在这台机器上，读写不该有两种待遇（basctl 因此不需要存任何凭据）。
+ * 第一个参数是 {@link isLocalAdminRequest} 的结果——做成纯函数是为了能在单测里覆盖"本机 /
+ * 非本机 × 有 token / 无 token"四种组合：TCP 对端地址在单测里伪造不了。本机免凭据的理由与
+ * 写接口同源：拨得动 localhost、且说的是回环主机名的请求本来就在这台机器上（basctl 因此
+ * 不需要存任何凭据）。
  */
 bool isReadAllowed(bool fromLocalhost, string request) {
   return fromLocalhost || isAuthorized(request);
 }
 
-/** 状态页 / 状态 JSON 的准入：与 {@link isReadAllowed} 同一条规则，凭据换成 Basic Auth。 */
-bool isStatusAllowed(bool fromLocalhost, string request) {
-  return fromLocalhost || isBasicAuthorized(request);
-}
-
 /** 校验管理接口 token。
 
-    只保护**读**接口（`GET` 路由表）的**非本机**来源：本机来源由 {@link isReadAllowed} 直接放行，
-    连 token 都不看；将来同网段的服务进程（例如同步 haproxy 的 agent）要读路由表，token 就是
-    那条路径的凭据。未配置 token 时一律放行，方便开发场景；生产上 `listen` 绑 `*` 时必须设置，
-    否则路由表对外可读。写接口不走这里，它只认 TCP 对端是本机。
+    只保护**读**接口的**非本机**来源（`GET` 路由表、状态页、`status.json` 都用它）：本机来源由
+    {@link isReadAllowed} 直接放行，连 token 都不看；同网段的服务进程（例如同步 haproxy /
+    nginx 的 agent）读路由表，token 就是那条路径的凭据。未配置 token 时一律放行，方便开发
+    场景；生产上 `listen` 绑 `*` 时必须设置，否则路由表对外可读。写接口不走这里，它只认本机。
 */
 bool isAuthorized(string request) {
   auto token = adminToken();
@@ -213,43 +273,6 @@ string queryValue(string target, string name) {
   return "";
 }
 
-/** 校验 status 页面使用的 Basic Auth。
-
-    status 页面面向浏览器访问，使用 Basic Auth 比自定义 token 头更方便。用户名固定为
-    `setline`，密码复用 `adminToken`；本机来源同样免凭据（见 {@link isStatusAllowed}），未配置
-    token 时按开发模式放行。与读接口同一套凭据，因此同网段的服务进程也能取到状态 JSON。
-*/
-bool isBasicAuthorized(string request) {
-  return isBasicAuthorized(request, adminToken());
-}
-
-/** 校验指定 token 下的 Basic Auth 请求。 */
-bool isBasicAuthorized(string request, string token) {
-  if (token.length == 0) {
-    return true;
-  }
-
-  auto authorization = headerValue(request, "Authorization");
-  if (!authorization.startsWith("Basic ")) {
-    return false;
-  }
-
-  try {
-    auto decoded = cast(string) Base64.decode(authorization["Basic ".length .. $]);
-    return decoded == "setline:" ~ token;
-  }
-  catch (Exception) {
-    return false;
-  }
-}
-
-/** 返回 Basic Auth 挑战响应。 */
-void sendBasicChallenge(TCPConnection client) {
-  string[string] headers;
-  headers["WWW-Authenticate"] = `Basic realm="setline status"`;
-  sendRaw(client, "401 Unauthorized", "text/plain; charset=utf-8", "authentication required\n", headers);
-}
-
 /** 渲染状态页面 HTML。 */
 string statusHtml() {
   auto listen = listenAddress();
@@ -277,11 +300,9 @@ string statusHtml() {
   html.put("<h1>setline status</h1>");
   html.put("<section><dl>");
   html.put("<dt>listen</dt><dd>" ~ escapeHtml(listen.host) ~ ":" ~ listen.port.to!string ~ "</dd>");
-  if (adminListenSeparated()) {
-    auto admin = adminListenAddress();
-    html.put("<dt>admin listen</dt><dd>" ~ escapeHtml(admin.host) ~ ":" ~
-      admin.port.to!string ~ "</dd>");
-  }
+  auto admin = adminListenAddress();
+  html.put("<dt>admin listen</dt><dd>" ~ escapeHtml(admin.host) ~ ":" ~
+    admin.port.to!string ~ "</dd>");
   html.put("<dt>active connections</dt><dd>" ~ activeConnections().to!string ~ "</dd>");
   html.put("<dt>active requests</dt><dd>" ~ activeRequests().to!string ~ "</dd>");
   html.put("<dt>max connections</dt><dd>" ~ maxConnections().to!string ~ "</dd>");
@@ -326,13 +347,8 @@ JSONValue statusJson() {
   listenJson["host"] = JSONValue(listen.host);
   listenJson["port"] = JSONValue(listen.port);
   root["listen"] = JSONValue(listenJson);
-  if (adminListenSeparated()) {
-    auto admin = adminListenAddress();
-    JSONValue[string] adminJson;
-    adminJson["host"] = JSONValue(admin.host);
-    adminJson["port"] = JSONValue(admin.port);
-    root["adminListen"] = JSONValue(adminJson);
-  }
+  // 这里不报管理口地址：status.json 是给机器读的（采集机、面板），管理入口属于本机排障
+  // 信息，只留在状态页 HTML 和启动日志里。
   root["activeConnections"] = JSONValue(activeConnections());
   root["activeRequests"] = JSONValue(cast(long) activeRequests());
   root["maxConnections"] = JSONValue(maxConnections());

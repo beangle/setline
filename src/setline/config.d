@@ -115,15 +115,13 @@ Config parseConfigFile(string path) {
     }
   }
   if ("adminListen" in root.object) {
+    // listen:false 是「渲染完就退出」，没有进程来服务这个管理监听。
+    enforce(!config.listenDisabled, "adminListen cannot be combined with listen:false");
     auto adminListen = root["adminListen"];
-    if (adminListen.type == JSONType.false_) {
-      config.adminListenEnabled = false;
-    } else {
-      enforce(adminListen.type != JSONType.true_,
-        "adminListen must be port, host:port or false");
-      config.adminListen = parseListen(adminListen, "adminListen");
-      config.adminListenEnabled = true;
-    }
+    enforce(adminListen.type != JSONType.false_,
+      "adminListen must be port or host:port: the admin API always has its own listener");
+    enforce(adminListen.type != JSONType.true_, "adminListen must be port or host:port");
+    config.adminListen = parseListen(adminListen, "adminListen");
   }
   if ("adminToken" in root.object) {
     config.adminToken = root["adminToken"].str;
@@ -172,11 +170,15 @@ Config parseConfigFile(string path) {
   // 不监听就没有管理接口，运行时路由无从下发，必须自带数据来源（本机配置文件或 agent）。
   enforce(!config.listenDisabled || config.agent.type.length > 0,
     "listen:false requires agent.type");
-  // listen:false 是「渲染完就退出」，配一个只用来承载管理接口的监听没有意义。
-  enforce(!config.listenDisabled || !config.adminListenEnabled,
-    "adminListen cannot be combined with listen:false");
-  enforce(!config.adminListenEnabled || !listenAddressesOverlap(config.listen, config.adminListen),
-    "adminListen must differ from listen");
+  // 管理监听总是存在，所以只要绑监听就必须和 `listen` 分开：同端口同地址必然 EADDRINUSE。
+  if (!config.listenDisabled && listenAddressesOverlap(config.listen, config.adminListen)) {
+    // 没写 adminListen 时那句「must differ from listen」看不出冲突来自缺省值，单独说明。
+    if (!("adminListen" in root.object)) {
+      throw new Exception("listen must not use the default admin port " ~
+        defaultAdminPort.to!string ~ ": set adminListen explicitly");
+    }
+    throw new Exception("adminListen must differ from listen");
+  }
   return config;
 }
 

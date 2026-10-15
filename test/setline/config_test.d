@@ -346,28 +346,25 @@ import setline.model;
   assertThrown!Exception(loadConfig(path));
 }
 
-@("config parses a separate adminListen") unittest {
+@("config always gives the admin API its own listener") unittest {
   auto path = "/tmp/setline-config-adminlisten-test.json";
   scope (exit) remove(path);
 
-  // 默认不分离：管理接口和数据面共用 listen。
+  // 不写 adminListen 就用默认值：绑回环的 10080（写只在这个口上），数据面照旧只绑它自己
+  // 的地址。
   write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
-  auto combined = loadConfig(path);
-  assert(!combined.adminListenEnabled);
+  auto defaulted = loadConfig(path);
+  assert(defaulted.adminListen.host == "127.0.0.1");
+  assert(defaulted.adminListen.port == defaultAdminPort);
 
   write(path, `{"listen":"127.0.0.1:8080","adminListen":"*:8081","routes":{}}`);
-  auto separated = loadConfig(path);
-  assert(separated.adminListenEnabled);
-  assert(separated.adminListen.host == "0.0.0.0");
-  assert(separated.adminListen.port == 8081);
+  auto explicitAddress = loadConfig(path);
+  assert(explicitAddress.adminListen.host == "0.0.0.0");
+  assert(explicitAddress.adminListen.port == 8081);
 
   // 和 listen 一样接受裸端口。
   write(path, `{"listen":"127.0.0.1:8080","adminListen":8082,"routes":{}}`);
   assert(loadConfig(path).adminListen.port == 8082);
-
-  // 显式 false 等于不分离。
-  write(path, `{"listen":"127.0.0.1:8080","adminListen":false,"routes":{}}`);
-  assert(!loadConfig(path).adminListenEnabled);
 }
 
 @("config rejects an unusable adminListen") unittest {
@@ -380,12 +377,20 @@ import setline.model;
   write(path, `{"listen":"*:8080","adminListen":"127.0.0.1:8080","routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 
+  // 缺省管理端口同样不能给数据面用，报错要指出冲突来自缺省值。
+  write(path, `{"listen":"127.0.0.1:10080","routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
   write(path, `{"listen":"127.0.0.1:8080","adminListen":true,"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
+
+  // 显式 false 不再表示「和数据面共用」：管理接口永远有独立监听。
+  write(path, `{"listen":"127.0.0.1:8080","adminListen":false,"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 
   // listen:false 是渲染完就退出，没有进程来服务这个管理监听。
   write(path, `{"listen":false,"adminListen":"127.0.0.1:8081",` ~
-    `"agent":{"type":"haproxy","output":"/tmp/setline.cfg"},"routes":{}}`);
+    `"agent":{"type":"haproxy","output":"/tmp/setline"},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
 

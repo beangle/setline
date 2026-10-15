@@ -22,7 +22,8 @@ import core.sys.posix.signal :
   SA_RESTART, SIGINT, SIGPIPE, SIGTERM, sigaction, sigaction_t, sigemptyset, sigset_t;
 import core.time : MonoTime, msecs;
 import std.algorithm : startsWith;
-import std.stdio : stderr;
+import std.conv : to;
+import std.stdio : stderr, stdout;
 import std.string : indexOf;
 
 import vibe.core.core : disableDefaultSignalHandlers, exitEventLoop, runEventLoop, runTask, sleep;
@@ -36,7 +37,7 @@ import setline.http;
 import setline.model;
 import setline.proxy;
 import setline.state;
-import setline.util : adminPrefix;
+import setline.util : adminPrefix, peerRoutesPath;
 
 /** `serve()` 持有的监听句柄，drain 任务要能一次停掉全部监听。 */
 private struct ServerListeners {
@@ -50,10 +51,10 @@ private struct ServerListeners {
     阻塞后续连接。这里不暴露 HTTP server 框架抽象，是因为 setline 需要精确控制请求头、
     request body、响应体和 WebSocket 升级后的字节透传。
 
-    `adminSeparated` 为真时再开一个只服务 `__setline` 的管理监听，数据面不再暴露管理接口。
-    这样数据面可以稳定只绑回环，而管理面按需绑 `*` 供跨机采集。
+    再开一个管理监听（`adminListen`，缺省 `127.0.0.1:10080`）：它服务完整的 `_setline`
+    接口。数据面那一侧只承接 peer 协议一个端点（见 {@link handleRequest}）。
 */
-void serve(ListenAddress listenAddress, ListenAddress adminAddress, bool adminSeparated) {
+void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
   auto options = TCPListenOptions.defaults;
   if (reusePort()) {
     options |= TCPListenOptions.reusePort;
@@ -84,11 +85,24 @@ void serve(ListenAddress listenAddress, ListenAddress adminAddress, bool adminSe
     } catch (Throwable) {
     }
   }, listenAddress.host, options);
-  if (adminSeparated) {
+  try {
     listeners.admin = listenTCP(adminAddress.port, (TCPConnection client) @trusted nothrow {
       handleAdminClient(client);
     }, adminAddress.host, options);
+  } catch (Exception e) {
+    // 管理口是固定形态，绑不上就没法改路由，直接失败比带病运行好；这里补一句它是什么口、
+    // 怎么改，因为底层报错只说 "Failed to listen on <addr>"，看不出和 adminListen 的关系。
+    throw new Exception("cannot bind the admin listener on " ~ adminAddress.host ~ ":" ~
+      adminAddress.port.to!string ~ " (adminListen, default 127.0.0.1:" ~
+      defaultAdminPort.to!string ~ "); pick a free port: " ~ e.msg);
   }
+  // 两个监听都绑上了才报地址：先打印、后绑定的话，绑失败时日志会声称一个不存在的监听。
+  stdout.writefln("setline listening on http://%s:%s", listenAddress.host, listenAddress.port);
+  stdout.writefln("setline admin listening on http://%s:%s", adminAddress.host, adminAddress.port);
+  reportAdminReachability(adminAddress, adminToken());
+  // stdout 在 systemd/重定向下是块缓冲的，不刷就一直留在缓冲区里——而管理口地址只有这行和
+  // 状态页 HTML 两个来源，日志晚一步等于没有。
+  stdout.flush();
   loopStarted = true;
   auto healthTask = runTask(&runHealthChecks);
   auto poolTask = runTask(&runUpstreamPoolJanitor);
@@ -101,6 +115,26 @@ void serve(ListenAddress listenAddress, ListenAddress adminAddress, bool adminSe
     shutdownServer(listeners, healthTask, poolTask, drainTask);
   }
   runEventLoop();
+}
+
+/** 打印管理口的安全姿态：绑非回环时说明管理口读的可达范围。
+
+    缺省的 `adminListen` 是回环（`127.0.0.1:10080`），所以这行只在显式放开时才出现——
+    它是状态说明，不是故障告警：管理口的读（状态页、`status.json`、路由表）按网络可达性
+    暴露，写接口不受影响（这里只认本机来源）。想收敛管理口就读就加防火墙规则或
+    `adminToken`；不想暴露就把它绑回环，路由表读在数据面 `listen` 上另有一份。
+*/
+private void reportAdminReachability(ListenAddress admin, string token) {
+  if (isLoopbackHostName(admin.host)) {
+    return;
+  }
+  if (token.length > 0) {
+    stdout.writefln("setline admin reads are reachable from the network, gated by adminToken");
+  } else {
+    stdout.writefln(
+      "setline admin reads are open to anything that can reach %s:%s (no adminToken)",
+      admin.host, admin.port);
+  }
 }
 
 shared private int gShutdownSignals;
@@ -255,8 +289,9 @@ void handleClient(TCPConnection client) {
 
 /** 处理管理监听上的一个连接。
 
-    管理面单独开监听时，数据面和它的入口完全不同：这里只服务 `__setline` 下的接口，其余
-    路径一律 404，绝不再走一遍路由表——否则「绑 `*` 的管理口」会顺带把数据面也暴露出去。
+    管理监听和数据面的入口完全不同：这里只服务 `_setline` 下的接口（状态页、`status.json`、
+    路由表读和写都在它上面），其余路径一律 404，绝不再走一遍路由表——否则「绑 `*` 的管理口」
+    会顺带把数据面也暴露出去。
     管理接口是一问一答的低频控制面，和代理路径一样，处理完一个请求就关连接。
 */
 private void handleAdminClient(TCPConnection client) nothrow {
@@ -306,7 +341,20 @@ private void handleAdminRequest(TCPConnection client) {
   scope (exit) {
     requestFinished();
   }
-  handleAdmin(client, request.method, request.target, completeHttpRequest(client, request));
+  string fullRequest;
+  if (!readAdminRequestBody(client, request, fullRequest)) return;
+  handleAdmin(client, request.method, request.target, fullRequest);
+}
+
+/** 读齐管理接口请求（含 body）；body 超过防御性上限时回 413 并返回 false。 */
+private bool readAdminRequestBody(TCPConnection client, ref HttpHead request, out string fullRequest) {
+  try {
+    fullRequest = completeHttpRequest(client, request);
+    return true;
+  } catch (RequestBodyTooLargeException e) {
+    sendResponse(client, 413, "Payload Too Large", e.msg);
+    return false;
+  }
 }
 /** 选择本次请求的上游端口：优先本客户端连接已经连上的那个。
 
@@ -364,10 +412,20 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
 
   auto path = request.path;
 
-  // 管理接口拆到独立监听后，数据面不再认这些路径：它们落到下面的路由查找里，按「没有
-  // 路由」返回 404（配置校验不允许路由以 __setline 开头）。
-  if (!adminListenSeparated() && path.startsWith(adminPrefix)) {
-    handleAdmin(client, request.method, request.target, completeHttpRequest(client, request));
+  // 数据面 `listen` 上只承接 peer 协议这一个端点（`GET /_setline/routes`）：只认得业务端口
+  // 的机器读路由表就够了，状态页和 `status.json` 没有跨机消费者，挂在这里只会白白放大暴露面
+  // （它们含监听地址、超时、计数器和整张路由表）；写更是只在管理口上。其余 `/_setline/*`
+  // ——包括非 GET 的 `/routes`——一律回 404，连路由表都不查（配置校验也不允许路由以
+  // _setline 开头）。
+  if (path.startsWith(adminPrefix)) {
+    if (request.method == "GET" && path == peerRoutesPath) {
+      string fullRequest;
+      if (readAdminRequestBody(client, request, fullRequest)) {
+        handleAdmin(client, request.method, request.target, fullRequest);
+      }
+    } else {
+      sendResponse(client, 404, "Not Found", "no route for this path");
+    }
     return false;
   }
 

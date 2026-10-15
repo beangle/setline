@@ -19,7 +19,9 @@ module setline.util;
 import std.array : appender;
 
 enum defaultConfigPath = "setline.json";
-enum adminPrefix = "/__setline";
+enum adminPrefix = "/_setline";
+/** 跨机读取路由表的端点；它是数据面 `listen` 上唯一承接的管理路径（见 `server.handleRequest`）。 */
+enum peerRoutesPath = adminPrefix ~ "/routes";
 
 /** 在途请求的 fd 预算：client + upstream，另留 64 个监听/日志/健康检查等余量。 */
 size_t requiredFileDescriptorBudget(size_t maxConnections) {

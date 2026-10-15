@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_PORT="${BACKEND_PORT:-19199}"
 SETLINE_PORT="${SETLINE_PORT:-19198}"
 HAPROXY_PORT="${HAPROXY_PORT:-19197}"
+# 管理口缺省是回环 127.0.0.1:10080；回归给它一个独立端口，避免撞上宿主机上真在跑的东西。
+SETLINE_ADMIN_PORT="${SETLINE_ADMIN_PORT:-19196}"
 # P2-4 要单独起一个 setline，不能和上面那两个端口撞。
 SPLIT_DATA_PORT="${SPLIT_DATA_PORT:-19194}"
 SPLIT_ADMIN_PORT="${SPLIT_ADMIN_PORT:-19195}"
@@ -65,7 +67,7 @@ wait_for_line() {
 }
 
 status_counter() {
-  curl -fsS "http://127.0.0.1:$SETLINE_PORT/__setline/status.json" |
+  curl -fsS "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/status.json" |
     grep -o "\"$1\":[0-9]*" | head -1 | cut -d: -f2
 }
 
@@ -94,6 +96,9 @@ defaults
   timeout server 30s
 frontend front
   bind 127.0.0.1:$HAPROXY_PORT
+  # setline 的写接口只按 TCP 对端判断「本机」，经 haproxy 转发的远端请求对端就是
+  # 127.0.0.1，会被当成本机来源。前置代理必须自己拒掉管理路径（接线见 docs/haproxy-integration.md）。
+  http-request deny if { path_beg /_setline }
   default_backend setline
 backend setline
   server s1 127.0.0.1:$SETLINE_PORT check
@@ -101,6 +106,33 @@ CFG
   "$binary" -f "$WORK/haproxy.cfg" -db >"$WORK/haproxy-$label.log" 2>&1 &
   HAPROXY_PID=$!
   wait_for_port "$HAPROXY_PORT" 50 || fail "$label haproxy did not listen"
+
+  # 管理路径必须由前置代理挡掉（peer 协议读也挂在数据面上，所以这是入口唯一的一道）：
+  # 数据面只承接 `GET /_setline/routes`，写和 status 都只在管理口上。
+  local proxy_admin data_read data_status data_write direct_admin
+  proxy_admin="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HAPROXY_PORT/_setline/routes")"
+  [ "$proxy_admin" = "403" ] ||
+    fail "$label frontend did not deny /_setline (got $proxy_admin)"
+  # 读搭在数据面上：只认得业务端口的机器也能读路由表。
+  data_read="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: local.test' \
+    "http://127.0.0.1:$SETLINE_PORT/_setline/routes")"
+  [ "$data_read" = "200" ] ||
+    fail "$label data plane does not serve the peer routes endpoint (got $data_read)"
+  # 状态页/status.json 只在管理口上，数据面一律 404。
+  data_status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: local.test' \
+    "http://127.0.0.1:$SETLINE_PORT/_setline/status.json")"
+  [ "$data_status" = "404" ] ||
+    fail "$label data plane served status.json (got $data_status)"
+  # 写不搭在数据面上。
+  data_write="$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Host: local.test' \
+    "http://127.0.0.1:$SETLINE_PORT/_setline/routes?host=evil.test")"
+  [ "$data_write" = "404" ] ||
+    fail "$label data plane accepted an admin write (got $data_write)"
+  direct_admin="$(curl -s -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/routes")"
+  [ "$direct_admin" = "200" ] ||
+    fail "$label local admin read broke (got $direct_admin)"
+  echo "PASS[$label] peer routes ride the data plane; status and writes stay on the admin listener"
 
   local expect_body
   expect_body="$(curl -fsS --max-time 5 \
@@ -204,7 +236,7 @@ CFG
   echo "PASS[$label] 50 sequential requests on one client connection opened $new_connects upstream connection"
 
   local stats
-  stats="$(curl -fsS "http://127.0.0.1:$SETLINE_PORT/__setline/status.json")"
+  stats="$(curl -fsS "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/status.json")"
   echo "$stats" | grep -qE '"poolHits":[1-9]' ||
     fail "$label status.json did not report pool hits: $stats"
   echo "$stats" | grep -qE '"upstreamConnects":[1-9]' ||
@@ -252,7 +284,8 @@ BACKEND_PID=$!
 wait_for_port "$BACKEND_PORT" 50 || fail "test backend did not listen"
 
 cat >"$WORK/setline.json" <<JSON
-{"listen":"127.0.0.1:$SETLINE_PORT","readTimeoutMillis":$READ_TIMEOUT_MILLIS,"accessLog":true,
+{"listen":"127.0.0.1:$SETLINE_PORT","adminListen":"127.0.0.1:$SETLINE_ADMIN_PORT",
+ "readTimeoutMillis":$READ_TIMEOUT_MILLIS,"accessLog":true,
  "webSocketIdleTimeoutMillis":$WS_IDLE_MILLIS,"upstreamIdleTimeoutMillis":$POOL_IDLE_MILLIS,
  "healthCheck":{"intervalMillis":60000,"timeoutMillis":1000,"unhealthyThreshold":3,"healthyThreshold":1},
  "routes":{"local.test":{"/":$BACKEND_PORT}}}
@@ -266,19 +299,83 @@ check_render_only() {
   local dir="$WORK/render-only"
   mkdir -p "$dir"
   cat >"$WORK/render-only.json" <<JSON
-{"listen":false,"agent":{"type":"haproxy","output":"$dir/setline.cfg"},
+{"listen":false,"agent":{"type":"haproxy","output":"$dir"},
  "routes":{"local.test":{"/":$BACKEND_PORT}}}
 JSON
   if ! "$ROOT/target/setline" -f "$WORK/render-only.json" >"$WORK/render-only.log" 2>&1; then
     fail "listen:false renderer exited non-zero: $(cat "$WORK/render-only.log")"
   fi
-  [ -s "$dir/setline.cfg" ] || fail "listen:false did not write the backend fragment"
-  [ -s "$dir/setline.map" ] || fail "listen:false did not write the routing map"
-  grep -q 'local.test' "$dir/setline.map" ||
+  # output 是根目录：程序按 type 自己建 haproxy/ 子目录并写固定文件名。
+  [ -s "$dir/haproxy/setline.cfg" ] || fail "listen:false did not write the backend fragment"
+  [ -s "$dir/haproxy/setline.map" ] || fail "listen:false did not write the routing map"
+  grep -q 'local.test' "$dir/haproxy/setline.map" ||
     fail "listen:false map is missing the configured route"
   echo "PASS render-only listen:false writes fragments and exits"
 }
 check_render_only
+
+# 管理接口只该为控制面读取有界的 body：给一个超过 4 MiB 防御性上限的 PUT，必须回 413。
+check_admin_body_limit() {
+  local big="$WORK/admin-big.json" code
+  { printf '{"routes":{"/big":['; head -c 4194304 /dev/zero | tr '\0' '1'; printf ']}}'; } >"$big"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Expect:' \
+    --data-binary @"$big" \
+    "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/routes/all?host=big.test" || true)"
+  [ "$code" = "413" ] || fail "admin accepted an oversized body: $code"
+  echo "PASS admin rejects a request body over the defensive limit with 413"
+}
+check_admin_body_limit
+
+# 拼一条原始管理接口写请求：$1=Host 头，$2=X-Forwarded-Host（可空），$3=body。
+raw_admin_put() {
+  local host="$1" forwarded="$2" body="$3"
+  printf 'PUT /_setline/routes?host=gate.test HTTP/1.1\r\nHost: %s\r\n' "$host"
+  [ -z "$forwarded" ] || printf 'X-Forwarded-Host: %s\r\n' "$forwarded"
+  printf 'Content-Length: %s\r\nConnection: close\r\n\r\n%s' "${#body}" "$body"
+}
+
+# 写接口的「本机」= 回环对端 + 回环 Host：经本机代理转发的远端请求带着公开主机名，
+# 不再被当成本机（原因见 docs/configuration.md 的 adminToken 一节）。
+check_admin_write_gate() {
+  local body='{"/evil":[9999]}' out
+  out="$(raw_admin_put "127.0.0.1:$SETLINE_ADMIN_PORT" "" "$body" |
+    timeout 5 nc 127.0.0.1 "$SETLINE_ADMIN_PORT")"
+  echo "$out" | grep -q '^HTTP/.* 200' || fail "loopback-host write was rejected: $out"
+
+  out="$(raw_admin_put app.example.com "" "$body" | timeout 5 nc 127.0.0.1 "$SETLINE_ADMIN_PORT")"
+  echo "$out" | grep -q '^HTTP/.* 403' || fail "public-host write was accepted: $out"
+
+  out="$(raw_admin_put "127.0.0.1:$SETLINE_ADMIN_PORT" app.example.com "$body" |
+    timeout 5 nc 127.0.0.1 "$SETLINE_ADMIN_PORT")"
+  echo "$out" | grep -q '^HTTP/.* 403' || fail "write with a proxied host was accepted: $out"
+
+  curl -s -o /dev/null -X DELETE \
+    "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/routes?host=gate.test&prefix=/evil"
+  echo "PASS write gate requires a loopback host, not just a loopback peer"
+}
+check_admin_write_gate
+
+# peers：纯渲染机跑一轮就退出。渲染节奏归 systemd timer（setline-render.timer），
+# 进程里不再有 sync 循环，所以这里必须看到它自己退出（timeout 兜住挂住的情况）。
+check_peer_render_once() {
+  local dir="$WORK/peer-render"
+  mkdir -p "$dir"
+  cat >"$WORK/peer-render.json" <<JSON
+{"agent":{"type":"haproxy","output":"$dir",
+ "peers":[{"name":"peer","url":"http://127.0.0.1:$SETLINE_ADMIN_PORT"}]}}
+JSON
+  if ! timeout 20 "$ROOT/target/setline" -f "$WORK/peer-render.json" \
+      >"$WORK/peer-render.log" 2>&1; then
+    fail "peer renderer did not exit 0: $(cat "$WORK/peer-render.log")"
+  fi
+  [ -s "$dir/haproxy/setline.cfg" ] || fail "peer renderer did not write the backend fragment"
+  grep -q '^  server peer_' "$dir/haproxy/setline.cfg" ||
+    fail "peer renderer did not name the backend after the peer"
+  grep -q '127.0.0.1:' "$dir/haproxy/setline.cfg" ||
+    fail "peer renderer did not rewrite the route port onto the peer host"
+  echo "PASS peer renderer writes fragments and exits after one round"
+}
+check_peer_render_once
 
 # P1-7：客户端连接亲和 + 专属上游连接的空闲回收。
 #
@@ -397,7 +494,7 @@ CFG
     fail "$label a silent tunnel was not closed after ${WS_IDLE_MILLIS}ms"
 
   local stats
-  stats="$(curl -fsS "http://127.0.0.1:$SETLINE_PORT/__setline/status.json")"
+  stats="$(curl -fsS "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/status.json")"
   echo "$stats" | grep -qE "\"webSocketIdleTimeouts\":[1-9]" ||
     fail "$label status.json did not count the idle timeout: $stats"
   echo "$stats" | grep -qE '"activeWebSockets":0' ||
@@ -505,12 +602,12 @@ else
   run_case "$HAPROXY_BIN" "haproxy-$(haproxy_version "$HAPROXY_BIN")"
 fi
 
-# P2-4：控制面与数据面分离。管理接口挪到独立监听后，数据面可以稳定只绑回环。
+# P2-4：管理接口的**写**只在独立监听上；**读**同时挂在数据面和管理口上，凭据门一致。
 check_admin_listen() {
   local label="admin-listen"
   cat >"$WORK/split.json" <<JSON
 {"listen":"127.0.0.1:$SPLIT_DATA_PORT","adminListen":"127.0.0.1:$SPLIT_ADMIN_PORT",
- "routes":{"local.test":{"/":$BACKEND_PORT}}}
+ "adminToken":"e2e-admin-token","routes":{"local.test":{"/":$BACKEND_PORT}}}
 JSON
   "$ROOT/target/setline" -f "$WORK/split.json" >"$WORK/split.log" 2>&1 &
   SPLIT_PID=$!
@@ -520,7 +617,7 @@ JSON
     # 进程要是没起来（例如端口被占），先报出来，别拿旧实例的响应当成功。
     kill -0 "$SPLIT_PID" 2>/dev/null || break
     if wait_for_port "$SPLIT_ADMIN_PORT" 1 && curl -fsS -o /dev/null \
-      "http://127.0.0.1:$SPLIT_ADMIN_PORT/__setline/status.json" 2>/dev/null; then
+      "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/status.json" 2>/dev/null; then
       ok=0
       break
     fi
@@ -528,19 +625,56 @@ JSON
   done
   [ "$ok" = 0 ] || fail "$label split setline did not listen: $(cat "$WORK/split.log")"
 
-  local data_admin admin_root admin_status data_root
-  data_admin="$(curl -s -o /dev/null -w '%{http_code}' \
-    "http://127.0.0.1:$SPLIT_DATA_PORT/__setline/status.json")"
-  [ "$data_admin" = 404 ] ||
-    fail "$label data plane still serves the admin API ($data_admin)"
+  # 数据面只承接 peer 协议一个端点：路由表读得到、门是同一套（非回环 Host 且没带 token
+  # → 401，带对了 → 200），而 status.json 这类没有跨机消费者的读直接 404。
+  local data_read data_read_token data_status data_write admin_root admin_status data_root
+  data_read="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: split.internal' \
+    "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/routes")"
+  [ "$data_read" = 401 ] ||
+    fail "$label data plane read without a token was not rejected ($data_read)"
+  data_read_token="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: split.internal' \
+    -H 'X-Setline-Token: e2e-admin-token' \
+    "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/routes")"
+  [ "$data_read_token" = 200 ] ||
+    fail "$label data plane read with a token was rejected ($data_read_token)"
+  data_status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: split.internal' \
+    -H 'X-Setline-Token: e2e-admin-token' \
+    "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/status.json")"
+  [ "$data_status" = 404 ] ||
+    fail "$label data plane served status.json (got $data_status)"
+  # 写只在管理口上：数据面收到 PUT 一律 404，不管带没带 token。
+  data_write="$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Host: split.internal' \
+    -H 'X-Setline-Token: e2e-admin-token' \
+    "http://127.0.0.1:$SPLIT_DATA_PORT/_setline/routes?host=evil.test")"
+  [ "$data_write" = 404 ] ||
+    fail "$label data plane accepted an admin write ($data_write)"
   admin_root="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SPLIT_ADMIN_PORT/")"
   [ "$admin_root" = 404 ] || fail "$label admin listener proxied an unknown path ($admin_root)"
-  admin_status="$(curl -s "http://127.0.0.1:$SPLIT_ADMIN_PORT/__setline/status.json")"
-  echo "$admin_status" | grep -q "\"adminListen\":{\"host\":\"127.0.0.1\",\"port\":$SPLIT_ADMIN_PORT}" ||
-    fail "$label status.json does not report its own admin listen: $admin_status"
+  admin_status="$(curl -s "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/status.json")"
+  # status.json 面向机器读取，不该暴露管理口地址；入口只留在状态页 HTML 和启动日志里。
+  if echo "$admin_status" | grep -q '"adminListen"'; then
+    fail "$label status.json leaked the admin listen address: $admin_status"
+  fi
   data_root="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: local.test' \
     "http://127.0.0.1:$SPLIT_DATA_PORT/ok")"
   [ "$data_root" = 200 ] || fail "$label data plane stopped proxying ($data_root)"
+
+  # 读接口只有 X-Setline-Token 一种凭据；是不是「本机」由回环对端 + 回环 Host 决定。
+  local read_code
+  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: setline.internal' \
+    "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/routes")"
+  [ "$read_code" = 401 ] || fail "$label non-local host read without token was not rejected ($read_code)"
+  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: setline.internal' \
+    -H 'X-Setline-Token: e2e-admin-token' "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/routes")"
+  [ "$read_code" = 200 ] || fail "$label token read was rejected ($read_code)"
+  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1' \
+    -H 'X-Forwarded-Host: setline.internal' "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/status.json")"
+  [ "$read_code" = 401 ] || fail "$label proxied-host read without token was not rejected ($read_code)"
+  read_code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1' \
+    -H 'X-Forwarded-Host: setline.internal' -H 'X-Setline-Token: e2e-admin-token' \
+    "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/status.json")"
+  [ "$read_code" = 200 ] || fail "$label proxied-host read with token was rejected ($read_code)"
+  echo "PASS[$label] reads take X-Setline-Token and the host decides what is local"
 
   local exit_status=0
   kill -TERM "$SPLIT_PID" 2>/dev/null || true

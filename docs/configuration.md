@@ -25,7 +25,7 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `listen` | 整数、字符串或 `false` | `127.0.0.1:8080` | 监听地址；`false` 表示不监听（纯渲染），见下节 |
-| `adminListen` | 整数、字符串或 `false` | `false` | 给管理接口单独开一个监听；`false`（缺省）表示和数据面共用 `listen` |
+| `adminListen` | 整数或字符串 | `127.0.0.1:10080` | 写操作的独立监听，见「adminListen」一节 |
 | `adminToken` | 字符串 | 空 | 管理读接口的凭据，见「adminToken」一节 |
 | `connectTimeoutMillis` | 整数 > 0 | `3000` | 连接后端的 TCP 超时 |
 | `readTimeoutMillis` | 整数 > 0 | `15000` | 单次上游读取的不活动超时 |
@@ -105,75 +105,119 @@ setline 进程可以绑定完全相同的地址。默认关闭，避免无意间
 | `"*:8080"` | 绑定所有 IPv4 地址（`0.0.0.0:8080`） |
 | `false` | 不绑定任何监听：渲染片段后退出，必须同时配 `agent.type` |
 
-只写端口时默认绑回环，不会意外对外暴露。要对外提供服务必须显式写 `*:port` 或具体地址，
-此时务必同时设置 `adminToken`（原因见下）。
+只写端口时默认绑回环，不会意外对外暴露。要让别的机器直接连数据面（正常不该发生，前置
+代理是本机的话不需要）才写 `*:port` 或具体地址——那时任何能连上端口的人都绕过前置代理，
+直接按路由表打到本机业务端口，认证、限流、日志全都不再经过；**peer 协议的路由表读也搭在
+`listen` 上**（见下节），这个绑定方式同时决定了「谁能读路由表」，所以要么配 `adminToken`，要么
+只让前置代理按源地址放行 `/_setline`。
 
-配了 `agent` 时 `listen` 只是**控制面**入口（basctl 登记路由、采集机读路由表），业务
-流量不经过它：haproxy/nginx 按生成的片段直接回源业务端口。这种部署绑回环即可，只有当
-采集机在别的机器上、需要它来 `GET /__setline/routes` 时才绑 `*`。
+配了 `agent` 时业务流量根本不经过 setline：haproxy/nginx 按生成的片段直接回源业务端口。
+所以 `listen` 绑回环即可；跨机采集要么经前置代理读 `listen` 上的 `/_setline`（建议配
+`adminToken`），要么把 `adminListen` 显式放开让采集机直连。
+这条跨机读只有 `/_setline/routes` 一个端点（见下节）：数据面上没有状态页。
 
 **路由完全来自配置文件、不需要运行时下发时**，可以写 `"listen": false`：setline 不绑任何
 端口，启动时按配置文件渲染一次片段就退出，没有管理接口，也没有数据面。适合「静态路由 +
 片段渲染」和 `setline-apply.timer` 配合的部署；此时 `agent.type` 必填（否则进程无事可做），
 单机部署下 `agent.output` 仍必填。
 
-### adminListen：控制面与数据面分开
+### adminListen：写操作的独立入口
 
-缺省时管理接口和数据面共用 `listen`，于是「让采集机读路由表」和「数据面只绑回环」两个
-要求互相打架：前者要 `*:port`，后者只能是 `127.0.0.1`。配一个 `adminListen` 就分开了：
+管理接口分挂在两个监听上——**数据面 `listen` 只承接 peer 协议一个端点**，其余都在管理口。
+缺省配置不用写任何东西：
 
 ```json
 {
   "listen": "127.0.0.1:8080",
-  "adminListen": "*:8081",
+  "adminListen": "127.0.0.1:10080",
   "adminToken": "please-change-me"
 }
 ```
 
-- `adminListen` 只服务 `/__setline/*`，其它路径一律 `404`，**不再走路由表**，所以绑 `*`
-  不会顺带把业务端口暴露出去。
-- 反过来，数据面不再认 `/__setline/*`（按「没有路由」返回 `404`）。管理接口只在一个地方。
-- 访问控制规则没有任何变化（见下节）：写接口仍然只接受 TCP 对端是本机的请求，读接口对
-  非本机来源仍然要 `adminToken` / HTTP Basic。
-- `status.json` 会多一个 `adminListen` 字段，写明管理面实际绑在哪。
+| 接口 | 挂在哪 | 谁能访问 |
+|---|---|---|
+| `GET /_setline/routes`（peer 协议） | `listen` **和** `adminListen` | 本机免凭据，其它来源要 `X-Setline-Token` |
+| `GET /_setline/status`、`/status.html`、`/status.json` | 只有 `adminListen` | 本机免凭据，其它来源要 `X-Setline-Token` |
+| `PUT` / `DELETE /_setline/routes*`（写） | 只有 `adminListen` | 只接受本机请求，不看 token |
 
-配置了 `adminListen` 之后，同机的工具（basctl 等）要把地址从 `listen` 改成 `adminListen`：
-两个监听是**两个入口**，不是同一份接口的两份拷贝。
+为什么这么分：
+
+- **路由表读搭在业务端口上**：跨机采集（`agent.peers`）只需要知道 `listen`（它本来就
+  知道——那是代理回源的地址）就能读路由表，不用额外知道管理口在哪。前置代理转发
+  `/_setline` 时请求仍然是「远端来源」，所以那条路要凭据，或者由代理按源地址放行。
+- **状态页和 `status.json` 只在管理口上**：它们没有跨机消费者，内容却是监听地址、超时、
+  `maxConnections`、健康检查调参、计数器和整张路由表。挂在数据面上只会放大暴露面——前置
+  代理漏掉 `deny /_setline` 时，泄露的东西从「一份路由表」变成「整幅运行画像」。跨机监控
+  要读 `status.json` 就直连管理口（显式放开 + `adminToken`），或者在代理本机采集。
+- **写只在管理口上，而管理口缺省绑回环**：拨不动 `127.0.0.1:10080` 就改不了路由，
+  「只有本机能改流量走向」成了 TCP 层事实，不再依赖「回环对端 + 回环 Host」那两维判定
+  （Host 是请求头，前置代理改写它就能骗过判定；那两维只是纵深防御，不是边界）。
+- 数据面收到除 `GET /_setline/routes` 之外的任何 `/_setline/*` 一律回 `404`，不查路由表、
+  也不做写操作；配置校验另外禁止路由前缀以 `/_setline` 开头。
+- 管理口绑在哪只在**状态页 HTML** 和**启动日志**里写明（`status.json` 面向机器读取，
+  不暴露管理入口）；启动日志在绑非回环时还会补一行读接口的可达性说明。
+- `"adminListen": false` 不再表示「和数据面共用」，它已经是配置错误；`"listen": false`
+  的纯渲染部署则不要写 `adminListen`（写完就退出，没有进程服务它）。
+- `adminListen` 和 `listen` 不能落在同一个地址上（`10080` 是管理口的缺省端口，给数据面
+  用会直接报错）。
+- 跨机读还有一条路：把 `adminListen` 显式放开（例如 `*:10080`）并设 `adminToken`。缺省
+  绑回环是因为路由表读已经能从 `listen` 走；真要读状态页就得开管理口，或者本机采集。
+
+同机的工具（basctl 等）照旧访问 `adminListen`：写请求只有那一个入口。
 
 ## adminToken
 
-`adminToken` 只保护**读**接口的**非本机**来源，这是最容易误解的一点，分三种情况：
+`adminToken` 只保护**读**接口的**非本机**来源，这是最容易误解的一点：
 
 | 请求 | 来源 | 凭据 |
 |---|---|---|
-| `GET /__setline/routes` | 本机 | 不需要 |
-| `GET /__setline/routes` | 其他主机 | `X-Setline-Token: <adminToken>` |
-| `GET /__setline/status.json`、`/__setline/status` | 本机 | 不需要 |
-| `GET /__setline/status.json`、`/__setline/status` | 其他主机 | HTTP Basic，用户名固定 `setline`，密码为 `adminToken` |
-| `PUT` / `DELETE /__setline/routes*` | 仅本机 | 不需要，且**不看 token** |
+| `GET /_setline/routes`（`listen` 或 `adminListen` 都认） | 本机 | 不需要 |
+| `GET /_setline/routes` | 其他主机（含经本机代理转发的远端请求） | `X-Setline-Token: <adminToken>`，**读接口只有这一种凭据** |
+| `GET /_setline/status`、`/status.html`、`/status.json`（只有 `adminListen`） | 本机 / 其他主机 | 本机不需要；其他主机要 `X-Setline-Token` |
+| `PUT` / `DELETE /_setline/routes*`（只有 `adminListen`） | 仅本机 | 不需要，且**不看 token** |
 
 几条规则要记住：
 
-- **空 `adminToken` 等于放行。** 开发时绑回环没关系；一旦 `listen` 绑 `*` 又不设 token，
-  路由表对所有能访问到该端口的人可读，必须设置。
-- **写接口从不使用 token。** 改路由等于改流量走向，它的访问控制是「TCP 对端必须解析为
-  `127.0.0.1`、`::1` 或 `::ffff:127.0.0.1`」，用 `Forwarded` / `X-Forwarded-For` 伪造无效。
+- **空 `adminToken` 等于放行。** 路由表读挂在 `listen` 上，所以**只要 `listen` 可被不可信
+  客户端访问（例如前置代理把 `/_setline` 也转发过来了），路由表就对外可读**；状态页和
+  `status.json` 不受影响，它们只在缺省绑回环的管理口上。要按网络收敛就让代理拒掉
+  `/_setline` 或只绑本机后端，要按凭据收敛就设 `adminToken`。
+- **写接口从不使用 token。** 改路由等于改流量走向，它的访问控制是「本机」判定，与服务端
+  是否配置 token 无关；带上正确的 `adminToken` 也不会让非本机写入生效。
 - **本机读免凭据**，与写同一条门，所以同机的工具（如 basctl）不需要存任何密码。
+- **「本机」= TCP 对端是回环**（`127.0.0.1` / `::1` / `::ffff:127.0.0.1`）**且请求声明的
+  主机也是回环名**（`Host` 或 `X-Forwarded-Host` 是 `127.0.0.1` / `::1` / `localhost`，
+  忽略端口）——两个条件缺一不可，不是「谁发起」。
+- 第二维专门盯本机代理：`远端客户端 → 本机 haproxy/nginx → setline` 时，转发请求带着
+  浏览器看到的公开主机名，于是不再算本机——写接口返回 `403`，读接口要 `X-Setline-Token`。
+  代理可以改写 `Host` 绕过，所以这一维是纵深防御，不是边界；前置代理仍建议自己拒掉管理
+  路径（haproxy：`http-request deny if { path_beg /_setline }`；nginx：
+  `location ^~ /_setline { return 404; }`）——路由表读就搭在被代理的 `listen` 上，这是防住
+  「公网读路由表」唯一的一道。这里的 `deny` 可以写成精确匹配 `/_setline/routes`；写和
+  状态页不需要这道：代理即使转发，也只有 404。
+- 没有 `Host` 的请求（HTTP/1.0、刻意省略）一律不算本机。
+- **写接口不区分本机上的用户或进程。** 只要能和 setline 的监听端口建立 TCP 连接，就能改
+  路由；不要把 setline 和不可信的进程放在同一台机器或同一个网络命名空间里。
+- 管理接口的请求体有 4 MiB 防御性上限（整体替换路由表也远够用），超限回 `413`。
 
 读路由表：
 
 ```bash
-# 本机，不需要凭据
-curl http://127.0.0.1:8080/__setline/routes
+# 本机，走管理口或数据面都行，不需要凭据
+curl http://127.0.0.1:10080/_setline/routes
+curl -H 'Host: app.example.com' http://127.0.0.1:8080/_setline/routes
 
-# 其他主机，用 token
-curl -H 'X-Setline-Token: change-me' http://setline.internal:8080/__setline/routes
+# 其他主机，用 token（管理口；也可以换成被代理的 listen 地址）
+curl -H 'X-Setline-Token: change-me' http://setline.internal:10080/_setline/routes
 
-# 状态页，其他主机用 Basic（用户名 setline）
-curl -u setline:change-me http://setline.internal:8080/__setline/status.json
+# 状态页/状态 JSON：同一种凭据、同一个头
+curl -H 'X-Setline-Token: change-me' http://setline.internal:10080/_setline/status.json
 ```
 
 token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent」一节）。
+
+本机直接开浏览器就能看状态页（免凭据）；远程看状态页只能用能加自定义头的客户端，例如
+上面的 `curl`——浏览器地址栏没法带 `X-Setline-Token`。
 
 ## routes
 
@@ -213,7 +257,7 @@ token 也是 `agent.peers` 读取对端路由表时使用的凭据（见「agent
 
 - 必须以 `/` 开头（`route prefix must start with /`）。
 - 除根路径外尾部 `/` 会被去掉：`/api/edu/` 与 `/api/edu` 等价。
-- 不能以 `/__setline` 开头（会和管理接口冲突）。
+- 不能以 `/_setline` 开头（会和管理接口冲突）。
 - 不做 URL 重写：命中后原样转发给后端。
 
 ### 端口
@@ -423,7 +467,7 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 
 ### 最小本地开发
 
-绑回环、开路由表读、不需要 token：
+绑回环、不设 token；管理口用缺省值，本机直连 10080 读状态页和路由表：
 
 ```json
 {
@@ -442,6 +486,7 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 ```json
 {
   "listen": "*:8080",
+  "adminListen": "127.0.0.1:10080",
   "adminToken": "please-change-me",
   "connectTimeoutMillis": 3000,
   "readTimeoutMillis": 15000,
@@ -473,33 +518,33 @@ haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回�
 
 ```bash
 # 新增/替换一条
-curl -X PUT 'http://127.0.0.1:8080/__setline/routes?host=app.example.com' \
+curl -X PUT 'http://127.0.0.1:10080/_setline/routes?host=app.example.com' \
   -d '{"/api/edu":[9002,9003]}'
 
 # 替换某 host 的全部路由
-curl -X PUT 'http://127.0.0.1:8080/__setline/routes/all?host=app.example.com' \
+curl -X PUT 'http://127.0.0.1:10080/_setline/routes/all?host=app.example.com' \
   -d '{"routes":{"/api":9001}}'
 
 # 删除一条 / 清空某 host
-curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com&prefix=/api'
-curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=app.example.com'
+curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=app.example.com&prefix=/api'
+curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=app.example.com'
 ```
 
 改动会写回配置文件顶层 `routes` 字段（其余字段原样保留），重启后仍然生效。
 完整接口见 `docs/runtime-routes-api.md`。
 
-### agent：聚合多台 setline 生成 nginx 片段（规则模式）
+### agent：聚合多台 setline 生成 nginx 片段
 
-不写 `bind`：片段不含 `listen`，监听归你自己的 `server {}`。生成
-`setline.conf`（upstream）加每个 host 一份 location 文件。
+片段不含 `listen`，监听归你自己的 `server {}`。生成
+`nginx/setline.conf`（upstream）加每个 host 一份 `nginx/setline.<host>.conf`
+（location 文件）。
 
 ```json
 {
   "agent": {
     "type": "nginx",
-    "output": "/var/lib/setline/nginx/setline.conf",
+    "output": "/var/lib/setline",
     "token": "shared-token",
-    "sync": { "mode": "interval", "intervalMillis": 30000 },
     "peers": [
       { "name": "app1", "url": "http://10.0.1.10:8080" },
       { "name": "app2", "url": "http://10.0.1.11:8080" }
@@ -557,8 +602,10 @@ frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可�
 | `listen must be port or host:port` | `listen` 既不是整数也不是字符串 |
 | `listen must be host:port` | 字符串里的冒号不止一个 |
 | `listen must be port, host:port or false` | `listen` 写成 `true` 或其他类型 |
-| `adminListen must be port, host:port or false` | `adminListen` 写成 `true` 或其他类型 |
+| `adminListen must be port or host:port: the admin API always has its own listener` | `adminListen` 写成 `false`（不再支持共用 `listen`） |
+| `adminListen must be port or host:port` | `adminListen` 写成 `true` 或其他类型 |
 | `adminListen must differ from listen` | `adminListen` 和 `listen` 是同一个地址（含 `*:` 与具体地址同端口） |
+| `listen must not use the default admin port 10080: set adminListen explicitly` | 没写 `adminListen`，而 `listen` 用了管理口的缺省端口 10080 |
 | `adminListen cannot be combined with listen:false` | `"listen": false` 时进程渲染完就退出，没人来服务这个管理监听 |
 | `listen:false requires agent.type` | 写了 `"listen": false` 却没配 `agent`（进程无事可做） |
 | `connectTimeoutMillis must be positive` / `readTimeoutMillis must be positive` | 超时写成 0 / 负数 |
@@ -567,7 +614,9 @@ frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可�
 | `reusePort must be boolean` | `reusePort` 不是 `true` / `false` |
 | `webSocketIdleTimeoutMillis must not be negative` | `webSocketIdleTimeoutMillis` 写成负数 |
 | `route prefix must start with /` | 前缀没以 `/` 开头 |
-| `route prefix conflicts with admin API` | 前缀以 `/__setline` 开头 |
+| `route updates are only allowed from localhost`（HTTP `403`） | 写接口的来源不是回环对端，或 Host 不是回环名（多为经本机代理转发的远端请求） |
+| `missing or invalid token`（HTTP `401`） | 读接口的非本机来源没带或带错 `X-Setline-Token` |
+| `route prefix conflicts with admin API` | 前缀以 `/_setline` 开头 |
 | `route value must be port or ports` | 路由值不是整数也不是数组 |
 | `route port must be 1..65535` | 端口越界 |
 | `route host must not include port` | host 里写了端口 |
@@ -580,5 +629,6 @@ frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可�
 | `agent.output must not be empty` | `output` 写成空字符串（等同于没配） |
 | `agent.peers must not be empty` | 写了 `"peers": []` |
 | `agent.sync has been removed: drive setline from a systemd timer` | 写了已取消的 `agent.sync`（渲染节奏由 `setline-render.timer` 驱动） |
+| `request body exceeds <n> bytes`（HTTP `413`） | 管理接口 PUT 的 body 超过 4 MiB 防御性上限 |
 | `agent.peers[] has unknown field: <key>` | peer 里写了不存在的字段（例如已取消的 `address`） |
 | `cannot derive backend host from agent.peers[].url` | peer 的 `url` 没有主机（`file://`、本地路径） |

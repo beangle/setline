@@ -28,15 +28,15 @@ import setline.peer;
 
 @("peer derives routes url and backend address") unittest {
   assert(peerRoutesUrl(peerWithUrl("http://10.0.1.10:8080"))
-    == "http://10.0.1.10:8080/__setline/routes");
+    == "http://10.0.1.10:8080/_setline/routes");
   assert(peerRoutesUrl(peerWithUrl("http://10.0.1.10:8080/"))
-    == "http://10.0.1.10:8080/__setline/routes");
-  assert(peerRoutesUrl(peerWithUrl("http://10.0.1.10:8080/__setline/routes"))
-    == "http://10.0.1.10:8080/__setline/routes");
+    == "http://10.0.1.10:8080/_setline/routes");
+  assert(peerRoutesUrl(peerWithUrl("http://10.0.1.10:8080/_setline/routes"))
+    == "http://10.0.1.10:8080/_setline/routes");
   assert(peerAddress(peerWithUrl("http://10.0.1.10:8080")) == "10.0.1.10");
   assert(peerAddress(peerWithUrl("10.0.1.10:8080")) == "10.0.1.10");
   assert(peerAddress(peerWithUrl("http://[fe80::1]:8080")) == "[fe80::1]");
-  assert(peerAddress(peerWithUrl("http://app.example.com/__setline/routes")) == "app.example.com");
+  assert(peerAddress(peerWithUrl("http://app.example.com/_setline/routes")) == "app.example.com");
   // 回源主机只从 url 推导，推导不出来就是配置错误，没有 address 这种兜底。
   assertThrown!Exception(peerAddress(peerWithUrl("file:///tmp/peer")));
   assertThrown!Exception(peerAddress(peerWithUrl("/tmp/peer")));

@@ -4,6 +4,14 @@ This document describes the HTTP API for updating `setline` routes at runtime.
 These APIs update the in-memory route table and write the `routes` field back
 to the JSON config file. Other config fields are preserved.
 
+Every endpoint lives under `/_setline/`, split across two listeners. The data
+plane (`listen`) carries exactly one of them - `GET /_setline/routes`, the peer
+protocol - so a machine that only knows the service port can read the route
+table. Everything else is on `adminListen` (`127.0.0.1:10080` by default): the
+status views and every write (`PUT` / `DELETE`). The data plane answers anything
+else under `/_setline` with `404`, including `status.json`. Examples below use
+the admin listener.
+
 All write APIs require:
 
 - caller TCP peer must be localhost: `127.0.0.1`, `::1`, or
@@ -24,35 +32,58 @@ requirement. The server checks the TCP peer address.
 
 ## Who reads, and with what
 
-| Operation | Allowed source | Credential |
-|---|---|---|
-| `GET /__setline/routes` | localhost | none |
-| `GET /__setline/routes` | other hosts | `X-Setline-Token` (empty token = open) |
-| status page / `status.json` | localhost | none |
-| status page / `status.json` | other hosts | HTTP Basic, user `setline`, password `adminToken` (empty = open) |
-| `PUT` / `DELETE` routes | localhost only | none |
+| Operation | Listener | Allowed source | Credential |
+|---|---|---|---|
+| `GET /_setline/routes` | `listen`, `adminListen` | local | none |
+| `GET /_setline/routes` | `listen`, `adminListen` | everything else | `X-Setline-Token` (empty token = open) |
+| status page / `status.json` | `adminListen` only | local | none |
+| status page / `status.json` | `adminListen` only | everything else | `X-Setline-Token` (empty token = open) |
+| `PUT` / `DELETE` routes | `adminListen` only | local only | none |
 
-An empty `adminToken` is a development convenience: bind `listen` to loopback
-and nothing else can reach the API. If `listen` binds `*`, set `adminToken` or
-the route table becomes world-readable to any caller that is not localhost.
+Reads have exactly one credential: the `X-Setline-Token` header. There is no
+Basic Auth path, and no read endpoint is exempt from the rule.
+
+"Local" requires both a loopback TCP peer (`127.0.0.1` / `::1` / `::ffff:127.0.0.1`)
+and a loopback request host (`Host` or `X-Forwarded-Host` naming `127.0.0.1`,
+`::1`, or `localhost`, port ignored). Requests without a `Host` are never local.
+The host dimension targets local proxies: in `remote client -> local
+haproxy/nginx -> setline` the forwarded request carries the public host name, so
+it is treated as remote - the write gate answers `403` and reads need the token.
+A proxy can rewrite `Host` to evade that, so treat this as defense in depth and
+keep rejecting the admin path at the proxy (`http-request deny if { path_beg
+/_setline }`, `location ^~ /_setline { return 404; }`, or a rule matching just
+`/_setline/routes`): that route-table read is served by `listen`, so a proxy that
+forwards `/_setline` turns it into a public read unless `adminToken` is set. The
+gate also does not distinguish local users or processes, so do not share a host
+or network namespace with untrusted ones.
+
+An empty `adminToken` leaves reads open: the route table read rides `listen`, so
+anything that can reach the data plane (directly, or through a proxy that does
+not reject the path) can read it. Set `adminToken` for one shared credential,
+reject `/_setline` at the proxy, or keep `listen` on loopback. The status views
+are unaffected - they are served by `adminListen` alone, which defaults to
+`127.0.0.1:10080` - and so are writes, which always require a local caller.
+
+Admin request bodies are capped at a 4 MiB defensive limit and oversized ones get
+`413`.
 
 ## List Routes
 
 ```http
-GET /__setline/routes
+GET /_setline/routes
 ```
 
 Example (from localhost no credential is needed):
 
 ```bash
-curl http://127.0.0.1:8080/__setline/routes
+curl http://127.0.0.1:10080/_setline/routes
 ```
 
 From another host, present the token:
 
 ```bash
 curl -H 'X-Setline-Token: change-me' \
-  http://setline.internal:8080/__setline/routes
+  http://setline.internal:10080/_setline/routes
 ```
 
 Response:
@@ -75,7 +106,7 @@ Response:
 ## Add Or Replace One Route
 
 ```http
-PUT /__setline/routes?host=local1.example.com
+PUT /_setline/routes?host=local1.example.com
 ```
 
 Single port:
@@ -93,7 +124,7 @@ Multiple ports:
 Example:
 
 ```bash
-curl -X PUT 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com' \
+curl -X PUT 'http://127.0.0.1:10080/_setline/routes?host=local1.example.com' \
   -d '{"/api/edu":[9002,9003]}'
 ```
 
@@ -106,13 +137,13 @@ Response:
 ## Delete One Route
 
 ```http
-DELETE /__setline/routes?host=local1.example.com&prefix=/api/edu
+DELETE /_setline/routes?host=local1.example.com&prefix=/api/edu
 ```
 
 Example:
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com&prefix=/api/edu'
+curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=local1.example.com&prefix=/api/edu'
 ```
 
 Response is the remaining route list:
@@ -128,13 +159,13 @@ Response is the remaining route list:
 ## Clear Routes For One Host
 
 ```http
-DELETE /__setline/routes?host=local1.example.com
+DELETE /_setline/routes?host=local1.example.com
 ```
 
 Example:
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:8080/__setline/routes?host=local1.example.com'
+curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=local1.example.com'
 ```
 
 Response:
@@ -146,7 +177,7 @@ Response:
 ## Replace Routes For One Host
 
 ```http
-PUT /__setline/routes/all?host=local1.example.com
+PUT /_setline/routes/all?host=local1.example.com
 ```
 
 Body:
@@ -163,7 +194,7 @@ Body:
 Example:
 
 ```bash
-curl -X PUT 'http://127.0.0.1:8080/__setline/routes/all?host=local1.example.com' \
+curl -X PUT 'http://127.0.0.1:10080/_setline/routes/all?host=local1.example.com' \
   -d '{"routes":{"/api/edu":[9002,9003],"/m/edu/learning":5173}}'
 ```
 
@@ -186,7 +217,7 @@ Response is the new route list:
 - `host=*` is allowed and updates the fallback route namespace, not all hosts.
 - trailing slashes are ignored except for root `/`; `/m/edu/learning/` is
   normalized to `/m/edu/learning`.
-- `prefix` must not start with `/__setline`.
+- `prefix` must not start with `/_setline`.
 - ports must be integers in `1..65535`.
 - each port maps to `127.0.0.1:<port>`; full upstream URLs are not part of the
   route model.
@@ -199,23 +230,30 @@ Response is the new route list:
 - `200 OK`: request accepted.
 - `400 Bad Request`: invalid JSON, invalid host, invalid route, missing route,
   or unsupported field.
-- `401 Unauthorized`: missing or invalid `X-Setline-Token` on read APIs.
+- `401 Unauthorized`: missing or invalid `X-Setline-Token` on any read API
+  (routes and status alike).
+- `403 Forbidden`: a route change whose peer or `Host` is not loopback.
 - `403 Forbidden`: write request did not come from localhost.
 - `404 Not Found`: unknown admin endpoint.
 
 ## Status View
 
 ```http
-GET /__setline/status.json
+GET /_setline/status.json
 ```
 
-The admin API lives on `listen` unless `adminListen` is configured; with a
-separate admin listener the data plane returns `404` for every `/__setline`
-path and the admin listener returns `404` for everything else. Same
-credentials, same rules, two doors.
+The status views live on the admin listener (`adminListen`, `127.0.0.1:10080` by
+default) only. They carry listener addresses, timeouts, `maxConnections`,
+health-check tuning, counters and the whole route table, and no other machine
+needs them, so the data plane does not serve them: a `GET /_setline/status.json`
+sent to `listen` gets `404`, as does anything else under `/_setline` except the
+peer-protocol `GET /_setline/routes`. Same credential on both doors
+(`X-Setline-Token` for non-local callers), but not the same reach.
 
 Returns listener info, active/max connections, timeouts, health-check tuning, the
-route table with per-port health, and cumulative counters:
+route table with per-port health, and cumulative counters. The admin listen
+address is deliberately absent - it belongs to the HTML status page (and the
+startup log), not to the machine-readable view:
 
 ```json
 {
@@ -251,7 +289,8 @@ not hold up a graceful shutdown. `webSocketBytes*` exclude the 101 handshake its
 `upstreamIdle` (upstream connections sitting in the idle pool) are gauges rather than
 totals, and `poolHits` counts every upstream connection reuse, whether it came from
 the idle pool or from the client connection's own affinity.
-`GET /__setline/status` serves the same data as an HTML page.
+`GET /_setline/status` (or `/_setline/status.html`) serves the same data as an
+HTML page.
 
 ## Health State
 
@@ -265,7 +304,8 @@ After a route update, port health state is refreshed:
 
 Runtime route updates are persisted by default. `setline` rewrites only the
 top-level `routes` field in the config file that was used at startup. Listener,
-token, timeout, health-check, and connection-limit settings are preserved.
+The admin request body is capped at 4 MiB (`413` beyond that). token, timeout,
+health-check, and connection-limit settings are preserved.
 
 The write happens before the in-memory route table is swapped. If the config
 file cannot be written, the API returns an error and the current in-memory

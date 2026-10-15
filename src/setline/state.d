@@ -29,7 +29,6 @@ __gshared private string gAdminToken;
 __gshared private string gConfigPath;
 __gshared private ListenAddress gListenAddress;
 __gshared private ListenAddress gAdminListenAddress;
-__gshared private bool gAdminListenEnabled;
 __gshared private int gConnectTimeoutMillis = 3000;
 __gshared private int gReadTimeoutMillis = 15000;
 __gshared private bool gReusePort;
@@ -65,7 +64,6 @@ void initialize(Config config, string configPath = "") {
   gConfigPath = configPath;
   gListenAddress = config.listen;
   gAdminListenAddress = config.adminListen;
-  gAdminListenEnabled = config.adminListenEnabled;
   gConnectTimeoutMillis = config.connectTimeoutMillis;
   gReadTimeoutMillis = config.readTimeoutMillis;
   gReusePort = config.reusePort;
@@ -229,12 +227,7 @@ ListenAddress listenAddress() {
   return gListenAddress;
 }
 
-/** 是否把管理接口放到了独立监听上。 */
-bool adminListenSeparated() {
-  return gAdminListenEnabled;
-}
-
-/** 返回独立的管理监听地址；未分离时返回一个零值地址。 */
+/** 返回管理监听地址；`listen:false` 下没人绑它，状态接口也不会走到这里。 */
 ListenAddress adminListenAddress() {
   return gAdminListenAddress;
 }

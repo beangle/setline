@@ -36,6 +36,29 @@ class HttpHeadTooLargeException : Exception {
   }
 }
 
+/** 管理接口允许整份读入内存的请求体上限。
+
+    管理接口是唯一需要完整 body 的路径（`PUT` 单条路由 / 整体替换路由表），业务请求都
+    走流式转发。给一个便宜的防御性上限，免得调用方（可能经本机代理转发的远端）用一个
+    巨大的 `Content-Length` 把 setline 的内存吃掉。
+*/
+enum size_t maxAdminBodySize = 4 * 1024 * 1024;
+
+/** 管理接口请求体超过防御性上限。 */
+class RequestBodyTooLargeException : Exception {
+  this(size_t limit) {
+    super("request body exceeds " ~ limit.to!string ~ " bytes");
+  }
+}
+
+/** 校验管理接口请求体长度；超限抛 {@link RequestBodyTooLargeException}。
+
+    抽成纯函数是为了能在单测里覆盖边界，不必造一条真的 TCP 连接。
+*/
+void validateAdminBodySize(size_t contentLength) {
+  if (contentLength > maxAdminBodySize) throw new RequestBodyTooLargeException(maxAdminBodySize);
+}
+
 /** 增量查找头部终止符的扫描器。
 
     `feed` 接收累计缓冲而不是新片段；每轮只扫描上一轮末尾的 3 个重叠字节加新数据，
@@ -222,13 +245,17 @@ HttpHead parseHttpHead(string head, ubyte[] bufferedBody = null) {
 /** 在已有请求头基础上补齐 `Content-Length` 指定的请求体。
 
     这个函数刻意不做业务解析，只负责把已经读到的 body 前缀和剩余 body 拼回一个完整
-    请求字符串。调用方应确保该请求确实适合完整落入内存；透明代理的大多数请求应继续
-    使用 `readHttpHead` 加流式转发。
+    请求字符串。只有管理接口用它——透明代理的请求继续走 `readHttpHead` 加流式转发，不
+    把 body 落进内存。
+
+    `Content-Length` 超过 {@link maxAdminBodySize} 时抛 {@link RequestBodyTooLargeException}，
+    调用方据此回 413 并关连接，不读 body。
 */
 string completeHttpRequest(TCPConnection socket, HttpHead request) {
   auto body = appender!string();
   body.put(cast(string) request.bufferedBody);
   auto contentLength = request.hasContentLength ? cast(size_t) request.contentLength : 0;
+  validateAdminBodySize(contentLength);
   if (contentLength > request.bufferedBody.length) {
     ubyte[8192] buffer;
     auto remaining = contentLength - request.bufferedBody.length;

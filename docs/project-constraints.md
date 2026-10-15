@@ -140,12 +140,54 @@ Runtime route changes write the top-level `routes` field back to the startup
 config file by default. They never change listener, token, timeout,
 health-check, or connection-limit settings.
 
-All route-changing requests must come from localhost and must specify the
-target host. They do not require the admin token: writes are gated by the TCP
-peer address, not by a credential, because a route change redirects traffic.
-The admin token stays on the read side (`GET` routes plus the status page),
-which is the part meant to be consumed from other hosts on the same network
-later, for example by a proxy-config synchronization agent.
+All route-changing requests must come from the local machine and must specify
+the target host. They do not require the admin token: writes are gated by the
+local check, not by a credential, because a route change redirects traffic. They
+are also served by `adminListen` only, which defaults to loopback - so the
+strongest guarantee is the bind, not the check. The admin token stays on the
+read side, and the reads are split across the two listeners: `GET
+/_setline/routes` rides both `listen` and `adminListen`, because it is the
+endpoint meant to be consumed from other hosts on the same network later, for
+example by a proxy-config synchronization agent; the status page and
+`status.json` stay on `adminListen` alone.
+
+"Local" requires two things: a loopback TCP peer address (`127.0.0.1` / `::1` /
+`::ffff:127.0.0.1`) and a loopback request host (`Host` or `X-Forwarded-Host`
+naming `127.0.0.1`, `::1`, or `localhost`, port ignored). Requests without a
+`Host` are never local. Consequences that are part of the contract and must stay
+documented:
+
+- The host dimension exists because of local proxies: in `remote client -> local
+  haproxy/nginx -> setline` the forwarded request carries the browser's public
+  host name, so the route table can no longer be rewritten without a credential
+  or read without `adminToken` (it was, before this was added: relaying `PUT
+  /_setline/routes` through haproxy returned `200` and persisted the route,
+  which is covered by an e2e case now).
+- A proxy that rewrites `Host` can still look local, so this is defense in
+  depth, not a boundary. Front proxies should reject `/_setline` themselves
+  (`http-request deny if { path_beg /_setline }`, `location ^~ /_setline {
+  return 404; }`, or a rule matching just `/_setline/routes`): **the route table
+  read is served by `listen`**, so a proxy that forwards the path turns it into
+  a public read while `adminToken` is empty.
+- The upshot of the split: the peer-protocol read (`GET /_setline/routes`) rides
+  the data plane, so its reachability is the proxy's reachability plus
+  `adminToken`; everything else - status, `status.json`, writes - lives only on
+  `adminListen`, which defaults to `127.0.0.1:10080`. Route changes are
+  therefore a local-only operation by default, and the loopback bind - not the
+  `Host` heuristic - is what actually enforces it. Keeping the data-plane
+  surface to the one endpoint the peer protocol needs is deliberate: the status
+  views carry listener addresses, timeouts, counters and the whole route table,
+  and have no cross-machine consumer.
+- The gate does not distinguish local users, processes, or network namespaces.
+  Any process that can open a TCP connection to the listener can change routes,
+  so setline must not share a host or netns with untrusted workloads. Route
+  changes redirect traffic, which in agent mode also means arbitrary
+  `host:port` targets in the rendered proxy fragments.
+
+Reads have exactly one credential, `X-Setline-Token`; the status page uses the
+same header as the routes API. Admin request bodies are capped by a 4 MiB
+defensive limit (`413` beyond that); the data plane never buffers a body, only
+this control-plane path does.
 
 The new routes are written to disk before the in-memory route table is swapped.
 If persistence fails, the existing runtime routes remain active.
@@ -158,40 +200,39 @@ route are removed from the health table.
 ## Remote Proxy Rendering
 
 `agent.peers` is the discovery form of the same agent-side helper. Each peer is
-a remote setline instance read through `GET /__setline/routes`; its local ports
+a remote setline instance read through `GET /_setline/routes`; its local ports
 are rewritten to `<peer url host>:<port>`, and routes sharing a host and path prefix
 are merged into one backend group so several machines serving the same prefix
 become multiple servers of one upstream. The result is rendered as a HAProxy or
-Nginx fragment, written atomically to `agent.output`, and never merged into the
+Nginx fragment, written atomically under the `agent.output` root directory
+(`<root>/{haproxy,nginx}/setline.{cfg,conf}`), and never merged into the
 proxy's own main config file: the fragment is included (Nginx) or concatenated
-(HAProxy, which has no `include`) by deployment tooling. `agent.sync` chooses
-between a single round (`once`) and a repeating loop (`interval`).
+(HAProxy, which has no `include`) by deployment tooling. The process renders
+exactly one round and exits; the cadence is external
+(`setline-render.timer` in the package), so there is no in-process scheduler and no
+`sync` config.
 
-By default (`agent.bind` empty) the fragment carries only rules and backends and
-never a listener, because the listen address, TLS and the rest of the proxy
-config are the deployment's own decisions; a self-contained listener is opt-in
-by setting `agent.bind`. `agent.peers` and `agent.remote` are mutually exclusive:
-one merges live peer route tables, the other unpacks a registry bundle. Wiring
-recipes: `docs/haproxy-integration.md`, `docs/nginx-integration.md`.
+With no `peers`, the same renderer reads the local route table instead
+(single-host deployment, where the proxy and setline share a machine).
 
-`agent.remote` is an agent-side helper, not part of the normal setline routing
-hot path. It points to a manifest owned by an external registry system. The
-manifest names one versioned `.tar.gz` bundle and its SHA-256 checksum. When
-`agent.type` is set, `setline -f` downloads the bundle, verifies it, reads its
-root `backends.json`, and renders proxy configuration text for an edge proxy
-machine.
+The fragment carries only rules and backends and never a listener, because the
+listen address, TLS and the rest of the proxy config are the deployment's own
+decisions. Wiring recipes: `docs/haproxy-integration.md`,
+`docs/nginx-integration.md`.
+
+A registry-bundle source (`agent.remote`, plus its `agent.workDir` scratch
+directory) existed for a while and was dropped: it fed the same renderer from a
+manifest and versioned `.tar.gz` that an external registry system had to build,
+doubling the surface while `agent.peers` already produced the same fragments
+from running instances. Only `peers` and the local route table remain.
 
 This rendering mode may describe remote machine IPs and ports because it is
 generating HAProxy/Nginx configuration, not selecting setline backends. It must
 stay separate from `routes`, which remain local-port-only for the setline proxy.
 
-The bundle keeps `backends.json`, certificates, private keys, and other proxy
-inputs at one version boundary. The agent must not combine a newly downloaded
-route table with certificates from another bundle version.
-
 The renderer does not own service discovery, liveness, deployment ordering, or
-firewall policy. Those decisions stay in the registry/deployment system and in
-the target proxy's own health checks.
+firewall policy. Those decisions stay in the deployment system and in the
+target proxy's own health checks.
 
 ## Technology Selection
 

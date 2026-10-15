@@ -118,12 +118,7 @@ int main(string[] args) {
       return 0;
     }
 
-    stdout.writefln("setline listening on http://%s:%s", config.listen.host, config.listen.port);
-    if (config.adminListenEnabled) {
-      stdout.writefln("setline admin listening on http://%s:%s",
-        config.adminListen.host, config.adminListen.port);
-    }
-    serve(config.listen, config.adminListen, config.adminListenEnabled);
+    serve(config.listen, config.adminListen);
     return 0;
   } catch (Exception e) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);

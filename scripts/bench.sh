@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_PORT="${BACKEND_PORT:-19599}"
 SETLINE_PORT="${SETLINE_PORT:-19598}"
 HAPROXY_PORT="${HAPROXY_PORT:-19597}"
+# 管理口缺省是回环 127.0.0.1:10080；基准里固定一个回环端口，免得撞上宿主机上真在跑的东西。
+SETLINE_ADMIN_PORT="${SETLINE_ADMIN_PORT:-19596}"
 SETLINE_INSTANCES="${SETLINE_INSTANCES:-1}"
 REQUESTS="${BENCH_REQUESTS:-5000}"
 REQUESTS_64="${BENCH_REQUESTS_64:-10000}"
@@ -97,7 +99,7 @@ stop_time_wait_sampler() {
 
 # 读一个 setline 计数器的当前值（status.json 里 counters 的平铺字段）。
 status_counter() {
-  curl -fsS "http://127.0.0.1:$SETLINE_PORT/__setline/status.json" |
+  curl -fsS "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/status.json" |
     grep -o "\"$1\":[0-9]*" | head -1 | cut -d: -f2
 }
 
@@ -116,7 +118,8 @@ BACKEND_PID=$!
 wait_for_port "$BACKEND_PORT" || fail "backend did not listen"
 
 cat >"$WORK/setline.json" <<JSON
-{"listen":"127.0.0.1:$SETLINE_PORT","readTimeoutMillis":30000,"reusePort":$([ "$SETLINE_INSTANCES" -gt 1 ] && echo true || echo false),
+{"listen":"127.0.0.1:$SETLINE_PORT","adminListen":"127.0.0.1:$SETLINE_ADMIN_PORT",
+ "readTimeoutMillis":30000,"reusePort":$([ "$SETLINE_INSTANCES" -gt 1 ] && echo true || echo false),
  "healthCheck":{"intervalMillis":60000,"timeoutMillis":1000,"unhealthyThreshold":3,"healthyThreshold":1},
  "routes":{"local.test":{"/":$BACKEND_PORT}}}
 JSON

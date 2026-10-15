@@ -71,7 +71,7 @@ The proxy does not parse request body content.
 This keeps POST/PUT/upload requests transparent and avoids loading full request
 bodies into memory.
 
-The admin API is the exception: `/__setline` handlers need a JSON body for
+The admin API is the exception: `/_setline` handlers need a JSON body for
 runtime route management, so the server completes the request body before
 handing it to admin code.
 
@@ -176,7 +176,7 @@ Runtime route management is deliberately narrow. It supports four operations:
 - clear routes for one host
 - replace routes for one host
 
-These operations are available under the `__setline` admin namespace and are
+These operations are available under the `_setline` admin namespace and are
 accepted only from localhost. Write operations do not require the admin token,
 but they must specify the route host. The localhost check uses the TCP peer
 address because proxy headers are user-controlled input at this security
@@ -287,7 +287,7 @@ an edge proxy machine, without touching the normal local transparent proxy route
 model.
 
 The helper reads live peers: `agent.peers` lists remote setline instances, and
-`setline -f` aggregates their `GET /__setline/routes` tables into one HAProxy or
+`setline -f` aggregates their `GET /_setline/routes` tables into one HAProxy or
 Nginx fragment. With no `peers` it renders the local route table instead. This
 is a rendered fragment, not a full config, so the edge proxy keeps owning its
 own `global`/`defaults`/`http` content.

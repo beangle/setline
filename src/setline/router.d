@@ -98,7 +98,7 @@ struct PathSegments {
 /** 校验路由前缀是否符合项目约束。
 
     路由前缀必须是绝对路径，并且不能占用管理接口命名空间。这样普通代理流量和
-    `__setline` 运行时管理 API 在入口处就能稳定分流。
+    `_setline` 运行时管理 API 在入口处就能稳定分流。
 */
 void validateRoute(Route route) {
   enforce(route.prefix.length > 0 && route.prefix[0] == '/', "route prefix must start with /");

@@ -27,6 +27,9 @@ struct ListenAddress {
   ushort port = 8080;
 }
 
+/** 管理接口的默认端口：`adminListen` 不写时用它。 */
+enum defaultAdminPort = 10080;
+
 /** 一条基于路径前缀的路由规则。
 
     `prefix` 只参与最长前缀匹配；命中后在本机端口之间做随机选择。后端固定为
@@ -117,7 +120,7 @@ struct AgentConfig {
     配置描述监听地址、管理 token 和路由表。代理行为本身保持固定：按 URL 找路由、连接
     本机后端、透明透传请求和响应，不提供缓存、URL 改写或复杂负载均衡策略。
 
-    `adminToken` 只保护**读**的**非本机**来源（`GET /__setline/routes` 与状态页），因为路由表
+    `adminToken` 只保护**读**的**非本机**来源（`GET /_setline/routes` 与状态页），因为路由表
     将来要开放给同网段的服务进程（例如同步 haproxy / nginx 的 agent）读取；本机来源免凭据，
     与**写**接口同一条门——写也不认这条凭据，只接受 TCP 对端是本机的请求（改路由等于改流量走向，
     不对外开放）。
@@ -126,13 +129,22 @@ struct Config {
   ListenAddress listen;
   /** `"listen": false` 时不绑定任何监听：纯渲染部署，路由只来自配置文件。 */
   bool listenDisabled;
-  /** 给管理接口单独开一个监听；未配置时管理接口和数据面共用 `listen`。
+  /** 管理接口的独立监听，缺省 `127.0.0.1:10080`（见 {@link defaultAdminPort}）。
 
-      数据面必须只绑回环（见 roadmap 的定位），而跨机采集路由需要绑 `*`。把两者拆开之后，
-      `listen` 可以稳定留在 `127.0.0.1`，管理面按需单独放开。
+      两个监听按方法分工：
+
+      - **写**（`PUT` / `DELETE /_setline/routes*`）只在管理口上，缺省绑回环，于是「只有
+        本机能改路由」是 TCP 层事实，不依赖请求头判定（那是纵深防御，可被代理改写 `Host`
+        绕过）。跨机改路由不是需求，真要做也只能先把管理口显式放开。
+      - **读**（`GET` 路由表、状态页、`status.json`）同时挂在数据面 `listen` 和管理口上，
+        规则不变：本机免凭据，其它来源要 `X-Setline-Token`。外界只需要知道业务端口就能
+        读，不必知道管理口在哪。
+
+      跨机读还有两条路：前置代理按源地址放行 `/_setline`（代理必须自己拒掉其余来源），
+      或者把 `adminListen` 显式放开（例如 `*:10080`）并设 `adminToken`。缺省绑回环是因为
+      读已经能从 `listen` 走，管理口不需要暴露在网络上。
   */
-  bool adminListenEnabled;
-  ListenAddress adminListen;
+  ListenAddress adminListen = ListenAddress("127.0.0.1", defaultAdminPort);
   /** 非本机读接口的凭据；为空表示开发模式放行（生产绑 `*` 时必须设置）。 */
   string adminToken;
   int connectTimeoutMillis = 3000;
