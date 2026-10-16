@@ -33,7 +33,6 @@ __gshared private int gConnectTimeoutMillis = 3000;
 __gshared private int gReadTimeoutMillis = 15000;
 __gshared private bool gReusePort;
 __gshared private bool gListenDisabled;
-__gshared private bool gAccessLog;
 __gshared private int gUpstreamIdleTimeoutMillis = 30_000;
 __gshared private int gWebSocketIdleTimeoutMillis;
 // 观测计数器：事件循环单线程更新，status.json 只读快照，不做同步。
@@ -68,7 +67,6 @@ void initialize(Config config, string configPath = "") {
   gReadTimeoutMillis = config.readTimeoutMillis;
   gReusePort = config.reusePort;
   gListenDisabled = config.listenDisabled;
-  gAccessLog = config.accessLog;
   gUpstreamIdleTimeoutMillis = config.upstreamIdleTimeoutMillis;
   gWebSocketIdleTimeoutMillis = config.webSocketIdleTimeoutMillis;
   gPoolHits = 0;
@@ -110,11 +108,6 @@ bool reusePort() {
 /** 返回是否禁用监听（`"listen": false` 的纯渲染形态）。 */
 bool listenDisabled() {
   return gListenDisabled;
-}
-
-/** 返回是否启用访问日志（默认关闭）。 */
-bool accessLogEnabled() {
-  return gAccessLog;
 }
 
 /** 返回空闲上游连接被回收前的等待时间。 */

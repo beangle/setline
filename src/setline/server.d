@@ -20,10 +20,10 @@ import core.atomic : atomicLoad, atomicOp;
 import core.stdc.signal : SIG_IGN;
 import core.sys.posix.signal :
   SA_RESTART, SIGINT, SIGPIPE, SIGTERM, sigaction, sigaction_t, sigemptyset, sigset_t;
-import core.time : MonoTime, msecs;
+import core.time : msecs;
 import std.algorithm : startsWith;
 import std.conv : to;
-import std.stdio : stderr, stdout;
+import std.stdio : stdout;
 import std.string : indexOf;
 
 import vibe.core.core : disableDefaultSignalHandlers, exitEventLoop, runEventLoop, runTask, sleep;
@@ -436,26 +436,20 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
     return false;
   }
 
-  auto started = MonoTime.currTime;
   try {
     ushort[] tried;
     Exception lastConnectFailure;
     while (true) {
       auto port = selectRequestPort(routeHost, path, tried, lease);
       if (port == 0) {
-        int status;
         if (tried.length > 0 && lastConnectFailure !is null) {
-          status = 502;
           sendResponse(client, 502, "Bad Gateway", lastConnectFailure.msg);
         } else if (hasRoute(routeHost, path)) {
-          status = 503;
           sendResponse(client, 503, "Service Unavailable",
             "no healthy port for " ~ routeHost ~ path);
         } else {
-          status = 404;
           sendResponse(client, 404, "Not Found", "no route for " ~ routeHost ~ path);
         }
-        logAccess(request, routeHost, path, 0, status, started);
         return false;
       }
       try {
@@ -467,29 +461,25 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
             requestFinished();
             requestCounted = false;
           }
-          auto status = forwardWebSocket(client, request, port, &onTunnelStart);
-          logAccess(request, routeHost, path, port, status, started);
+          forwardWebSocket(client, request, port, &onTunnelStart);
           return false;
         }
         auto outcome = forward(client, request, port, lease);
-        logAccess(request, routeHost, path, port, outcome.status, started);
         return outcome.keepAlive;
       } catch (PortConnectException e) {
         tried ~= port;
         lastConnectFailure = e;
       } catch (UpstreamReadTimeoutException e) {
-        logAccess(request, routeHost, path, port, 504, started);
         if (!e.finalResponseStarted) {
           sendResponse(client, 504, "Gateway Timeout", e.msg);
         }
         return false;
       } catch (ResponseStartedException) {
         // 响应头已经写出去了（响应体被截断、隧道中途出错）。此时补发 502 只会把状态行和
-        // 错误文本混进响应体，所以只记一行访问日志并截断连接，让失败如实暴露出来。
-        logAccess(request, routeHost, path, port, 0, started);
+        // 错误文本混进响应体，所以直接截断连接，让失败如实暴露出来。
         return false;
       } catch (ClientDisconnectedException) {
-        logAccess(request, routeHost, path, port, 0, started);
+        // 客户端已经走了：连接没有用处，直接回收，不补发状态码。
         return false;
       }
     }
@@ -497,24 +487,9 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
   catch (Exception e) {
     if (hasRoute(routeHost, path)) {
       sendResponse(client, 502, "Bad Gateway", e.msg);
-      logAccess(request, routeHost, path, 0, 502, started);
     } else {
       sendResponse(client, 404, "Not Found", "no route for " ~ routeHost ~ path);
-      logAccess(request, routeHost, path, 0, 404, started);
     }
     return false;
   }
-}
-
-/** 可选访问日志（`accessLog` 打开时每请求一行），默认关闭，正常靠前置代理的日志。
-
-    `port` 为 0 表示尚未选中后端（无路由、无健康端口或连接全失败）。`status` 为 0 表示
-    没有拿到最终响应（上游提前关闭或客户端中途断开）。
-*/
-void logAccess(HttpHead request, string host, string path, ushort port, int status,
-    MonoTime started) {
-  if (!accessLogEnabled()) return;
-  auto durationMillis = (MonoTime.currTime - started).total!"msecs";
-  stderr.writefln("setline access host=%s method=%s path=%s port=%s status=%s duration_ms=%s",
-    host.length > 0 ? host : "-", request.method, path, port, status, durationMillis);
 }

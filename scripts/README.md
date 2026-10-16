@@ -58,7 +58,7 @@ machine (2.0+; `HAPROXY_BINARIES=/path/to/haproxy`, comma-separated, runs one
 round each). It fails with that hint when none is installed rather than
 downloading one. Covered: 1xx intermediates, `Expect: 100-continue`, HTTP/1.0,
 close-delimited bodies, HEAD/204/304, request framing, upstream reuse, upstream
-read timeout, client abort, `status.json`, the access log, `listen:false`
+read timeout, client abort, `status.json`, `listen:false`
 render-only mode, WebSocket echo/idle/one-way, SIGTERM shutdown (exit status 0)
 and how `/_setline` is split between the two listeners: the peer-protocol
 `GET /_setline/routes` rides both the admin listener (its own port, default

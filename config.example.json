@@ -4,7 +4,6 @@
   "connectTimeoutMillis": 3000,
   "readTimeoutMillis": 15000,
   "reusePort": false,
-  "accessLog": false,
   "upstreamIdleTimeoutMillis": 30000,
   "webSocketIdleTimeoutMillis": 0,
   "maxConnections": 65535,

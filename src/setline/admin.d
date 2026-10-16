@@ -314,7 +314,6 @@ string statusHtml() {
     idleUpstreamCount().to!string ~ " idle</dd>");
   html.put("<dt>upstream timeouts</dt><dd>" ~ upstreamTimeoutCount().to!string ~ "</dd>");
   html.put("<dt>unhealthy transitions</dt><dd>" ~ unhealthyTransitionCount().to!string ~ "</dd>");
-  html.put("<dt>access log</dt><dd>" ~ (accessLogEnabled() ? "on" : "off") ~ "</dd>");
   html.put("<dt>websocket tunnels</dt><dd>" ~ activeWebSockets().to!string ~ " active / " ~
     webSocketTunnelCount().to!string ~ " total</dd>");
   html.put("<dt>websocket idle timeouts</dt><dd>" ~
@@ -355,7 +354,6 @@ JSONValue statusJson() {
   root["maxConnections"] = JSONValue(maxConnections());
   root["connectTimeoutMillis"] = JSONValue(connectTimeoutMillis());
   root["healthCheck"] = healthJson();
-  root["accessLog"] = JSONValue(accessLogEnabled());
   root["activeWebSockets"] = JSONValue(cast(long) activeWebSockets());
   root["counters"] = countersJson();
   root["routeHostCount"] = JSONValue(routes.length);

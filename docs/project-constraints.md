@@ -73,8 +73,8 @@ These are intentionally out of scope unless the project goal changes:
 - HTTP/2, HTTP/3, h2c
 - client-side timeouts, slowloris/slow-request protection, connection shedding
 - authentication, authorization, rate limiting, WAF
-- access logging; the opt-in `accessLog` switch exists for troubleshooting and
-  is not a second accounting pipeline
+- access logging: only the front proxy sees the whole request, so setline keeps
+  no access log of its own and reports per-port counters instead
 - unix-socket backends
 - scheduling algorithms beyond random port selection: no weighted, consistent
   hash or sticky sessions

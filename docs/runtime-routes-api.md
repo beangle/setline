@@ -262,7 +262,6 @@ startup log), not to the machine-readable view:
   "activeWebSockets": 0,
   "maxConnections": 65535,
   "connectTimeoutMillis": 3000,
-  "accessLog": false,
   "counters": {
     "poolHits": 128,
     "upstreamConnects": 4,

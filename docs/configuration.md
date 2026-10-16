@@ -31,7 +31,6 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 | `connectTimeoutMillis` | 整数 > 0 | `3000` | 连接后端的 TCP 超时 |
 | `readTimeoutMillis` | 整数 > 0 | `15000` | 单次上游读取的不活动超时 |
 | `reusePort` | 布尔 | `false` | 同地址多进程监听时启用 Linux `SO_REUSEPORT` |
-| `accessLog` | 布尔 | `false` | 每个转发的请求打一行访问日志到 stderr |
 | `upstreamIdleTimeoutMillis` | 整数 > 0 | `30000` | 空闲上游连接保留多久：客户端连接亲和挂着的连接和空闲池里的连接都用它 |
 | `webSocketIdleTimeoutMillis` | 整数 ≥ 0 | `0` | WebSocket 隧道两个方向都静默多久后断开；`0` 表示不断开 |
 | `maxConnections` | 整数 > 0 | `65535` | 并发客户端连接上限，超出返回 `503` |
@@ -50,10 +49,9 @@ fd 预算按 `2 * maxConnections + 64` 配 `LimitNOFILE`；每一项的来历和
 （读超时、响应体被上游截断、客户端中途断开）都只回收连接，不会再补发状态码——原因见
 「报文边界（framing）」一节。空闲连接池取出连接时会重新套用这个超时。
 
-`accessLog` 默认关闭：正常部署靠 haproxy/nginx 的访问日志就够，setline 再打一份只会重复。
-打开后每个转发到后端的请求打一行 `setline access host=... method=... path=... port=... status=... duration_ms=...`；
-无路由、无健康端口、连接失败等没有落到后端的情形也会记一行（`port=0`），未拿到最终响应时
-`status=0`。这一行是排障用的，不是计费/统计口径——那是前置代理的职责。
+setline 自己不打访问日志：它只走 haproxy/nginx 到后端的最后一跳，完整请求画像（客户端地址、
+耗时分布、计费口径）只有前置代理拿得到，在 setline 里再记一份既不完整又和它的日志重复。
+要看「哪个请求落到哪个端口、上游有没有超时」，用状态页和 `status.json` 的计数器。
 
 `upstreamIdleTimeoutMillis` 管的是「空闲的上游连接留多久」。setline 按客户端连接做上游
 连接亲和（见 `docs/deployment.md` 的连接一节）：一条 keep-alive 的客户端连接会一直握着它的

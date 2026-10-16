@@ -250,10 +250,6 @@ CFG
     fail "$label status.json did not report websocket bytes: $stats"
   echo "PASS[$label] status.json reports pool, per-port and websocket counters"
 
-  grep -q "setline access host=local.test" "$WORK/setline.log" ||
-    fail "$label access log line missing"
-  echo "PASS[$label] access log records proxied requests"
-
   local status
   status="$(curl -sS --max-time 5 -o "$WORK/timeout.body" -w '%{http_code}' \
     -H 'Host: local.test' "http://127.0.0.1:$HAPROXY_PORT/stall")"
@@ -286,7 +282,7 @@ wait_for_port "$BACKEND_PORT" 50 || fail "test backend did not listen"
 
 cat >"$WORK/setline.json" <<JSON
 {"listen":"127.0.0.1:$SETLINE_PORT","adminListen":"127.0.0.1:$SETLINE_ADMIN_PORT",
- "readTimeoutMillis":$READ_TIMEOUT_MILLIS,"accessLog":true,
+ "readTimeoutMillis":$READ_TIMEOUT_MILLIS,
  "webSocketIdleTimeoutMillis":$WS_IDLE_MILLIS,"upstreamIdleTimeoutMillis":$POOL_IDLE_MILLIS,
  "healthCheck":{"intervalMillis":60000,"timeoutMillis":1000,"unhealthyThreshold":3,"healthyThreshold":1},
  "routes":{"local.test":{"/":$BACKEND_PORT}}}

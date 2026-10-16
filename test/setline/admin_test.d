@@ -79,6 +79,8 @@ import setline.util : escapeHtml, isAddressLiteral, isListedAddress, isLoopbackA
     // 管理面独立监听时状态页要列出它的地址，否则排障时看不出管理入口在哪。
     assert(html.indexOf("admin listen") >= 0);
     assert(html.indexOf("127.0.0.1:8081") >= 0);
+    // 访问日志是前置代理的职责，setline 不提供也不在页面上报它。
+    assert(html.indexOf("access log") < 0);
   });
 }
 

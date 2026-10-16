@@ -162,8 +162,6 @@ struct Config {
   size_t maxConnections = 65535;
   /** 同端口启动多个进程时启用 SO_REUSEPORT；默认关闭，避免误共享管理入口。 */
   bool reusePort;
-  /** 是否把每个请求打一行访问日志；默认关闭，正常靠前置代理的日志。 */
-  bool accessLog;
   /** 空闲上游连接保留多久（毫秒）。
 
       客户端连接亲和会让一条 keep-alive 的客户端连接一直握着它的上游连接；超过这个时间

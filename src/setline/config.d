@@ -207,11 +207,6 @@ Config parseConfigFile(string path) {
       "reusePort must be boolean");
     config.reusePort = root["reusePort"].boolean;
   }
-  if ("accessLog" in root.object) {
-    enforce(root["accessLog"].type == JSONType.true_ || root["accessLog"].type == JSONType.false_,
-      "accessLog must be boolean");
-    config.accessLog = root["accessLog"].boolean;
-  }
   if ("upstreamIdleTimeoutMillis" in root.object) {
     config.upstreamIdleTimeoutMillis = cast(int) root["upstreamIdleTimeoutMillis"].integer;
     enforce(config.upstreamIdleTimeoutMillis > 0,

@@ -365,19 +365,6 @@ import setline.model;
   assertThrown!Exception(loadConfig(path));
 }
 
-@("config reads the access log switch") unittest {
-  auto path = "/tmp/setline-config-accesslog-test.json";
-  write(path, `{"listen":"127.0.0.1:8080","accessLog":true,"routes":{}}`);
-  scope (exit) remove(path);
-  assert(loadConfig(path).accessLog);
-
-  // 默认关闭，且非布尔值必须报错。
-  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
-  assert(!loadConfig(path).accessLog);
-  write(path, `{"listen":"127.0.0.1:8080","accessLog":"yes","routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-}
-
 @("config always gives the admin API its own listener") unittest {
   auto path = "/tmp/setline-config-adminlisten-test.json";
   scope (exit) remove(path);
