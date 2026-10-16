@@ -985,16 +985,6 @@ bool relayChunked(TCPConnection source, TCPConnection target, const(ubyte)[] bod
   }
 }
 
-/** 判断一段 chunked body 是否已经包含终止 chunk 和可选 trailer。
-
-    该函数只做边界识别，不返回解码后的实体内容。代理不需要理解业务 body，只需要知道
-    什么时候可以停止从上游继续读取，避免等待已经完成的资源而拖慢浏览器后续请求。
-*/
-bool chunkedBodyComplete(string body) {
-  ChunkedBodyTracker tracker;
-  return tracker.feed(cast(const(ubyte)[]) body);
-}
-
 /** 解析 chunk size 行中的十六进制长度。 */
 size_t parseChunkSize(string line) {
   size_t size;

@@ -23,6 +23,12 @@ import setline.http : parseHttpHead;
 import setline.proxy;
 import setline.test_lock;
 
+/** 一次性把整段 body 喂给边界状态机，用于「完整 / 不完整」这类单点断言。 */
+private bool chunkedBodyComplete(string body) {
+  ChunkedBodyTracker tracker;
+  return tracker.feed(cast(const(ubyte)[]) body);
+}
+
 @("proxy detects complete chunked body") unittest {
   assert(chunkedBodyComplete("4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"));
   assert(chunkedBodyComplete("4;name=value\r\nWiki\r\n0\r\nExpires: now\r\n\r\n"));
