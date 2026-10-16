@@ -30,6 +30,27 @@ size_t requiredFileDescriptorBudget(size_t maxConnections) {
   return maxConnections * 2 + 64;
 }
 
+/** 主服务与渲染 agent 的启动身份判据：以 root 运行时拒绝启动。
+
+    `setline-apply` 是唯一以 root 运行的组件（`nginx -t`、haproxy reload、代理的 admin
+    socket 都要特权），它会以 root 调用 `setline --agent-type` 与 `setline --sync-map`，
+    那两个出口不经过这个判据（见 `src/main.d`）。
+
+    只做纯函数判断是为了可测：测试进程改不了自己的 euid。真实 euid 由 `main` 传入
+    `core.sys.posix.unistd.geteuid`。
+*/
+bool rejectsRootUser(uint effectiveUserId) {
+  return effectiveUserId == 0;
+}
+
+/** 以 root 运行时的拒绝提示：给替代做法，而不是只说「不允许」。 */
+string rootRunRefusalMessage() {
+  return "refusing to run as root: setline is the network-facing data plane and runs as an " ~
+    "unprivileged user (User=setline, Group=beangle). For a port below 1024 add " ~
+    "AmbientCapabilities=CAP_NET_BIND_SERVICE to the unit; only setline-apply needs root. " ~
+    "See docs/project-constraints.md, Privilege Model.";
+}
+
 /** 将 ASCII 大写字母转换为小写，非 ASCII 字符保持不变。 */
 string toLowerAscii(string value) {
   auto outp = appender!string();

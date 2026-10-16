@@ -21,13 +21,16 @@ import std.file : readText;
 import std.getopt : defaultGetoptPrinter, getopt;
 import std.stdio : stderr, stdout;
 
+import core.sys.posix.unistd : geteuid;
+
 import setline.config;
 import setline.mapsync : syncMap;
 import setline.model : AgentConfig, HostRoutes;
 import setline.peer : renderAgentSnippets, writeSnippets;
 import setline.server;
 import setline.state;
-import setline.util : defaultConfigPath, requiredFileDescriptorBudget;
+import setline.util :
+  defaultConfigPath, rejectsRootUser, requiredFileDescriptorBudget, rootRunRefusalMessage;
 
 /** 解析命令行参数，检查或启动 setline 服务。 */
 int main(string[] args) {
@@ -84,6 +87,14 @@ int main(string[] args) {
       checkConfig(configPath);
       stdout.writefln("Config %s is valid", configPath);
       return 0;
+    }
+
+    // 主服务与渲染 agent 都以非 root 运行：只有 setline-apply 需要 root，而它调用的
+    // --agent-type / --sync-map 在上面就返回了。退出码 2 对上 unit 里的
+    // RestartPreventExitStatus=2，不会陷入「重启五次后 failed」。
+    if (rejectsRootUser(geteuid())) {
+      stderr.writefln("%s", rootRunRefusalMessage());
+      return 2;
     }
 
     auto config = loadConfig(configPath);

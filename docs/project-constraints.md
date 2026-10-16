@@ -85,6 +85,11 @@ These are intentionally out of scope unless the project goal changes:
   preference: the daemon is the network-facing data plane. It accepts arbitrary
   client HTTP, parses request heads, and tunnels WebSocket frames, so running it
   as root would turn any bug on that path into a root compromise.
+- The daemon enforces that itself: starting the proxy or the render agent with
+  effective uid 0 prints a refusal and exits with code 2, which the shipped unit
+  maps to `RestartPreventExitStatus=2` so systemd does not loop. `setline-apply`
+  is not gated, and neither are the exits it invokes as root
+  (`setline --agent-type`, `setline --sync-map`) or `-c` and `--help`.
 - Privileged work belongs only to `setline-apply`, the short-lived root oneshot:
   validating fragments, running `systemctl reload`, rolling the fragment
   directory back, and talking to a proxy admin socket.

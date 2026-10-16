@@ -17,6 +17,9 @@
 客户端 HTTP、解析请求头、还做 WebSocket 隧道，这条路径上任何一个解析或内存 bug 都会
 直接变成 root 失陷。特权只留在 `setline-apply` 这一个短命进程里；需要特权的功能
 （校验、reload、回滚、连代理的 admin socket）都放在那里，而不是给 `setline` 提权。
+这条要求在代码里也成立：以 root 启动代理或渲染 agent 会打印一行拒绝并退出
+（退出码 `2`，对上 unit 的 `RestartPreventExitStatus=2`）。`setline-apply` 以 root 调用
+的两个出口 `--agent-type` 与 `--sync-map`，以及 `-c`、`--help` 不受这条判据约束。
 完整条目见 `docs/project-constraints.md` 的 Privilege Model。
 
 ## 启用与使用

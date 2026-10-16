@@ -23,11 +23,20 @@ import setline.health;
 import setline.model;
 import setline.state;
 import setline.test_lock;
-import setline.util : requiredFileDescriptorBudget;
+import setline.util : rejectsRootUser, requiredFileDescriptorBudget, rootRunRefusalMessage;
 
 @("util calculates fd budget as two sockets per connection plus overhead") unittest {
   assert(requiredFileDescriptorBudget(1) == 66);
   assert(requiredFileDescriptorBudget(65535) == 131134);
+}
+
+@("util refuses to run the proxy and the agent as root") unittest {
+  // 这两个入口（serve 与渲染一轮）都以非 root 运行；setline-apply 才需要 root，
+  // 它走的是 main 里更早返回的 --agent-type / --sync-map 出口，不受这条判据约束。
+  assert(rejectsRootUser(0));
+  assert(!rejectsRootUser(1));
+  assert(!rejectsRootUser(1000));
+  assert(rootRunRefusalMessage().length > 0);
 }
 
 @("state enforces max active connections") unittest {

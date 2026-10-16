@@ -120,6 +120,11 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
    `AmbientCapabilities=CAP_NET_BIND_SERVICE`——**不要**为了绑低端口让服务以
    root 运行（硬性要求，见 `docs/project-constraints.md` 的 Privilege Model）。
 
+3. `refusing to run as root: ...` —— 手工 `sudo setline -f ...` 起服务时最常见。代理和
+   渲染 agent 都要求非 root；`setline-apply` 以 root 调用的 `--agent-type`/`--sync-map`
+   两个出口、以及 `-c` 校验不受影响。这条以退出码 `2` 结束，unit 里的
+   `RestartPreventExitStatus=2` 会直接停住，不会重启五次。
+
 前台手工复现最直接，注意用服务账号，才和 unit 里的权限一致：
 
 ```bash
@@ -132,8 +137,9 @@ sudo -u setline /usr/bin/setline -f /etc/setline/setline.json
 sudo systemctl reset-failed setline && sudo systemctl start setline
 ```
 
-注意目前 setline 对所有启动期失败都返回 `1`，所以 unit 里的 `RestartPreventExitStatus=2`
-挡不住配置错误，只会重启 5 次后停在 failed —— 看到的就是上面那串日志。
+注意 setline 对配置与监听类失败统一返回 `1`，所以 unit 里的
+`RestartPreventExitStatus=2` 挡不住它们，只会重启 5 次后停在 failed —— 看到的就是上面
+那串日志。唯一的 `2` 是第 3 条（以 root 运行）：那是重启也没用的失败，本就不该重试。
 
 如果 journal 里出现的是 `error while loading shared libraries` 或 `GLIBC_2.xx not found`，
 那是二进制与发行版不匹配（例如在 Fedora 上打的包拿到 CentOS 7 上装），跟配置无关。
