@@ -1,6 +1,9 @@
 *~
 .*
 
+# `.*` 是给编辑器/工具杂物用的；.github 是项目内容（发布说明），要进仓库。
+!.github/
+
 # Build output directies
 target
 classes
