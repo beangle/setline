@@ -76,9 +76,11 @@ strip --strip-unneeded usr/bin/setline
 cp -f "$SETLINE_HOME/scripts/package/setline.json" usr/share/setline/setline.json.default
 cp -f "$SETLINE_HOME/scripts/package/apply.conf.example" usr/share/setline/apply.conf.example
 cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/share/setline/haproxy-setline-cfgdir.conf.example
-# 用户文档整目录安装：配置参考、reload 设计、部署与 API 说明都在 docs 里，
+# 用户文档整目录安装：配置参考、reload 设计、部署、API 说明与发布说明都在 docs 里，
 # 只装其中一篇会让包内的 Documentation= 指向一份孤零零的文档。
 cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
+# 变更历史随包安装：升级前想知道「这一版动了什么」不该先去找仓库。
+cp -f "$SETLINE_HOME/CHANGELOG.md" usr/share/doc/setline/CHANGELOG.md
 cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
 cp -f "$SETLINE_HOME/scripts/package/setline-render.service" usr/lib/systemd/system/setline-render.service

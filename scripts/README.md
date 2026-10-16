@@ -3,7 +3,7 @@
 | Path | Purpose |
 |------|---------|
 | `build_deb.sh` / `build_rpm.sh` / `build_srpm.sh` | Build a `.deb`, a binary `.rpm`, or a source `.src.rpm` rebuildable on the target host. |
-| `package/` | Default config and systemd units used by the packages. |
+| `package/` | Default config, systemd units and the spec fragment shared by the packages (`setline.spec.common`). |
 | `bench.sh` | Reproducible benchmarks: RPS, P99, 1MB throughput, upstream connections, TIME_WAIT. `BENCH_HAPROXY=1` adds the real `ab -> haproxy -> setline` shape. |
 | `bench_backend.d` | Static backend for `bench.sh` (one connection per thread, no GIL). |
 | `bench_headers.py` | Minimal keep-alive client used by the header-length sweep. |
@@ -16,10 +16,16 @@ The build scripts always overwrite: one version number maps to many source
 states during development, so skipping a rebuild would silently ship a stale
 package.
 
+The version comes from the release git tag, so tag first and package second.
+The installed file list and the install/upgrade scriptlets live in
+`scripts/package/setline.spec.common`; `build_rpm.sh` and `build_srpm.sh` both
+paste that fragment into the spec they generate, so a package rebuilt from the
+SRPM has the same contents as the one we publish.
+
 ## Install layout
 
 `/usr/bin/setline`; `/usr/share/setline/{setline.json.default,apply.conf.example,haproxy-setline-cfgdir.conf.example}`;
-`/usr/share/doc/setline/*.md` (everything under `docs/`);
+`/usr/share/doc/setline/*.md` (everything under `docs/`, plus the `CHANGELOG.md`);
 `/usr/lib/setline/setline-apply`;
 `/usr/lib/systemd/system/{setline.service,setline-render.service,setline-render.timer,setline-apply.service,setline-apply.timer}`;
 `/etc/setline/setline.json`; `/var/lib/setline/{haproxy,nginx,apply}/`.

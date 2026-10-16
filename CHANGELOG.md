@@ -1,0 +1,117 @@
+# Changelog
+
+All notable changes to setline are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
+`0.0.x` versions and makes no compatibility promise between them until `0.1.0`.
+
+Per-release notes with the upgrade steps spelled out live in
+`docs/release-note-<version>.md`.
+
+## [0.0.4] - 2026-10-16
+
+The release that turns setline into something deployable: the data plane and
+the control plane are split, runtime route updates reach a running proxy, the
+upstream connection is reused instead of rebuilt per request, and the package,
+the systemd units and the end-to-end harness come with it.
+
+### Added
+
+- **Separate admin listener.** `adminListen` (default `127.0.0.1:8081`) serves
+  the whole admin API; the data plane `listen` serves exactly one endpoint,
+  `GET /_setline/routes`, so a machine that knows only the service port can read
+  the route table.
+- **Route updates under `/_setline/*`**: `GET /_setline/routes`,
+  `PUT`/`DELETE /_setline/routes`, `PUT /_setline/routes/all`, plus the status
+  page and `status.json` on the admin listener. Updates are written back to the
+  config file atomically.
+- **`peerReaders`**: the read gate is a list of source addresses. setline holds
+  no credentials at all - reads are admitted by source, writes only from
+  loopback with a loopback `Host`.
+- **Upstream connection reuse**: one upstream connection per client connection,
+  kept across requests that route to the same backend port, plus a small idle
+  pool sized from the recent concurrency high-water mark.
+  `upstreamIdleTimeoutMillis` (default 30s) bounds both.
+- **`readTimeoutMillis`** (default 15s): a backend that stalls between response
+  bytes becomes a `504` while the response has not started, and a client that
+  disconnects interrupts a read blocked on it.
+- **WebSocket tunnelling** with `webSocketIdleTimeoutMillis` (`0` = never time
+  out) and byte/tunnel counters.
+- **`reusePort`** for running several listeners on the same address.
+- **`listen: false`** render-only deployments and **agent mode**: render a
+  HAProxy or Nginx fragment from the local route table or from `agent.peers`,
+  driven by `setline-render.timer`, applied by the root-owned `setline-apply`.
+- **HAProxy map hot-sync**: a routes-only change is synced into the running
+  proxy through its admin socket instead of a reload.
+- **Status page and `status.json`**: listeners, live counters, per-port health
+  and the route table; the page refreshes itself every 5 seconds
+  (`?refresh=30`, `?refresh=0` to stop).
+- **Packaging**: RPM, SRPM and DEB build scripts with systemd units
+  (`setline.service`, `setline-render.{service,timer}`,
+  `setline-apply.{service,timer}`) and a default `/etc/setline/setline.json`.
+- **Harnesses**: `scripts/e2e.sh` (haproxy -> setline -> backend, 26 cases) and
+  `scripts/bench.sh`.
+
+### Changed
+
+- Runtime route updates rewrite the config file with two-space indentation,
+  sorted keys and unescaped paths, so the file stays hand-editable and repeated
+  updates produce no diff noise.
+- The default admin port moved to `127.0.0.1:8081`. `10080` is on the browsers'
+  restricted-port list (the status page could not be opened there) and `18080`
+  is claimed by common tooling.
+- The status page groups its metrics into two columns (listeners and routes,
+  traffic and counters).
+- HTTP framing is strict on both hops: incremental head scanning, `1xx`
+  intermediates, `Expect: 100-continue`, `Content-Length` validated as `1*DIGIT`,
+  and a truncated connection instead of a response written after the head.
+- Unknown config keys are ignored, including keys from earlier drafts
+  (`adminToken`, `agent.bind`, `agent.sync`, `agent.remote`, `agent.workDir`,
+  `agent.token`); `agent.peers[]` still rejects unknown fields.
+- The package version comes from the release git tag (`v0.0.4` -> `0.0.4`)
+  instead of `dub.json`, so the tag is the single source of truth and the
+  packaging scripts must run after it exists.
+
+### Removed
+
+- **`adminToken`** and every other credential: `agent.token`, `peers[].token`
+  and the `X-Setline-Token` header. The gate is the source address.
+- **`accessLog`**: setline keeps no access log of its own - the front proxy
+  owns the per-request record, and the status counters cover the rest.
+- The `agent.bind`, `agent.sync`, `agent.remote`, `agent.workDir` keys.
+- The uncalled renderer helpers (`renderProxyConfig`, `renderHaproxy`,
+  `renderNginx`, `nginxListenPort`).
+
+### Fixed
+
+- The SRPM rebuilds into the same package as the release rpm: the binary and
+  source specs share their file list and scriptlets, and debuginfo generation
+  is off (Fedora computed an empty debugsource list for the D sources and
+  failed the rebuild).
+- Connections are no longer churned per request: at c=64 and 20k requests the
+  old path opened 2059-2202 upstream connections and left 1988-2240 `TIME_WAIT`
+  entries, which exhausted the ephemeral port range and dropped throughput from
+  65k to 17k RPS.
+- Graceful shutdown on `SIGTERM` drains in-flight requests past an open
+  WebSocket tunnel and exits `0`.
+- Running the proxy or the agent as root is refused with exit code 2
+  (`RestartPreventExitStatus=2`), instead of quietly serving the network with
+  full privileges.
+
+## [0.0.3] - 2026-06-07
+
+The version that named the project's shape. Documents setline as a lightweight
+user-space HTTP full proxy and records the decision to leave external proxy
+configuration to deployment tooling. Adds Linux packaging scripts, client-side
+keep-alive, host-scoped routes, the runtime route API with write-back, the
+config check command (`-c`), health-aware backend selection and basic-auth
+status endpoints over a single listener.
+
+## [0.0.2] - 2026-06-06
+
+Renames the package to `beangle-setline`.
+
+## [0.0.1] - 2026-06-06
+
+First cut: transparent proxying and route lookup in a single process.
+
+[0.0.4]: https://github.com/beangle/setline/compare/v0.0.3...v0.0.4

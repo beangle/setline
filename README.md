@@ -1,14 +1,10 @@
 # setline
 
-`setline` is a small Linux-only local HTTP path router written in D.
-
-It listens on a local address, matches requests by host and path prefix, and
-forwards them to local backend services.
-
-`setline` is a lightweight user-space HTTP full proxy that listens on a fixed
-port and dispatches requests to local backend ports by host and URI prefix. It
-favors simple deployment and predictable HTTP streaming over kernel-level
-transparent proxy techniques.
+`setline` is a small, Linux-only local HTTP path router written in D. It is a
+lightweight user-space HTTP full proxy: one process listens on a fixed port,
+matches requests by host and path prefix, and streams them to local backend
+ports. It favours simple deployment and predictable HTTP streaming over
+kernel-level transparent proxy techniques.
 
 **Positioning: setline is a proxy that sits behind a proxy.** It is deployed
 after HAProxy/Nginx and is never the first hop a client reaches. Either the
@@ -25,7 +21,7 @@ the prerequisite for using setline as that proxy's subordinate live in
 - Linux only.
 - Backends are local only; the listener defaults to loopback and can
   explicitly bind other interfaces.
-- HTTP/1.x only in this first version.
+- HTTP/1.x only; HTTP/2, HTTP/3 and TLS belong to the front proxy.
 - Host-scoped path-prefix routing with longest-prefix priority.
 - Local HTTP backends only.
 - Multiple backends use random selection. No weight support.
@@ -34,18 +30,25 @@ the prerequisite for using setline as that proxy's subordinate live in
 ## Build
 
 ```bash
-dub build
+dub build                                # debug binary at target/setline
+dub build --build=release-nobounds       # what the packages ship
+dub test                                 # unit tests
 ```
 
-Packaging and the end-to-end/benchmark harnesses are under `scripts/`; see
+Needs Linux, a D compiler (LDC) and `dub`; the only dependency is `vibe-core`.
+Packaging, the end-to-end harness and the benchmark live under `scripts/`; see
 `scripts/README.md`.
 
 ## Run
 
 ```bash
-dub run -- -f config.example.json       # start
+dub run -- -f config.example.json       # start (defaults to ./setline.json)
 dub run -- -c -f config.example.json    # validate the config and exit
+dub run -- --help                       # every flag
 ```
+
+The config file is optional at startup: a missing file means an empty route
+table, so a runtime update can create the routes.
 
 ## Config
 
@@ -75,9 +78,14 @@ open there). The data plane `listen` serves exactly one endpoint,
 `GET /_setline/routes` (the peer protocol), so a machine that only knows the
 service port can read the route table; the status page, `status.json` and every
 write live on `adminListen` alone. Route changes are therefore a localhost-only
-action. Reads are gated by source address:
-localhost, or an address listed in `peerReaders` - setline holds no
-credentials. Front proxies should reject `/_setline` outright.
+action. Reads are gated by source address: localhost, or an address listed in
+`peerReaders` - setline holds no credentials. Front proxies should reject
+`/_setline` outright.
+
+`http://127.0.0.1:8081/_setline/status.html` shows listeners, live counters, the
+route table with per-port health, and refreshes itself every 5 seconds
+(`?refresh=30`, `?refresh=0` to stop); `/_setline/status.json` is the same data
+for machines.
 
 The full reference - every field, its default, the validation errors and worked
 examples - is `docs/configuration.md`.
@@ -98,6 +106,7 @@ and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
 
 ## Documentation
 
+- `CHANGELOG.md` - what each release changed, and the upgrade steps it needs.
 - `docs/configuration.md` - every config field, defaults, validation errors, examples.
 - `docs/deployment.md` - where setline sits, the file descriptor budget, systemd units, packaging, shutdown.
 - `docs/haproxy-integration.md`, `docs/nginx-integration.md` - fragment layout and wiring.
@@ -105,6 +114,7 @@ and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
 - `docs/runtime-routes-api.md` - runtime route API, credentials, the status page and `status.json`.
 - `docs/transparent-proxy-design.md` - the streaming and connection model, including the WebSocket tunnel.
 - `docs/project-constraints.md` - scope, the privilege model and the constraints behind them.
+- `docs/release-note-0.0.4.md` - the latest release: highlights, upgrade steps and verification.
 - `docs/d-style.md`, `docs/d-coding.md` - D code style and coding rules.
 - `scripts/README.md` - packaging, end-to-end and benchmark harnesses.
 
