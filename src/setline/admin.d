@@ -285,10 +285,13 @@ string statusHtml() {
     "<title>setline status</title>" ~
     "<style>" ~
     "body{font-family:system-ui,sans-serif;margin:32px;color:#172026;background:#f7f8fa}" ~
-    "main{max-width:920px;margin:auto}" ~
+    "main{max-width:1080px;margin:auto}" ~
     "h1{font-size:24px;margin:0 0 20px}" ~
     "section{background:#fff;border:1px solid #d9dee3;border-radius:6px;margin:16px 0;padding:16px}" ~
-    "dl{display:grid;grid-template-columns:180px 1fr;gap:8px 16px;margin:0}" ~
+    ".metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px 32px}" ~
+    ".metrics h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;" ~
+    "color:#5b6670;margin:0 0 10px}" ~
+    "dl{display:grid;grid-template-columns:200px 1fr;gap:8px 16px;margin:0}" ~
     "dt{color:#5b6670}dd{margin:0;font-family:ui-monospace,monospace}" ~
     "table{border-collapse:collapse;width:100%;font-size:14px}" ~
     "th,td{text-align:left;border-bottom:1px solid #e6e9ed;padding:8px}" ~
@@ -299,28 +302,31 @@ string statusHtml() {
     ".offline{color:#b42318}.offline .dot{background:#d92d20}" ~
     "</style></head><body><main>");
   html.put("<h1>setline status</h1>");
-  html.put("<section><dl>");
-  html.put("<dt>listen</dt><dd>" ~ escapeHtml(listen.host) ~ ":" ~ listen.port.to!string ~ "</dd>");
+  // 运行画像拆成两栏：一行一项平铺下来在宽屏上要滚动才看得完，而这两组的读法本来也不同
+  // ——左栏是监听、容量和路由规模，右栏是实时流量与累计计数。栏宽不够时自动回落成单栏。
   auto admin = adminListenAddress();
+  html.put("<section><div class=\"metrics\"><div><h2>listeners &amp; routes</h2><dl>");
+  html.put("<dt>listen</dt><dd>" ~ escapeHtml(listen.host) ~ ":" ~ listen.port.to!string ~ "</dd>");
   html.put("<dt>admin listen</dt><dd>" ~ escapeHtml(admin.host) ~ ":" ~
     admin.port.to!string ~ "</dd>");
-  html.put("<dt>active connections</dt><dd>" ~ activeConnections().to!string ~ "</dd>");
-  html.put("<dt>active requests</dt><dd>" ~ activeRequests().to!string ~ "</dd>");
   html.put("<dt>max connections</dt><dd>" ~ maxConnections().to!string ~ "</dd>");
   html.put("<dt>connect timeout</dt><dd>" ~ connectTimeoutMillis().to!string ~ " ms</dd>");
-  html.put("<dt>pool hits</dt><dd>" ~ poolHitCount().to!string ~ "</dd>");
-  html.put("<dt>upstream connects</dt><dd>" ~ upstreamConnectCount().to!string ~ "</dd>");
-  html.put("<dt>upstream connections</dt><dd>" ~ leasedUpstreamCount().to!string ~ " leased / " ~
-    idleUpstreamCount().to!string ~ " idle</dd>");
-  html.put("<dt>upstream timeouts</dt><dd>" ~ upstreamTimeoutCount().to!string ~ "</dd>");
-  html.put("<dt>unhealthy transitions</dt><dd>" ~ unhealthyTransitionCount().to!string ~ "</dd>");
+  html.put("<dt>route hosts</dt><dd>" ~ routes.length.to!string ~ "</dd>");
+  html.put("<dt>route count</dt><dd>" ~ routeCount(routes).to!string ~ "</dd>");
+  html.put("</dl></div><div><h2>traffic &amp; counters</h2><dl>");
+  html.put("<dt>active connections</dt><dd>" ~ activeConnections().to!string ~ "</dd>");
+  html.put("<dt>active requests</dt><dd>" ~ activeRequests().to!string ~ "</dd>");
   html.put("<dt>websocket tunnels</dt><dd>" ~ activeWebSockets().to!string ~ " active / " ~
     webSocketTunnelCount().to!string ~ " total</dd>");
   html.put("<dt>websocket idle timeouts</dt><dd>" ~
     webSocketIdleTimeoutCount().to!string ~ "</dd>");
-  html.put("<dt>route hosts</dt><dd>" ~ routes.length.to!string ~ "</dd>");
-  html.put("<dt>route count</dt><dd>" ~ routeCount(routes).to!string ~ "</dd>");
-  html.put("</dl></section>");
+  html.put("<dt>upstream connections</dt><dd>" ~ leasedUpstreamCount().to!string ~ " leased / " ~
+    idleUpstreamCount().to!string ~ " idle</dd>");
+  html.put("<dt>pool hits</dt><dd>" ~ poolHitCount().to!string ~ "</dd>");
+  html.put("<dt>upstream connects</dt><dd>" ~ upstreamConnectCount().to!string ~ "</dd>");
+  html.put("<dt>upstream timeouts</dt><dd>" ~ upstreamTimeoutCount().to!string ~ "</dd>");
+  html.put("<dt>unhealthy transitions</dt><dd>" ~ unhealthyTransitionCount().to!string ~ "</dd>");
+  html.put("</dl></div></div></section>");
   foreach (group; routes) {
     html.put("<section><h2>" ~ escapeHtml(group.host) ~ "</h2>");
     html.put("<table><thead><tr><th>prefix</th><th>ports</th></tr></thead><tbody>");

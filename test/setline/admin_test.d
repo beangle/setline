@@ -79,9 +79,12 @@ import setline.util : escapeHtml, isAddressLiteral, isListedAddress, isLoopbackA
     // 管理面独立监听时状态页要列出它的地址，否则排障时看不出管理入口在哪。
     assert(html.indexOf("admin listen") >= 0);
     assert(html.indexOf("127.0.0.1:8081") >= 0);
+    // 运行画像分两栏：指标多了以后单栏要滚动才看得完，两栏各带一个小标题。
+    assert(html.indexOf("class=\"metrics\"") >= 0);
+    assert(html.indexOf("listeners &amp; routes") >= 0);
+    assert(html.indexOf("traffic &amp; counters") >= 0);
     // 访问日志是前置代理的职责，setline 不提供也不在页面上报它。
-    assert(html.indexOf("access log") < 0);
-  });
+    assert(html.indexOf("access log") < 0);  });
 }
 
 @("admin renders status json") unittest {
