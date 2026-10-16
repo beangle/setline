@@ -22,6 +22,24 @@ The installed file list and the install/upgrade scriptlets live in
 paste that fragment into the spec they generate, so a package rebuilt from the
 SRPM has the same contents as the one we publish.
 
+## Releasing
+
+The tag is the single source of truth for the version, so it comes first:
+
+```bash
+git tag -a v0.0.4 -m "setline 0.0.4" && git push origin v0.0.4
+scripts/build_rpm.sh && scripts/build_srpm.sh
+gh release create v0.0.4 --title "setline 0.0.4" \
+  --notes-file .github/release-notes/0.0.4.md
+```
+
+Add the `.rpm` paths to that last command to attach them (check that the release
+note still says how to build packages for other distributions). The body for
+each release lives in `.github/release-notes/<version>.md`; the same notes,
+written for the machine being upgraded, are `docs/release-note-<version>.md` and
+ship in the package. Without `gh`, create the release for the tag in the web UI
+and paste that file as the body.
+
 Keep section names out of spec comments: rpm 4.11 (CentOS 7) cuts a comment line
 at a `%` section name and runs the rest as a command, so a comment saying
 "%install" or "%files" breaks `rpmbuild --rebuild` there. Both scripts check the
