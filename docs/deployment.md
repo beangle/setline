@@ -42,7 +42,9 @@ The binary package installs:
 `scripts/build_srpm.sh` produces the same package from source on the target
 host: the binary and source specs share the file list and the scriptlets
 (`scripts/package/setline.spec.common`), so `rpmbuild --rebuild setline-*.src.rpm`
-does not quietly give you a package with fewer files.
+does not quietly give you a package with fewer files. The generated specs only
+use section names at the start of a line, which is what older `rpmbuild` (the
+rpm 4.11 on CentOS 7) needs.
 
 The packages install the units but never enable them. A machine whose config
 has an `agent` block needs

@@ -120,7 +120,10 @@ file.
   configs, all of `docs/` plus `CHANGELOG.md`), and both the packaged default
   config and `config.example.json` pass `setline -c`. Rebuilding the SRPM on
   the target host (`rpmbuild --rebuild`) yields the same 22 files and the same
-  install/upgrade scriptlets.
+  install/upgrade scriptlets. The generated spec keeps section names at the
+  start of a line only - rpm 4.11 (CentOS 7) cuts a comment line at a
+  `%`-section name and runs the remainder as a command - and both scripts check
+  the spec they generated before handing it to `rpmbuild`.
 - `scripts/bench.sh` for throughput, `P99` and connection churn on your own
   hardware; drain `TIME_WAIT` first or you measure port exhaustion instead.
 

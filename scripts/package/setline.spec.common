@@ -2,8 +2,12 @@
 #
 # build_rpm.sh（用预编译产物打二进制包）和 build_srpm.sh（从源码包重编）都把这
 # 个文件原样拼进自己生成的 spec，所以「SRPM 重编出来的包」与「直接发布的包」装的
-# 是同一批文件、跑的是同一批脚本。要增删包内文件或改脚本段，只改这里：两边的
-# %files 是同一份，哪一边的 %install 漏装了文件，rpmbuild 会直接报 File not found。
+# 是同一批文件、跑的是同一批脚本。要增删包内文件或改脚本段，只改这里：两边的文件
+# 清单是同一份，哪一边的安装段漏装了文件，rpmbuild 会直接报 File not found。
+#
+# 注意：注释里不要写出「百分号 + 段名」的形式（installation、file list 段如此，
+# pre/post 段同理）。老版 rpm（CentOS 7 的 4.11）会把注释行里的段名当成段标记截断，
+# 剩下的文字会被当作要执行的命令，报 command not found。两个打包脚本里有检查。
 
 %pre
 getent group beangle >/dev/null 2>&1 || groupadd -r beangle
@@ -42,8 +46,8 @@ fi
 %postun
 systemctl daemon-reload 2>/dev/null || :
 
-# /etc/setline/setline.json is created in %post, not tracked in %files,
-# so package removal preserves the local runtime config.
+# /etc/setline/setline.json is created by the post scriptlet and kept out of the
+# file list, so package removal preserves the local runtime config.
 %files
 %attr(0755,root,root) /usr/bin/setline
 %attr(0644,root,root) /usr/share/setline/setline.json.default

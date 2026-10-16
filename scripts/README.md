@@ -22,6 +22,12 @@ The installed file list and the install/upgrade scriptlets live in
 paste that fragment into the spec they generate, so a package rebuilt from the
 SRPM has the same contents as the one we publish.
 
+Keep section names out of spec comments: rpm 4.11 (CentOS 7) cuts a comment line
+at a `%` section name and runs the rest as a command, so a comment saying
+"%install" or "%files" breaks `rpmbuild --rebuild` there. Both scripts check the
+spec they generated and refuse to build one that has a section name away from
+the start of a line.
+
 ## Install layout
 
 `/usr/bin/setline`; `/usr/share/setline/{setline.json.default,apply.conf.example,haproxy-setline-cfgdir.conf.example}`;

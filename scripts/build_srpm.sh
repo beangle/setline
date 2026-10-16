@@ -24,6 +24,17 @@ sys_release_version() {
   fi
 }
 
+# 老版 rpm（CentOS 7 的 4.11）会把注释行里的段名（百分号 + install/files/pre...）
+# 当成段标记截断，剩下的文字被当作命令执行。生成的 spec 里除行首的段标记外，不允许
+# 再出现这种写法。
+check_spec() {
+  local bad
+  bad=$(awk '!/^%/ && /%[a-zA-Z_]/ {print "  line " NR ": " $0}' "$1")
+  if [ -n "$bad" ]; then
+    ferror "Generated spec has a section name outside the start of a line:" "$bad"
+  fi
+}
+
 E=0
 LIST=""
 fcheck() {
@@ -80,7 +91,7 @@ changes+="  - setline source package"$'\n'
 
 cat >"$RPMDIR/SPECS/setline.spec" <<EOF
 # 包里只有已 strip 的二进制，不需要 debuginfo 子包；Fedora 的自动 debugsource
-# 对 D 源码会算出空清单，让 rpmbuild 报 "Empty %files file"，所以显式关掉。
+# 对 D 源码会算出空清单，让 rpmbuild 直接失败，所以显式关掉。
 %global debug_package %{nil}
 Name: setline
 Version: ${VERSION_RPM}
@@ -136,6 +147,7 @@ cat >>"$RPMDIR/SPECS/setline.spec" <<EOF
 $(printf '%s' "$changes")
 EOF
 
+check_spec "$RPMDIR/SPECS/setline.spec"
 rpmbuild --define "_topdir $RPMDIR" -bs "$RPMDIR/SPECS/setline.spec"
 
 mv -f "$RPMDIR/SRPMS/$SRPMFILE" "$DESTDIR/$SRPMFILE"
