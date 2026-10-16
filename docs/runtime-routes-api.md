@@ -290,6 +290,15 @@ the idle pool or from the client connection's own affinity.
 `GET /_setline/status` (or `/_setline/status.html`) serves the same data as an
 HTML page.
 
+That page refreshes itself, because the numbers and the health dots are exactly
+the part that goes stale while you look at it: the interval defaults to 5
+seconds, `?refresh=30` changes it, and `?refresh=0` (or a negative value) turns
+the refresh off and leaves a static snapshot. A non-numeric value falls back to
+the default rather than failing - a mistyped query parameter should not cost you
+the page. The current setting is printed next to the page title. It is a plain
+meta refresh of the whole document rather than a scripted in-page update: the
+HTML is rendered entirely on the server, and a reload keeps the scroll position.
+
 ## Health State
 
 After a route update, port health state is refreshed:

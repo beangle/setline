@@ -84,7 +84,28 @@ import setline.util : escapeHtml, isAddressLiteral, isListedAddress, isLoopbackA
     assert(html.indexOf("listeners &amp; routes") >= 0);
     assert(html.indexOf("traffic &amp; counters") >= 0);
     // 访问日志是前置代理的职责，setline 不提供也不在页面上报它。
-    assert(html.indexOf("access log") < 0);  });
+    assert(html.indexOf("access log") < 0);
+    // 计数和健康色摆在那里就会变，所以页面默认自己定时刷新，并在标题里写明间隔。
+    assert(html.indexOf("<meta http-equiv=\"refresh\" content=\"5\">") >= 0);
+    assert(html.indexOf("auto refresh 5s") >= 0);
+
+    // `refresh=0` 关掉刷新：既不写 meta，也说清楚当前是不刷新的。
+    auto frozen = statusHtml(0);
+    assert(frozen.indexOf("http-equiv=\"refresh\"") < 0);
+    assert(frozen.indexOf("no auto refresh") >= 0);
+  });
+}
+
+@("admin parses the status refresh interval") unittest {
+  assert(statusRefreshSeconds("/_setline/status.html") == defaultStatusRefreshSeconds);
+  assert(statusRefreshSeconds("/_setline/status.html?refresh=30") == 30);
+  assert(statusRefreshSeconds("/_setline/status.html?host=a.com&refresh=10") == 10);
+  // `0` 和负数表示不刷新；写错了（不是数字）回落到默认值，不为了一个查询参数把人挡在
+  // 状态页外面。
+  assert(statusRefreshSeconds("/_setline/status.html?refresh=0") == 0);
+  assert(statusRefreshSeconds("/_setline/status.html?refresh=-3") == 0);
+  assert(statusRefreshSeconds("/_setline/status.html?refresh=soon") == defaultStatusRefreshSeconds);
+  assert(statusRefreshSeconds("/_setline/status.html?refresh=") == defaultStatusRefreshSeconds);
 }
 
 @("admin renders status json") unittest {

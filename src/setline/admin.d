@@ -71,7 +71,7 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
       rejectUnlistedReader(client);
       return;
     }
-    sendRaw(client, "200 OK", "text/html; charset=utf-8", statusHtml());
+    sendRaw(client, "200 OK", "text/html; charset=utf-8", statusHtml(statusRefreshSeconds(target)));
     return;
   }
 
@@ -274,19 +274,50 @@ string queryValue(string target, string name) {
   return "";
 }
 
-/** 渲染状态页面 HTML。 */
-string statusHtml() {
+/** 状态页自动刷新的默认间隔（秒）。 */
+enum defaultStatusRefreshSeconds = 5;
+
+/** 从 `?refresh=` 解析状态页的自动刷新间隔（秒）。
+
+    不写就是 {@link defaultStatusRefreshSeconds}；`refresh=0`（或负数）表示不自动刷新；
+    不是数字的写法回落到默认值，不报错——刷新间隔写错不值得让人看不到状态页。
+*/
+int statusRefreshSeconds(string target) {
+  auto raw = queryValue(target, "refresh");
+  if (raw.length == 0) {
+    return defaultStatusRefreshSeconds;
+  }
+  int seconds;
+  try {
+    seconds = raw.to!int;
+  } catch (Exception e) {
+    return defaultStatusRefreshSeconds;
+  }
+  return seconds > 0 ? seconds : 0;
+}
+
+/** 渲染状态页面 HTML。
+
+    `refreshSeconds` 为 0 时不写自动刷新，其余写进 `<meta http-equiv="refresh">`：状态页
+    看的就是会变的计数和健康色，摆在那里不刷新等于看快照。用整页刷新而不是 JS 局部更新，
+    是因为这份 HTML 完全由服务端生成，浏览器刷新时也会保留滚动位置。
+*/
+string statusHtml(int refreshSeconds = defaultStatusRefreshSeconds) {
   auto listen = listenAddress();
   auto routes = routesSnapshot();
   auto html = appender!string();
   html.put(
     "<!doctype html><html><head><meta charset=\"utf-8\">" ~
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" ~
+    (refreshSeconds > 0
+      ? "<meta http-equiv=\"refresh\" content=\"" ~ refreshSeconds.to!string ~ "\">"
+      : "") ~
     "<title>setline status</title>" ~
     "<style>" ~
     "body{font-family:system-ui,sans-serif;margin:32px;color:#172026;background:#f7f8fa}" ~
     "main{max-width:1080px;margin:auto}" ~
-    "h1{font-size:24px;margin:0 0 20px}" ~
+    "h1{font-size:24px;margin:0 0 20px;display:flex;align-items:baseline;gap:12px}" ~
+    ".hint{font-size:13px;font-weight:400;color:#5b6670}" ~
     "section{background:#fff;border:1px solid #d9dee3;border-radius:6px;margin:16px 0;padding:16px}" ~
     ".metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px 32px}" ~
     ".metrics h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;" ~
@@ -301,7 +332,9 @@ string statusHtml() {
     ".online{color:#147d3f}.online .dot{background:#1f9d55}" ~
     ".offline{color:#b42318}.offline .dot{background:#d92d20}" ~
     "</style></head><body><main>");
-  html.put("<h1>setline status</h1>");
+  html.put("<h1>setline status<span class=\"hint\">" ~
+    (refreshSeconds > 0 ? "auto refresh " ~ refreshSeconds.to!string ~ "s" : "no auto refresh") ~
+    "</span></h1>");
   // 运行画像拆成两栏：一行一项平铺下来在宽屏上要滚动才看得完，而这两组的读法本来也不同
   // ——左栏是监听、容量和路由规模，右栏是实时流量与累计计数。栏宽不够时自动回落成单栏。
   auto admin = adminListenAddress();
