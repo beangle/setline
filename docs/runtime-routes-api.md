@@ -7,7 +7,7 @@ to the JSON config file. Other config fields are preserved.
 Every endpoint lives under `/_setline/`, split across two listeners. The data
 plane (`listen`) carries exactly one of them - `GET /_setline/routes`, the peer
 protocol - so a machine that only knows the service port can read the route
-table. Everything else is on `adminListen` (`127.0.0.1:10080` by default): the
+table. Everything else is on `adminListen` (`127.0.0.1:8081` by default): the
 status views and every write (`PUT` / `DELETE`). The data plane answers anything
 else under `/_setline` with `404`, including `status.json`. Examples below use
 the admin listener.
@@ -76,7 +76,7 @@ GET /_setline/routes
 Example (from localhost no credential is needed):
 
 ```bash
-curl http://127.0.0.1:10080/_setline/routes
+curl http://127.0.0.1:8081/_setline/routes
 ```
 
 From another host, list the caller in `peerReaders` on the setline being read;
@@ -124,7 +124,7 @@ Multiple ports:
 Example:
 
 ```bash
-curl -X PUT 'http://127.0.0.1:10080/_setline/routes?host=local1.example.com' \
+curl -X PUT 'http://127.0.0.1:8081/_setline/routes?host=local1.example.com' \
   -d '{"/api/edu":[9002,9003]}'
 ```
 
@@ -143,7 +143,7 @@ DELETE /_setline/routes?host=local1.example.com&prefix=/api/edu
 Example:
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=local1.example.com&prefix=/api/edu'
+curl -X DELETE 'http://127.0.0.1:8081/_setline/routes?host=local1.example.com&prefix=/api/edu'
 ```
 
 Response is the remaining route list:
@@ -165,7 +165,7 @@ DELETE /_setline/routes?host=local1.example.com
 Example:
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=local1.example.com'
+curl -X DELETE 'http://127.0.0.1:8081/_setline/routes?host=local1.example.com'
 ```
 
 Response:
@@ -194,7 +194,7 @@ Body:
 Example:
 
 ```bash
-curl -X PUT 'http://127.0.0.1:10080/_setline/routes/all?host=local1.example.com' \
+curl -X PUT 'http://127.0.0.1:8081/_setline/routes/all?host=local1.example.com' \
   -d '{"routes":{"/api/edu":[9002,9003],"/m/edu/learning":5173}}'
 ```
 
@@ -241,7 +241,7 @@ Response is the new route list:
 GET /_setline/status.json
 ```
 
-The status views live on the admin listener (`adminListen`, `127.0.0.1:10080` by
+The status views live on the admin listener (`adminListen`, `127.0.0.1:8081` by
 default) only. They carry listener addresses, timeouts, `maxConnections`,
 health-check tuning, counters and the whole route table, and no other machine
 needs them, so the data plane does not serve them: a `GET /_setline/status.json`

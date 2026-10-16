@@ -62,7 +62,7 @@ read timeout, client abort, `status.json`, the access log, `listen:false`
 render-only mode, WebSocket echo/idle/one-way, SIGTERM shutdown (exit status 0)
 and how `/_setline` is split between the two listeners: the peer-protocol
 `GET /_setline/routes` rides both the admin listener (its own port, default
-`127.0.0.1:10080`) and the data plane, while status reads and writes stay on the
+`127.0.0.1:8081`) and the data plane, while status reads and writes stay on the
 admin listener alone. Upstream affinity has its own case: 8 keep-alive
 clients x 200 requests open at most 10 upstream connections, and those pooled
 connections are reaped after `upstreamIdleTimeoutMillis` even with

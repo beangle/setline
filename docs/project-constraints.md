@@ -201,7 +201,7 @@ documented:
 - The upshot of the split: the peer-protocol read (`GET /_setline/routes`) rides
   the data plane, so its reachability is the proxy's reachability plus the
   `peerReaders` list; everything else - status, `status.json`, writes - lives
-  only on `adminListen`, which defaults to `127.0.0.1:10080`. Route changes are
+  only on `adminListen`, which defaults to `127.0.0.1:8081`. Route changes are
   therefore a local-only operation by default, and the loopback bind - not the
   `Host` heuristic - is what actually enforces it. Keeping the data-plane
   surface to the one endpoint the peer protocol needs is deliberate: the status

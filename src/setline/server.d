@@ -51,7 +51,7 @@ private struct ServerListeners {
     阻塞后续连接。这里不暴露 HTTP server 框架抽象，是因为 setline 需要精确控制请求头、
     request body、响应体和 WebSocket 升级后的字节透传。
 
-    再开一个管理监听（`adminListen`，缺省 `127.0.0.1:10080`）：它服务完整的 `_setline`
+    再开一个管理监听（`adminListen`，缺省 `127.0.0.1:8081`）：它服务完整的 `_setline`
     接口。数据面那一侧只承接 peer 协议一个端点（见 {@link handleRequest}）。
 */
 void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
@@ -119,7 +119,7 @@ void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
 
 /** 打印读写两侧的有效准入规则：读按来源地址，写只认本机。
 
-    缺省的 `adminListen` 是回环（`127.0.0.1:10080`），所以这里只在显式放开时才说明管理口
+    缺省的 `adminListen` 是回环（`127.0.0.1:8081`），所以这里只在显式放开时才说明管理口
     的可达范围——它是状态说明，不是故障告警。路由表的跨机读方写在 `peerReaders` 里，启动时
     打出来是为了排错：名单写错地址的表现是读方拿到 403，而 403 本身看不出名单是什么。
 */

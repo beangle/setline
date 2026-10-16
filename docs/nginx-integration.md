@@ -68,7 +68,7 @@ upstream app_app_example_com_api_edu {
   'Host: app.example.com' http://127.0.0.1:8080/<path>` 能直接调试本机解析和转发结果，
   路由表读也认它；nginx 的 `proxy_pass` 正常情况下**不要**指到这里——白白多一跳，还丢掉
   nginx 自己的负载均衡与健康检查。
-- `adminListen`（缺省 `127.0.0.1:10080`）：**写**接口的唯一入口，也是状态页和
+- `adminListen`（缺省 `127.0.0.1:8081`）：**写**接口的唯一入口，也是状态页和
   `status.json` 的唯一入口。basctl 用 `PUT` / `DELETE /_setline/routes*` 登记本机路由；
   它缺省绑回环，所以改路由是纯本机操作。
 
@@ -93,7 +93,7 @@ server {
 就把这条换成按源地址限制（`allow 10.0.1.0/24; deny all;`），而不是整条放行；也可以把
 `location` 收成精确匹配（`location = /_setline/routes`），只放采集机真正要用的那一个端点。
 
-读写分挂在两个监听上（`adminListen` 缺省 `127.0.0.1:10080`，见 `docs/configuration.md`
+读写分挂在两个监听上（`adminListen` 缺省 `127.0.0.1:8081`，见 `docs/configuration.md`
 的「adminListen」一节）：nginx 的 `proxy_pass` 只该指向 `listen`，写请求留在本机。
 
 落盘后一眼自检：

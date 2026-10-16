@@ -17,6 +17,7 @@
 module setline.config_test;
 
 import std.algorithm : canFind;
+import std.conv : to;
 import std.file : readText, remove, write;
 import std.exception : assertThrown;
 import std.json : JSONValue, parseJSON;
@@ -381,8 +382,8 @@ import setline.model;
   auto path = "/tmp/setline-config-adminlisten-test.json";
   scope (exit) remove(path);
 
-  // 不写 adminListen 就用默认值：绑回环的 10080（写只在这个口上），数据面照旧只绑它自己
-  // 的地址。
+  // 不写 adminListen 就用默认值：绑回环的 defaultAdminPort（写只在这个口上），数据面照旧
+  // 只绑它自己的地址。
   write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
   auto defaulted = loadConfig(path);
   assert(defaulted.adminListen.host == "127.0.0.1");
@@ -409,7 +410,7 @@ import setline.model;
   assertThrown!Exception(loadConfig(path));
 
   // 缺省管理端口同样不能给数据面用，报错要指出冲突来自缺省值。
-  write(path, `{"listen":"127.0.0.1:10080","routes":{}}`);
+  write(path, `{"listen":"127.0.0.1:` ~ defaultAdminPort.to!string ~ `","routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 
   write(path, `{"listen":"127.0.0.1:8080","adminListen":true,"routes":{}}`);

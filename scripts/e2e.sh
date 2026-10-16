@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_PORT="${BACKEND_PORT:-19199}"
 SETLINE_PORT="${SETLINE_PORT:-19198}"
 HAPROXY_PORT="${HAPROXY_PORT:-19197}"
-# 管理口缺省是回环 127.0.0.1:10080；回归给它一个独立端口，避免撞上宿主机上真在跑的东西。
+# 管理口缺省是回环 127.0.0.1:8081；回归给它一个独立端口，避免撞上宿主机上真在跑的东西。
 SETLINE_ADMIN_PORT="${SETLINE_ADMIN_PORT:-19196}"
 # 管理面用例要单独起一个 setline，不能和上面那两个端口撞。
 SPLIT_DATA_PORT="${SPLIT_DATA_PORT:-19194}"

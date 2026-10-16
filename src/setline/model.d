@@ -27,8 +27,16 @@ struct ListenAddress {
   ushort port = 8080;
 }
 
-/** 管理接口的默认端口：`adminListen` 不写时用它。 */
-enum defaultAdminPort = 10080;
+/** 管理接口的默认端口：`adminListen` 不写时用它。
+
+    取数据面缺省端口 `8080` 的邻居，取号时要避开浏览器的「受限端口」清单：状态页是给人
+    用浏览器打开的，命中的端口浏览器连请求都不发（Firefox 报
+    `This address is restricted`）。这份清单比 IANA 的知名端口表短得多，也不认「像不像
+    8080 的兄弟端口」——`10080`（Amanda 备份）就在里面，看着人畜无害却用不了。
+
+    `8081` 本身是个热门号（Nexus、Tomcat 之类都爱用），撞了就把 `adminListen` 挪开。
+*/
+enum defaultAdminPort = 8081;
 
 /** 一条基于路径前缀的路由规则。
 
@@ -123,7 +131,7 @@ struct Config {
   ListenAddress listen;
   /** `"listen": false` 时不绑定任何监听：纯渲染部署，路由只来自配置文件。 */
   bool listenDisabled;
-  /** 管理接口的独立监听，缺省 `127.0.0.1:10080`（见 {@link defaultAdminPort}）。
+  /** 管理接口的独立监听，缺省 `127.0.0.1:8081`（见 {@link defaultAdminPort}）。
 
       两个监听按方法分工：
 
@@ -134,7 +142,7 @@ struct Config {
         准入只看来源：本机来源，或地址写在 {@link peerReaders} 里的读方。外界只需要知道
         业务端口就能读，不必知道管理口在哪。
 
-      要把管理口的读放开给同网段的采集机，就显式绑定（例如 `*:10080`）并把那台机器写进
+      要把管理口的读放开给同网段的采集机，就显式绑定（例如 `*:8081`）并把那台机器写进
       {@link peerReaders}；缺省绑回环是因为读已经能从 `listen` 走，管理口不需要暴露在网络上。
   */
   ListenAddress adminListen = ListenAddress("127.0.0.1", defaultAdminPort);

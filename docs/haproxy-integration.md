@@ -71,7 +71,7 @@ server app_app_example_com_api_edu_0 10.0.1.10:9002 check
   'Host: app.example.com' http://127.0.0.1:8080/<path>` 能直接调试本机解析和转发结果，
   路由表读也认它；haproxy 的 backend 正常情况下**不要**指到这里——白白多一跳，还丢掉
   haproxy 自己的负载均衡与健康检查。
-- `adminListen`（缺省 `127.0.0.1:10080`）：**写**接口的唯一入口，也是状态页和
+- `adminListen`（缺省 `127.0.0.1:8081`）：**写**接口的唯一入口，也是状态页和
   `status.json` 的唯一入口。basctl 用 `PUT` / `DELETE /_setline/routes*` 登记本机路由；
   它缺省绑回环，所以改路由是纯本机操作。
 
@@ -95,7 +95,7 @@ haproxy 的 `http-request deny` 在转发前生效，被挡的请求连 setline 
 而不是整条放行；也可以把规则收成精确匹配 `{ path /_setline/routes }`，只放采集机真正要用的
 那一个端点。
 
-读写分挂在两个监听上（`adminListen` 缺省 `127.0.0.1:10080`，见 `docs/configuration.md`
+读写分挂在两个监听上（`adminListen` 缺省 `127.0.0.1:8081`，见 `docs/configuration.md`
 的「adminListen」一节）：haproxy 的 backend 只该指向 `listen`，写请求留在本机。
 
 落盘后一眼自检：

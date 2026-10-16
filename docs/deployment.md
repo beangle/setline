@@ -218,14 +218,14 @@ timeout.
 
 The admin API is split across the two listeners. The data plane (`listen`)
 serves exactly one endpoint, `GET /_setline/routes`; the status page,
-`status.json` and every write live only on `adminListen` (`127.0.0.1:10080` by
+`status.json` and every write live only on `adminListen` (`127.0.0.1:8081` by
 default, so writes stay a local operation). The recommended production shape
 keeps the data plane on loopback and leaves the admin listener alone:
 
 ```json
 {
   "listen": "127.0.0.1:8080",
-  "adminListen": "127.0.0.1:10080",
+  "adminListen": "127.0.0.1:8081",
   "peerReaders": ["10.0.1.7"]
 }
 ```
@@ -241,7 +241,7 @@ this setline's routes, or point the proxy only at the application backends.
 `adminListen` is what tools and collectors may also connect to; it serves the
 whole `/_setline/*` API (everything else is `404`) and does not route to
 backends. It carries the writes, which still require a local caller, so the
-default `127.0.0.1:10080` keeps route changes a purely local operation. It is
+default `127.0.0.1:8081` keeps route changes a purely local operation. It is
 also the only door for the status page and `status.json`: those describe the
 listener, timeouts, health-check tuning and counters, have no cross-machine
 consumer, and would only widen what a leaked `/_setline` exposes. Bind it to `*`
@@ -264,7 +264,7 @@ Startup still validates the address pair: `adminListen` may not duplicate
 `listen` (including `*:port` versus a concrete address on the same port), and
 `"adminListen": false` is rejected — it no longer means "share `listen`". A
 `"listen": false` deployment must not set `adminListen` at all, and a `listen`
-that would land on 10080 without an explicit `adminListen` is rejected too.
+that would land on 8081 without an explicit `adminListen` is rejected too.
 
 ## Runtime Route Updates
 

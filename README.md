@@ -52,7 +52,7 @@ dub run -- -c -f config.example.json    # validate the config and exit
 ```json
 {
   "listen": "127.0.0.1:8080",
-  "adminListen": "127.0.0.1:10080",
+  "adminListen": "127.0.0.1:8081",
   "peerReaders": ["10.0.1.7"],
   "routes": {
     "local1.example.com": { "/api/edu": [9002, 9003], "/api": 9001 },
@@ -69,13 +69,15 @@ Each port maps to `127.0.0.1:<port>`: setline proxies only to local backends.
 what the packages install.
 
 The admin API is `/_setline/*`. It always has its own listener, `adminListen`,
-defaulting to `127.0.0.1:10080`. The data plane `listen` serves exactly one
-endpoint, `GET /_setline/routes` (the peer protocol), so a machine that only
-knows the service port can read the route table; the status page, `status.json`
-and every write live on `adminListen` alone. Route changes are therefore a
-localhost-only action. Reads are gated by source address: localhost, or an
-address listed in `peerReaders` - setline holds no credentials. Front proxies
-should reject `/_setline` outright.
+defaulting to `127.0.0.1:8081`, the neighbour of the data plane port and off the
+browser restricted-port lists (`10080` is blocked, so the status page would not
+open there). The data plane `listen` serves exactly one endpoint,
+`GET /_setline/routes` (the peer protocol), so a machine that only knows the
+service port can read the route table; the status page, `status.json` and every
+write live on `adminListen` alone. Route changes are therefore a localhost-only
+action. Reads are gated by source address:
+localhost, or an address listed in `peerReaders` - setline holds no
+credentials. Front proxies should reject `/_setline` outright.
 
 The full reference - every field, its default, the validation errors and worked
 examples - is `docs/configuration.md`.
