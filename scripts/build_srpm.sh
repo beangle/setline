@@ -40,7 +40,15 @@ if [ "$E" -eq 1 ]; then
 fi
 
 MAINTAINER="duantihua <duantihua@163.com>"
-VERSION_RAW=$(awk -F'"' '/"version"/{print $4; exit}' "$SETLINE_HOME/dub.json")
+# 版本以 git tag 为唯一来源（如 v0.0.4 -> 0.0.4），dub.json 里不再写 version。
+TAG=$(git describe --tags --abbrev=0 2>/dev/null)
+if [ -z "$TAG" ]; then
+  ferror "Could not determine version from git tag" "Run this script in the git checkout, after the release tag exists."
+fi
+VERSION_RAW=$(sed 's/^v//' <<<"$TAG")
+if [ "$(git describe --tags --exact-match 2>/dev/null)" != "$TAG" ]; then
+  echo "WARNING: HEAD is not at $TAG; the package will still be labelled $VERSION_RAW." >&2
+fi
 VERSION_RPM=$(sed 's/-/~/' <<<"$VERSION_RAW")
 REVISION=""
 sys_release_version

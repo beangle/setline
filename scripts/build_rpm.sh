@@ -43,7 +43,15 @@ fi
 
 MAINTAINER="duantihua <duantihua@163.com>"
 VENDOR="Beangle"
-VERSION=$(awk -F'"' '/"version"/{print $4; exit}' "$SETLINE_HOME/dub.json")
+# 版本以 git tag 为唯一来源（如 v0.0.4 -> 0.0.4），dub.json 里不再写 version。
+TAG=$(git describe --tags --abbrev=0 2>/dev/null)
+if [ -z "$TAG" ]; then
+  ferror "Could not determine version from git tag" "Run this script in the git checkout, after the release tag exists."
+fi
+VERSION=$(sed 's/^v//' <<<"$TAG")
+if [ "$(git describe --tags --exact-match 2>/dev/null)" != "$TAG" ]; then
+  echo "WARNING: HEAD is not at $TAG; the package will still be labelled $VERSION." >&2
+fi
 if [ -z "$REVISION" ]; then
   sys_release_version
 fi
@@ -55,7 +63,7 @@ PKGDIR="setline-${VERSION}-${REVISION}.${ARCH}"
 RPMFILE="setline-${VERSION}-${REVISION}.${ARCH}.rpm"
 RPMDIR="$DESTDIR/rpmbuild"
 
-# 不跳过已存在的产物：包名里的版本来自 dub.json，开发期一个版本对应多次源码改动，
+# 不跳过已存在的产物：包名里的版本来自 git tag，开发期一个版本对应多次源码改动，
 # 「已存在就退出 0」会让人以为重建过，手里却还是旧包。每次全量重建（与 micdn 一致）。
 rm -f "$DESTDIR/$RPMFILE"
 rm -rf "$DESTDIR/$PKGDIR"
