@@ -305,6 +305,10 @@ Runtime route updates are persisted by default. `setline` rewrites only the
 top-level `routes` field in the config file that was used at startup. Listener,
 peer-reader, timeout, health-check, and connection-limit settings are preserved.
 
+The file is rewritten in place with two-space indentation and object keys sorted,
+so the result stays hand-editable and repeated updates produce no diff noise.
+Paths are written as `/var/lib`, never as `\/var\/lib`.
+
 The write happens before the in-memory route table is swapped. If the config
 file cannot be written, the API returns an error and the current in-memory
 routes remain unchanged.

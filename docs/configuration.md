@@ -550,6 +550,8 @@ curl -X DELETE 'http://127.0.0.1:10080/_setline/routes?host=app.example.com'
 ```
 
 改动会写回配置文件顶层 `routes` 字段（其余字段原样保留），重启后仍然生效。
+写回是就地重写整个文件：2 空格缩进、对象键排序，所以同一份配置每次写出的字节完全一致
+（不会因为多次更新而反复产生 diff），路径也不会被转义成 `\/var\/lib`。
 完整接口见 `docs/runtime-routes-api.md`。
 
 ### agent：聚合多台 setline 生成 nginx 片段

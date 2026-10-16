@@ -16,7 +16,8 @@
 
 module setline.config;
 
-import std.array : split;
+import std.algorithm : sort;
+import std.array : Appender, appender, split;
 import std.conv : to;
 import std.exception : enforce;
 import std.file : exists, readText, rename, write;
@@ -66,8 +67,70 @@ void saveRoutes(string path, HostRoutes[] routes) {
 
   root["routes"] = hostRoutesConfigJson(routes);
   auto tmpPath = path ~ ".tmp";
-  write(tmpPath, root.toString() ~ "\n");
+  write(tmpPath, prettyJson(root) ~ "\n");
   rename(tmpPath, path);
+}
+
+/** 以 2 空格缩进渲染 JSON，供配置文件写回使用。
+
+    Phobos 的 `JSONValue.toString` 只能输出紧凑单行，还会把 `/` 转义成 `\/`，把每个目录
+    写成 `\/var\/lib\/setline`。这份配置是给人改、给 diff/grep 看的，两种噪音都不能要，
+    所以自己渲染：对象键排序，缩进 2 空格，生成的结果不含 `/` 转义。
+
+    写回是就地重写整个文件，同一份配置必须每次写出完全相同的字节，否则 diff 会一直有
+    噪声；排序键就是为了这个（AA 的遍历顺序只在一份二进制内稳定，换版本就可能变）。
+*/
+string prettyJson(JSONValue value) {
+  auto buffer = appender!string();
+  appendPrettyJson(buffer, value, 0);
+  return buffer.data;
+}
+
+private void appendPrettyJson(ref Appender!string buffer, JSONValue value, size_t depth) {
+  switch (value.type) {
+  case JSONType.object:
+    if (value.object.length == 0) {
+      buffer.put("{}");
+      return;
+    }
+    buffer.put("{\n");
+    auto keys = value.object.keys;
+    keys.sort;
+    foreach (i, key; keys) {
+      appendIndent(buffer, depth + 1);
+      buffer.put(JSONValue(key).toString(JSONOptions.doNotEscapeSlashes));
+      buffer.put(": ");
+      appendPrettyJson(buffer, value.object[key], depth + 1);
+      buffer.put(i + 1 < keys.length ? ",\n" : "\n");
+    }
+    appendIndent(buffer, depth);
+    buffer.put("}");
+    break;
+  case JSONType.array:
+    if (value.array.length == 0) {
+      buffer.put("[]");
+      return;
+    }
+    buffer.put("[\n");
+    foreach (i, item; value.array) {
+      appendIndent(buffer, depth + 1);
+      appendPrettyJson(buffer, item, depth + 1);
+      buffer.put(i + 1 < value.array.length ? ",\n" : "\n");
+    }
+    appendIndent(buffer, depth);
+    buffer.put("]");
+    break;
+  default:
+    // 标量（字符串、数字、布尔、null）交给 Phobos：转义和数字格式都现成，只是别转义 `/`。
+    buffer.put(value.toString(JSONOptions.doNotEscapeSlashes));
+    break;
+  }
+}
+
+private void appendIndent(ref Appender!string buffer, size_t depth) {
+  foreach (_; 0 .. depth * 2) {
+    buffer.put(' ');
+  }
 }
 
 /** 将 host 分组路由转换为配置文件中的 `routes` JSON 对象。 */

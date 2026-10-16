@@ -16,7 +16,8 @@
 
 module setline.config_test;
 
-import std.file : remove, write;
+import std.algorithm : canFind;
+import std.file : readText, remove, write;
 import std.exception : assertThrown;
 import std.json : JSONValue, parseJSON;
 
@@ -165,6 +166,40 @@ import setline.model;
   assert(config.routes[0].host == "local.example.com");
   assert(config.routes[0].routes[0].prefix == "/api/edu");
   assert(config.routes[0].routes[1].prefix == "/api");
+
+  // 写回的配置是给人改、给 diff/grep 看的，所以直接检查文本：2 空格缩进、键排序、
+  // 路径不转义成 `\/api\/edu`。读回来能对上只说明 JSON 合法，证明不了这几点。
+  auto text = readText(path);
+  assert(text.canFind("\n  \"listen\": \"127.0.0.1:8080\",\n"), text);
+  assert(text.canFind("\n  \"peerReaders\": [\n    \"10.0.1.7\"\n  ],\n"), text);
+  assert(text.canFind("\n      \"/api/edu\": [\n        9002,\n        9003\n      ]\n"), text);
+  assert(!text.canFind(`\/`), text);
+}
+
+@("config pretty prints json with two space indentation") unittest {
+  auto value = parseJSON(`{"b":{"x":[1,2]},"a":{},"c":[],"d":"--","e":true,"f":null}`);
+  assert(prettyJson(value) ==
+    `{
+  "a": {},
+  "b": {
+    "x": [
+      1,
+      2
+    ]
+  },
+  "c": [],
+  "d": "--",
+  "e": true,
+  "f": null
+}`);
+}
+
+@("config pretty prints paths and escapes quotes without escaping slashes") unittest {
+  auto value = parseJSON(`{"/var/lib/setline":"a\"b\\c"}`);
+  assert(prettyJson(value) ==
+    `{
+  "/var/lib/setline": "a\"b\\c"
+}`);
 }
 
 @("config normalizes route hosts") unittest {
