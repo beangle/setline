@@ -39,7 +39,9 @@ if [ "$1" = 0 ]; then
   # setline-apply@*.timer 是老版本的按代理模板单元，升级上来的机器可能还开着。
   for unit in /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
     [ -e "$unit" ] || continue
-    systemctl disable --now "$(basename "$unit" .timer)" 2>/dev/null || :
+    # 保留 .timer 后缀：要禁用的是 timer 单元本身。写成 basename "$unit" .timer 会去
+    # disable 一个不存在的同名 service，链接原地不动，systemd 继续报悬空单元。
+    systemctl disable --now "$(basename "$unit")" 2>/dev/null || :
   done
 fi
 

@@ -169,7 +169,9 @@ if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
   # 升级上来的机器可能还开着，一并清掉。
   for unit in /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
     [ -e "$unit" ] || continue
-    systemctl disable --now "$(basename "$unit" .timer)" 2>/dev/null || true
+    # 保留 .timer 后缀：要禁用的是 timer 单元本身，去掉后缀会去 disable 一个不存在的同名
+    # service，enable 链接清不掉。
+    systemctl disable --now "$(basename "$unit")" 2>/dev/null || true
   done
 fi
 PRERM
