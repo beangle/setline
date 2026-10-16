@@ -103,6 +103,14 @@ These are intentionally out of scope unless the project goal changes:
 - If a feature seems to need root, implement it in `setline-apply` (or in a
   helper that `setline-apply` runs as root) rather than raising the daemon's
   privileges.
+- Shipped binaries are linked with full RELRO: `dub.json` passes `-z now` as
+  `lflags`, so the GOT is resolved at load time and made read-only and a
+  GOT-overwrite bug on the request path cannot be turned into a write primitive.
+  The Debian and Arch builds come out as PIE as well; the Fedora-built rpms do
+  not, because LDC on Fedora links non-PIE by default (`-pie` alone fails against
+  gcc's `crtbegin.o`). That gap is known and is not a deployment blocker - it
+  only widens the ASLR coverage of the daemon, and closing it needs a different
+  link path, not a flag.
 
 ## Implementation Constraints
 

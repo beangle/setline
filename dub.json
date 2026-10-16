@@ -13,7 +13,8 @@
       "targetName": "setline",
       "targetPath": "target",
       "sourcePaths": ["src"],
-      "dflags": ["-preview=dip1000"]
+      "dflags": ["-preview=dip1000"],
+      "lflags": ["-z", "now"]
     },
     {
       "name": "unittest",
