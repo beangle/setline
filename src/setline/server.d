@@ -273,7 +273,7 @@ void closeQuietly(ref TCPConnection client) nothrow {
 
     整条客户端连接共用一条专属上游连接（`UpstreamLease`）。连接关闭时把还健康的上游连接
     交回空闲池；连接空闲太久则由回收 task 提前交回，避免一条光挂着的客户端连接白占一条
-    上游连接（见 `docs/roadmap.md` 的 P1-7）。
+    上游连接（连接的生命周期见 `docs/transparent-proxy-design.md` 的 Connection Lifetime）。
 */
 void handleClient(TCPConnection client) {
   auto lease = new UpstreamLease;

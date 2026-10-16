@@ -17,7 +17,8 @@ routing fragments, or setline serves as the subordinate proxy for that front
 proxy - in both shapes it never faces untrusted clients, so TLS termination,
 header size limits, client timeouts, rate limiting and access logging stay the
 front proxy's job. The consequences of this boundary, the out-of-scope list and
-the improvement plan live in `docs/roadmap.md`.
+the prerequisite for using setline as that proxy's subordinate live in
+`docs/project-constraints.md`.
 
 ## Scope
 
@@ -102,7 +103,6 @@ and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
 - `docs/runtime-routes-api.md` - runtime route API, credentials, the status page and `status.json`.
 - `docs/transparent-proxy-design.md` - the streaming and connection model, including the WebSocket tunnel.
 - `docs/project-constraints.md` - scope, the privilege model and the constraints behind them.
-- `docs/roadmap.md` - what is done, what is planned, and the evidence for both.
 - `docs/d-style.md`, `docs/d-coding.md` - D code style and coding rules.
 - `scripts/README.md` - packaging, end-to-end and benchmark harnesses.
 

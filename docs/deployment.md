@@ -393,10 +393,10 @@ and each instance only ~76% busy. The remaining gap to 4x is the client and the
 loopback softirq, not setline.
 
 At `-c 64` on one instance the same machine now measures ~23k RPS (direct) and
-~22k RPS behind haproxy (previously ~18k behind haproxy; see `docs/roadmap.md`
-P1-7). Upstream connection churn dropped from ~10% of requests to one connection
-per client connection, and the `TIME_WAIT` delta over a 20k-request run went from
-~2000 to 0.
+~22k RPS behind haproxy (previously ~18k, when an upstream connection was
+recycled every few requests). Upstream connection churn dropped from ~10% of
+requests to one connection per client connection, and the `TIME_WAIT` delta over
+a 20k-request run went from ~2000 to 0.
 
 ## TCP Listen Queues
 
@@ -467,6 +467,11 @@ Useful checks:
 ss -tan state time-wait | wc -l
 ss -tan '( sport >= :10000 )' | wc -l
 ```
+
+Benchmark only after `TIME_WAIT` has drained. The range holds ~55k ports and each
+residue lasts 60s, so a run started too early measures port exhaustion instead of
+throughput: one session reported 17k RPS at 211us per request for four instances
+until the sockets cleared, and 65k RPS at 48us afterwards.
 
 ## What Not To Tune First
 

@@ -90,10 +90,12 @@ struct PeerConfig {
 
     曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）
     与配套的 `agent.workDir`：集中打包发布听起来好用，实际与 `peers` 提供的「从运行中的
-    实例现拉路由表」是两套冗余来源，维护成本翻倍，已一并取消（见 docs/roadmap.md）。
+    实例现拉路由表」是两套冗余来源，维护成本翻倍，已一并取消（数据来源的收敛见
+    docs/project-constraints.md 的 External Proxy Integration Decision）。
 
     片段固定只出规则和后端定义，**从不写监听段**：`bind` / `listen` 归代理主配置，
-    setline 不去碰别人持有的监听（曾经有个 `agent.bind` 开关，已取消，见 docs/roadmap.md）。
+    setline 不去碰别人持有的监听（曾经有个 `agent.bind` 开关，已取消，见
+    docs/configuration.md 的 agent 一节）。
 */
 struct AgentConfig {
   string type;

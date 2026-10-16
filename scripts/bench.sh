@@ -144,7 +144,7 @@ large_p99="$(sed -n 's/^[[:space:]]*99%[[:space:]]*\([0-9.]*\).*/\1/p' "$large_o
 large_rate="$(sed -n 's/^Transfer rate:[[:space:]]*\([0-9.]*\).*/\1/p' "$large_output")"
 printf 'large_1m rps=%s p99_ms=%s kib_s=%s\n' "$large_rps" "$large_p99" "$large_rate"
 
-# P1-2：头部解析的 CPU 开销必须随头长线性增长，不能是平方。用一个 X-Pad 头把请求
+# 头部解析的 CPU 开销必须随头长线性增长，不能是平方。用一个 X-Pad 头把请求
 # 撑大，量 setline 自己的 CPU 时间（/proc/<pid>/stat 的 utime+stime）除以请求数和
 # 头字节数：线性扫描下「每字节 CPU」随头长下降或持平（固定开销摊薄），平方实现下
 # 它会随头长线性上升。客户端不用 ab（请求缓冲只有 8KB，头一长就被截断），用

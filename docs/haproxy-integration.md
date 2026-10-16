@@ -5,8 +5,9 @@
 
 > **定位**：setline 永远部署在 haproxy/nginx **之后**，不是用户访问的第一站。推荐形态是
 > haproxy 直接回源业务端口、setline 只渲染片段（本文就是这套）；也可以让 setline 作为
-> haproxy 的下级代理承接数据面，但那样必须先满足 `docs/roadmap.md` 的前置条件。两种形态
-> 下 setline 都不面对不可信客户端。
+> haproxy 的下级代理承接数据面，但那样必须先满足 `docs/project-constraints.md` 的两个
+> 前提（`listen` 只绑回环、前置代理拒掉 `/_setline`）。两种形态下 setline 都不面对不可信
+> 客户端。
 
 ## 版本要求
 

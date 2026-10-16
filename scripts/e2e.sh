@@ -8,7 +8,7 @@ SETLINE_PORT="${SETLINE_PORT:-19198}"
 HAPROXY_PORT="${HAPROXY_PORT:-19197}"
 # 管理口缺省是回环 127.0.0.1:10080；回归给它一个独立端口，避免撞上宿主机上真在跑的东西。
 SETLINE_ADMIN_PORT="${SETLINE_ADMIN_PORT:-19196}"
-# P2-4 要单独起一个 setline，不能和上面那两个端口撞。
+# 管理面用例要单独起一个 setline，不能和上面那两个端口撞。
 SPLIT_DATA_PORT="${SPLIT_DATA_PORT:-19194}"
 SPLIT_ADMIN_PORT="${SPLIT_ADMIN_PORT:-19195}"
 READ_TIMEOUT_MILLIS="${READ_TIMEOUT_MILLIS:-500}"
@@ -172,7 +172,8 @@ CFG
   # 会把它们当成响应内容，甚至判成协议错误）。
   #
   # 这里直接打 setline 以保证信号只来自它，但不能用 `printf | nc`：管道结束会让 nc 半关闭
-  # （FIN），而 setline 把 client 的 FIN 当作「放弃本次请求」（见 roadmap 的记录），
+  # （FIN），而 setline 把 client 的 FIN 当作「放弃本次请求」
+  # （见 docs/transparent-proxy-design.md 的 Connection Lifetime），
   # 那样测到的就不是截断响应了。用 /dev/tcp 拿一个既能写又能读的 fd，不半关闭。
   exec 3<>"/dev/tcp/127.0.0.1/$SETLINE_PORT"
   printf 'GET /truncate HTTP/1.1\r\nHost: local.test\r\nConnection: close\r\n\r\n' >&3
@@ -219,7 +220,7 @@ CFG
     fail "$label websocket tunnel did not echo"
   echo "PASS[$label] WebSocket tunnel echoes both directions"
 
-  # P0-3 的判据：同一条 client 连接上的顺序请求必须复用上游连接。
+  # 判据：同一条 client 连接上的顺序请求必须复用上游连接。
   #
   # 这里直接打 setline、不看 haproxy：haproxy 会按它自己的连接池给每个客户端连接各开一条
   # 到 setline 的连接（`http-reuse safe` 并不会把空闲连接无条件借给新客户端），所以经过
@@ -377,7 +378,7 @@ JSON
 }
 check_peer_render_once
 
-# P1-7：客户端连接亲和 + 专属上游连接的空闲回收。
+# 客户端连接亲和 + 专属上游连接的空闲回收。
 #
 # 前置代理复用到 setline 的连接时，setline 给每条客户端连接一条专属上游连接：稳态下新建
 # 上游连接数等于客户端连接数，而不是每轮并发都新建/关闭（每次关闭都在 setline 自己的临时
@@ -460,7 +461,7 @@ check_upstream_affinity() {
     "${POOL_IDLE_MILLIS}ms idle"
 }
 
-# P2-5：WebSocket 隧道的空闲超时。只有「两个方向都没有字节」才叫空闲，因此这里既验证
+# WebSocket 隧道的空闲超时。只有「两个方向都没有字节」才叫空闲，因此这里既验证
 # 静默隧道会在超时后断开，也验证只有一个方向有流量时不会被误杀。
 check_websocket_idle() {
   local binary="$1"
@@ -506,7 +507,7 @@ CFG
   HAPROXY_PID=""
 }
 
-# P2-2：SIGTERM 优雅退出。停监听后把在途请求跑完再退出，客户端不该看到 5xx 或连接重置。
+# SIGTERM 优雅退出。停监听后把在途请求跑完再退出，客户端不该看到 5xx 或连接重置。
 check_graceful_shutdown() {
   local binary="$1"
   local label="graceful"
@@ -611,7 +612,7 @@ local_addresses() {
     grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' | awk '!seen[$0]++'
 }
 
-# P2-4/P2-9：管理接口的**写**只在独立监听上；**读**同时挂在数据面和管理口上，准入只看来源地址
+# 管理接口的**写**只在独立监听上；**读**同时挂在数据面和管理口上，准入只看来源地址
 # （本机，或 peerReaders 里列出的读方），全程没有凭据。
 check_admin_listen() {
   local label="admin-listen"

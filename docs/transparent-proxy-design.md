@@ -120,7 +120,17 @@ per-port idle pool rather than being closed immediately; the pool is sized from
 recent concurrency (4..32 per port) and expires idle entries. That keeps
 connection churn proportional to client-connection turnover instead of request
 rate, which matters because every closed upstream connection parks an ephemeral
-port of this host in `TIME_WAIT` (see `docs/roadmap.md` P1-7).
+port of this host in `TIME_WAIT` (`docs/deployment.md` covers the tuning and how
+to observe it).
+
+A client-side half-close counts as abandoning the request: the disconnect
+watcher sees the read side end, closes the upstream connection, and the request
+fails. The epoll layer cannot tell "half-closed, still waiting for the response"
+from "gone", and the task blocked on the upstream read can only be woken by
+closing it, so this is the price of recycling the upstream connection
+immediately. A front proxy does not half-close while relaying a response, so the
+recommended shape never meets it; serving such clients directly would trade the
+immediate recycling for up to one `readTimeoutMillis`.
 
 ## WebSocket
 

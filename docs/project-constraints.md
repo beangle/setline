@@ -40,6 +40,19 @@ browser-facing client IP, scheme, host, or port, an upstream proxy such as
 HAProxy must add `Forwarded` or `X-Forwarded-*` before traffic reaches setline.
 Direct browser-to-setline requests are not annotated by setline.
 
+Positioning: `setline` is never the first hop. It either renders fragments for
+an edge proxy, or serves as that edge proxy's subordinate. The subordinate shape
+has two prerequisites: the data-plane `listen` binds loopback only, and the
+front proxy denies `/_setline` (at least `/_setline/routes`). Reads are admitted
+by source address, and a relayed request arrives from loopback, so without that
+`deny` any client of the front proxy can read the route table. Binding `listen`
+to `*` publishes the data plane past the front proxy and voids every assumption
+above.
+
+This file is the authoritative statement of that boundary. A short version of
+it also belongs in `README.md`, `docs/configuration.md`,
+`docs/haproxy-integration.md` and `docs/nginx-integration.md`.
+
 ## Unsupported Features
 
 These are intentionally out of scope unless the project goal changes:
@@ -57,6 +70,14 @@ These are intentionally out of scope unless the project goal changes:
 - full HTTP framework behavior
 - Linux TPROXY or other kernel traffic interception
 - HTTP pipelining
+- HTTP/2, HTTP/3, h2c
+- client-side timeouts, slowloris/slow-request protection, connection shedding
+- authentication, authorization, rate limiting, WAF
+- access logging; the opt-in `accessLog` switch exists for troubleshooting and
+  is not a second accounting pipeline
+- unix-socket backends
+- scheduling algorithms beyond random port selection: no weighted, consistent
+  hash or sticky sessions
 
 ## Privilege Model
 

@@ -17,8 +17,9 @@ setline -c -f /etc/setline/setline.json   # 只校验配置，不启动
 完整可运行样例见 `config.example.json`。
 
 > **定位**：setline 只部署在 haproxy/nginx 之后，不是用户访问的第一站（详见
-> `docs/roadmap.md`）。作为数据面代理时 `listen` 必须只绑回环；TLS、请求头大小限制、
-> 客户端超时、限流、访问日志都由前置代理负责，setline 不重复实现。
+> `docs/project-constraints.md` 的 Positioning 与 Unsupported Features）。作为数据面代理时
+> `listen` 必须只绑回环；TLS、请求头大小限制、客户端超时、限流、访问日志都由前置代理
+> 负责，setline 不重复实现。
 
 ## 顶层字段
 

@@ -455,7 +455,7 @@ private struct IdleUpstream {
 
     这样稳态下上游连接数就是客户端连接数，而不是每次并发都新建/关闭——每次关闭都会在
     setline 自己的临时端口上留一个 TIME_WAIT，并发一高就会把临时端口耗尽（见
-    docs/roadmap.md 的 P1-7）。
+    docs/deployment.md 的 Ephemeral Ports）。
 
     对象放在 GC 堆上：客户端 task 和空闲回收 task 都要引用它，放在栈上会让回收 task 拿到
     已经失效的栈指针。
