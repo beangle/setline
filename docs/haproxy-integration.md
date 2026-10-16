@@ -299,6 +299,9 @@ frontend http_in
   不能跟着一起 lower。
 - 第三行处理精确 host 的路由（map_beg 取最长前缀匹配）。
 - 第四行处理 `*` 回退路由：setline 的 `*` 命名空间落到这里，所以它必须排在第三行之后。
+  代价是 host 命中后就不会再看 `*`：`a.com` 只有 `/`、`*` 有 `/api` 时，`a.com/api` 走
+  `a.com` 的 `/`——与 setline 自己匹配时的口径一致（见 `docs/configuration.md` 的
+  「匹配规则」）。
 - 四行中的路径就是上面那份 `.map`，setline 也会把这几行以注释形式写在 map 文件头部，
   方便直接复制。
 - **为什么用 `set-var` + `concat` 而不是 `set-header`**：`set-header` 会往请求里加一个

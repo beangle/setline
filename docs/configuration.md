@@ -260,11 +260,20 @@ curl http://setline.internal:8080/_setline/routes
 2. 在该 host 下按**最长前缀**匹配路径，所以 `/api/edu` 优先于 `/api`。
 3. 该 host 下没有能匹配该路径的路由时，回退到 `*` 命名空间。
 
+第 3 条是**逐条路由**的回退，不是整个 host 的回退：精确 host 一旦有能匹配该 path 的路由，
+就不再往下看 `*`，哪怕 `*` 的前缀更长。所以 `a.com` 只有 `/`、`*` 有 `/api` 时，
+`a.com/api` 走的是 `a.com` 的 `/`，而不是 `*` 的 `/api`；只有 `a.com` 完全没有匹配该
+path 的路由（例如 `a.com/other`）才落到 `*`。haproxy 的 map 拼接（先查 `host~path`、
+再查 `path`）与这里逐条对应，所以两者的分派结果一致。
+
 ### host 的写法
 
 - 普通主机名，**不带端口**（带端口会报 `route host must not include port`）。
 - 大小写不敏感，加载时统一转小写。
 - `*` 是 fallback 命名空间，不是通配后缀：`*.example.com` 没有特殊含义。
+- 只服务一个域名、或所有域名共用同一套路由时，不必写任何 hostname，只配 `*` 即可：路由
+  决策完全不看 `Host`（缺 `Host` 的请求也算 `*`），域名相关的证书、`server_name`、跳转
+  都留在前置代理那边，换域名不需要改 setline。
 
 ### prefix 的写法
 

@@ -232,6 +232,22 @@ http {
 匹配到，在 `http` 上下文里 include 一个含 `location` 的文件会直接加载失败。按文件名
 include，和上面示例一致。
 
+`*` 回退在 nginx 里是 **server 级**的：nginx 只把「Host 没匹配上任何 `server_name`」的
+请求交给默认 server，所以在有 `server_name app.example.com` 的 vhost 里，该 host 下没命中
+location 的路径**不会**落到 `*`，而是走这个 server 自己的 `root` / `location /`（通常
+404）。要与 haproxy 和 setline 自己匹配时一致（精确 host 没有该 path 的 location 才回退
+`*`），把 `setline.default.conf` **也 include 进每个 vhost 的 server 块**——location 之间
+按最长前缀匹配，`/api` 仍然优先于 `/`：
+
+```nginx
+  server {
+    listen 443 ssl;
+    server_name app.example.com;
+    include /var/lib/setline/nginx/setline.app.example.com.conf;
+    include /var/lib/setline/nginx/setline.default.conf;   # 该 host 未命中的路径回退到 *
+  }
+```
+
 ## 校验与热加载
 
 片段落盘后由 root 的 `setline-apply` 负责（`setline-apply.timer` 周期驱动，自动按
