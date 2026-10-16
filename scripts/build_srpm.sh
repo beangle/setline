@@ -79,16 +79,23 @@ changes="* $DATE $MAINTAINER - ${VERSION_RPM}-${REVISION}"$'\n'
 changes+="  - setline source package"$'\n'
 
 cat >"$RPMDIR/SPECS/setline.spec" <<EOF
+# 包里只有已 strip 的二进制，不需要 debuginfo 子包；Fedora 的自动 debugsource
+# 对 D 源码会算出空清单，让 rpmbuild 报 "Empty %files file"，所以显式关掉。
+%global debug_package %{nil}
 Name: setline
 Version: ${VERSION_RPM}
 Release: ${REVISION}
 Summary: Beangle local HTTP path proxy
+Group: Development/System
 License: GPLv3+
 Vendor: Beangle
+Packager: ${MAINTAINER}
+ExclusiveArch: x86_64
 URL: https://github.com/beangle/setline
 Source0: %{name}-%{version}.tar.gz
 BuildRequires: ldc dub git gcc make zlib-devel openssl-devel binutils
 Requires: systemd
+Provides: setline(x86_64) = %{version}-%{release}
 
 %description
 setline is a small local HTTP path router and transparent proxy.
@@ -106,51 +113,25 @@ rm -rf %{buildroot}
 install -D -m 0755 target/setline %{buildroot}/usr/bin/setline
 strip --strip-unneeded %{buildroot}/usr/bin/setline
 install -D -m 0644 scripts/package/setline.json %{buildroot}/usr/share/setline/setline.json.default
+install -D -m 0644 scripts/package/apply.conf.example %{buildroot}/usr/share/setline/apply.conf.example
+install -D -m 0644 scripts/package/haproxy-setline-cfgdir.conf.example %{buildroot}/usr/share/setline/haproxy-setline-cfgdir.conf.example
+# 用户文档整目录安装：与 build_rpm.sh 同一份清单，docs 全篇加上 CHANGELOG。
+install -d -m 0755 %{buildroot}/usr/share/doc/setline
+install -m 0644 docs/*.md %{buildroot}/usr/share/doc/setline/
+install -m 0644 CHANGELOG.md %{buildroot}/usr/share/doc/setline/CHANGELOG.md
+install -D -m 0755 scripts/package/setline-apply %{buildroot}/usr/lib/setline/setline-apply
 install -D -m 0644 scripts/package/setline.service %{buildroot}/usr/lib/systemd/system/setline.service
 install -D -m 0644 scripts/package/setline-render.service %{buildroot}/usr/lib/systemd/system/setline-render.service
 install -D -m 0644 scripts/package/setline-render.timer %{buildroot}/usr/lib/systemd/system/setline-render.timer
+install -D -m 0644 scripts/package/setline-apply.service %{buildroot}/usr/lib/systemd/system/setline-apply.service
+install -D -m 0644 scripts/package/setline-apply.timer %{buildroot}/usr/lib/systemd/system/setline-apply.timer
+EOF
 
-%pre
-getent group beangle >/dev/null 2>&1 || groupadd -r beangle
-if ! getent passwd setline >/dev/null 2>&1; then
-  useradd -r -g beangle -d /var/lib/setline -s /sbin/nologin -c "Setline proxy" setline
-else
-  usermod -g beangle setline 2>/dev/null || :
-fi
-mkdir -p /var/lib/setline /var/log/setline
+# 脚本段与 %files 来自共用片段，与 build_rpm.sh 的二进制包完全一致。
+echo >>"$RPMDIR/SPECS/setline.spec"
+cat "$SETLINE_HOME/scripts/package/setline.spec.common" >>"$RPMDIR/SPECS/setline.spec"
 
-%post
-mkdir -p /etc/setline
-if [ ! -f /etc/setline/setline.json ]; then
-  cp -f /usr/share/setline/setline.json.default /etc/setline/setline.json
-fi
-chown setline:beangle /etc/setline/setline.json
-chmod 0664 /etc/setline/setline.json
-chown setline:beangle /etc/setline
-chmod 2775 /etc/setline
-chown -R setline:beangle /var/lib/setline /var/log/setline
-chmod 2775 /var/lib/setline /var/log/setline
-systemctl daemon-reload 2>/dev/null || :
-
-%preun
-if [ "\$1" = 0 ]; then
-  systemctl stop setline 2>/dev/null || :
-  # 关掉纯渲染机的周期刷新 timer，避免卸载后留下悬空 unit。
-  systemctl disable --now setline-render.timer 2>/dev/null || :
-fi
-
-%postun
-systemctl daemon-reload 2>/dev/null || :
-
-# /etc/setline/setline.json is created in %post, not tracked in %files,
-# so package removal preserves the local runtime config.
-%files
-%attr(0755,root,root) /usr/bin/setline
-%attr(0644,root,root) /usr/share/setline/setline.json.default
-%attr(0644,root,root) /usr/lib/systemd/system/setline.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-render.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-render.timer
-
+cat >>"$RPMDIR/SPECS/setline.spec" <<EOF
 %changelog
 $(printf '%s' "$changes")
 EOF

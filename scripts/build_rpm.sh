@@ -96,6 +96,9 @@ changes="* $DATE $MAINTAINER - ${VERSION}-${REVISION}\n"
 changes+="  - setline binary package\n"
 
 cat >setline.spec <<EOF
+# 包里只有已 strip 的二进制，不需要 debuginfo 子包；Fedora 的自动 debugsource
+# 对 D 源码会算出空清单，让 rpmbuild 报 "Empty %files file"，所以显式关掉。
+%global debug_package %{nil}
 Name: setline
 Version: ${VERSION}
 Release: ${REVISION}
@@ -112,59 +115,13 @@ Provides: setline(${ARCH}) = ${VERSION}-${REVISION}
 %description
 setline is a small local HTTP path router and transparent proxy.
 It routes by host and URL path prefix to local backend ports.
+EOF
 
-%pre
-getent group beangle >/dev/null 2>&1 || groupadd -r beangle
-if ! getent passwd setline >/dev/null 2>&1; then
-  useradd -r -g beangle -d /var/lib/setline -s /sbin/nologin -c "Setline proxy" setline
-else
-  usermod -g beangle setline 2>/dev/null || :
-fi
-mkdir -p /var/lib/setline /var/log/setline /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
+# 脚本段与 %files 来自共用片段，保证 SRPM 重编出来的包与直接发布的包一致。
+echo >>setline.spec
+cat "$SETLINE_HOME/scripts/package/setline.spec.common" >>setline.spec
 
-%post
-mkdir -p /etc/setline
-if [ ! -f /etc/setline/setline.json ]; then
-  cp -f /usr/share/setline/setline.json.default /etc/setline/setline.json
-fi
-chown setline:beangle /etc/setline/setline.json
-chmod 0664 /etc/setline/setline.json
-chown setline:beangle /etc/setline
-chmod 2775 /etc/setline
-chown -R setline:beangle /var/lib/setline /var/log/setline
-chmod 2775 /var/lib/setline /var/log/setline
-chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
-systemctl daemon-reload 2>/dev/null || :
-
-%preun
-if [ "\$1" = 0 ]; then
-  systemctl stop setline 2>/dev/null || :
-  systemctl disable setline 2>/dev/null || :
-  # setline-apply@*.timer 是老版本的按代理模板单元，升级上来的机器可能还开着。
-  for unit in /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
-    [ -e "\$unit" ] || continue
-    systemctl disable --now "\$(basename "\$unit" .timer)" 2>/dev/null || :
-  done
-fi
-
-%postun
-systemctl daemon-reload 2>/dev/null || :
-
-# /etc/setline/setline.json is created in %post, not tracked in %files,
-# so package removal preserves the local runtime config.
-%files
-%attr(0755,root,root) /usr/bin/setline
-%attr(0644,root,root) /usr/share/setline/setline.json.default
-%attr(0644,root,root) /usr/share/setline/apply.conf.example
-%attr(0644,root,root) /usr/share/setline/haproxy-setline-cfgdir.conf.example
-%attr(0644,root,root) /usr/share/doc/setline/*.md
-%attr(0755,root,root) /usr/lib/setline/setline-apply
-%attr(0644,root,root) /usr/lib/systemd/system/setline.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-render.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-render.timer
-%attr(0644,root,root) /usr/lib/systemd/system/setline-apply.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-apply.timer
-
+cat >>setline.spec <<EOF
 %changelog
 $(printf '%b' "$changes")
 EOF
