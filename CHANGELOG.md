@@ -70,6 +70,13 @@ the systemd units and the end-to-end harness come with it.
 - The package version comes from the release git tag (`v0.0.4` -> `0.0.4`)
   instead of `dub.json`, so the tag is the single source of truth and the
   packaging scripts must run after it exists.
+- Backends are named after the route they serve - host group plus path prefix,
+  with `*` written `default` and a `b_` prefix (`b_app_example_com_api_edu`,
+  `b_default`) -
+  instead of after the machine that reported them. The identity of a service
+  has always been host plus prefix: routes from several peers with the same
+  host and prefix merge into one backend, so the old names named it after
+  whichever peer happened to be read first.
 
 ### Removed
 

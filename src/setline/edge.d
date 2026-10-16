@@ -23,7 +23,7 @@ import std.conv : to;
 import std.exception : enforce;
 import std.file : readText;
 import std.process : execute;
-import std.string : replace, startsWith;
+import std.string : replace, startsWith, strip;
 
 /** 一个可被边缘代理访问的后端实例。 */
 struct BackendInstance {
@@ -33,11 +33,18 @@ struct BackendInstance {
 
 /** 一组共享路由规则的服务后端。 */
 struct BackendService {
-  string name;
   string host = "*";
   string contentPath;
   BackendInstance[] instances;
 }
+
+/** HAProxy 片段里 backend 名的前缀。
+
+    片段与主配置通过 `-f <配置目录>` 合并进同一个命名空间，backend 重名会让 haproxy
+    直接拒绝启动（`has the same name as backend`），所以给自己生成的 backend 留个前缀，
+    和手写的 backend 区分开。
+*/
+enum haproxyBackendPrefix = "b_";
 
 /** 从 URL 或本地文件读取文本，可选附加 HTTP 请求头。 */
 string fetchText(string url, string[] headers = []) {
@@ -110,15 +117,17 @@ string renderHaproxyMap(BackendService[] services, string mapPath) {
     outp.put(service.host);
     outp.put("~");
     outp.put(service.contentPath);
-    outp.put(" be_");
-    outp.put(proxyId(service.name));
+    outp.put(" ");
+    outp.put(haproxyBackendPrefix);
+    outp.put(backendId(service.host, service.contentPath));
     outp.put("\n");
   }
   foreach (service; sorted) {
     if (service.host != "*") continue;
     outp.put(service.contentPath);
-    outp.put(" be_");
-    outp.put(proxyId(service.name));
+    outp.put(" ");
+    outp.put(haproxyBackendPrefix);
+    outp.put(backendId(service.host, service.contentPath));
     outp.put("\n");
   }
   return outp.data;
@@ -140,8 +149,9 @@ void appendHaproxyMapLookup(string sample, string mapPath, ref Appender!string o
 /** 追加 HAProxy 的 `backend` 段。 */
 void appendHaproxyBackends(BackendService[] services, ref Appender!string outp) {
   foreach (service; services) {
-    auto id = proxyId(service.name);
-    outp.put("\nbackend be_");
+    auto id = backendId(service.host, service.contentPath);
+    outp.put("\nbackend ");
+    outp.put(haproxyBackendPrefix);
     outp.put(id);
     outp.put("\n");
     outp.put("  mode http\n");
@@ -187,7 +197,7 @@ string renderNginxLocations(BackendService[] services, string host) {
 /** 追加 Nginx 的 `upstream` 段。 */
 void appendNginxUpstreams(BackendService[] services, ref Appender!string outp) {
   foreach (service; services) {
-    auto id = proxyId(service.name);
+    auto id = backendId(service.host, service.contentPath);
     outp.put("upstream ");
     outp.put(id);
     outp.put(" {\n");
@@ -213,7 +223,7 @@ void appendNginxLocations(BackendService[] services, string host, ref Appender!s
     outp.put("  proxy_set_header X-Real-IP $remote_addr;\n");
     outp.put("  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
     outp.put("  proxy_pass http://");
-    outp.put(proxyId(service.name));
+    outp.put(backendId(service.host, service.contentPath));
     outp.put(";\n");
     outp.put("}\n");
   }
@@ -235,22 +245,42 @@ BackendService[] sortedForMap(BackendService[] services) {
     if (a.contentPath.length != b.contentPath.length) return a.contentPath.length > b.contentPath.length;
     if ((a.host == "*") != (b.host == "*")) return a.host != "*";
     if (a.host != b.host) return a.host < b.host;
-    return a.name < b.name;
+    return a.contentPath < b.contentPath;
   })(sorted);
   return sorted;
 }
 
-/** 将服务名转换为代理配置中的安全标识。 */
-string proxyId(string value) {
+/** 生成后端在代理配置里的标识：host 分组名 + 路径前缀。
+
+    `*` 分组写作 `default`，根路径 `/` 不单独占一段，所以 `*` + `/` 就是 `default`，
+    `app.example.com` + `/api/edu` 是 `app_example_com_api_edu`。标识只由这两项决定，
+    与数据来源（本机路由表还是某个 peer）无关：决定服务身份的就是 host 加前缀，同一
+    host + 前缀来自多个 peer 时本来就会合并成一个后端，名字里再带来源反而误导。
+
+    标识只用于指认 backend，路由由 map 键（`host~path`）决定。
+*/
+string backendId(string host, string contentPath) {
   auto outp = appender!string();
+  putIdSegment(outp, host == "*" ? "default" : host);
+  putIdSegment(outp, contentPath);
+  enforce(outp.data.length > 0, "backend id must not be empty");
+  return outp.data;
+}
+
+/** 追加标识里的一段：非字母数字变 `_`，折叠连续 `_`，去掉首尾，空段不占位。 */
+private void putIdSegment(ref Appender!string outp, string value) {
+  auto part = appender!string();
   foreach (ch; value) {
     if (ch.isAlphaNum) {
-      outp.put(ch);
+      part.put(ch);
     } else {
-      outp.put("_");
+      part.put("_");
     }
   }
-  auto id = outp.data.replace("__", "_");
-  enforce(id.length > 0, "proxy id must not be empty");
-  return id;
+  auto text = part.data;
+  while (text.canFind("__")) text = text.replace("__", "_");
+  text = text.strip("_");
+  if (text.length == 0) return;
+  if (outp.data.length > 0) outp.put("_");
+  outp.put(text);
 }

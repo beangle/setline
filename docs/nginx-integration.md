@@ -53,14 +53,17 @@ setline **不在业务流量的路径上**。片段里的 upstream server 写的
 
 ```
 # 单机部署：回源主机固定 127.0.0.1
-upstream local_app_example_com_api_edu {
+upstream app_example_com_api_edu {
   server 127.0.0.1:9002;
 }
 # peers 模式：回源主机取自 peer.url，端口取自对端的路由表
-upstream app_app_example_com_api_edu {
+upstream app_example_com_api_edu {
   server 10.0.1.10:9002;
 }
 ```
+
+upstream 名与 haproxy 的 backend 名是同一个标识：host 分组名加路径前缀（`*` 分组写作
+`default`，根路径 `/` 不占一段），与后端来自本机还是某个 peer 无关。
 
 两个入口职责不同：
 

@@ -62,7 +62,16 @@ string peerAddress(PeerConfig peer) {
 
 /** 读取单个 peer 的路由表；peer 协议不带凭据，对端按源地址放行（见 `Config.peerReaders`）。 */
 HostRoutes[] fetchPeerRoutes(PeerConfig peer) {
-  return parsePeerRoutes(fetchText(peerRoutesUrl(peer)));
+  try {
+    return parsePeerRoutes(fetchText(peerRoutesUrl(peer)));
+  } catch (Exception e) {
+    throw new Exception("cannot read the route table from " ~ peerLabel(peer) ~ ": " ~ e.msg, e);
+  }
+}
+
+/** peer 在日志与报错里的称呼：配了 `name` 就用它，否则用地址。 */
+string peerLabel(PeerConfig peer) {
+  return peer.name.length > 0 ? "peer " ~ peer.name ~ " (" ~ peer.url ~ ")" : "peer " ~ peer.url;
 }
 
 /** 解析 `GET /_setline/routes` 的响应，形状为 `host -> [{prefix, port|ports}]`。 */
@@ -124,21 +133,18 @@ BackendService[] collectPeerServices(AgentConfig agent,
   BackendService[] services;
   foreach (peer; agent.peers) {
     auto host = peerAddress(peer);
-    auto name = peer.name.length > 0 ? peer.name : host;
-    services = mergePeerTable(services, fetcher(peer), host, name);
+    services = mergePeerTable(services, fetcher(peer), host);
   }
   return sortServices(services);
 }
 
 /** 把一个 peer 的路由表并入服务列表；相同 host + prefix 的服务共用一组实例。 */
-BackendService[] mergePeerTable(BackendService[] services, HostRoutes[] tables, string host,
-    string namePrefix) {
+BackendService[] mergePeerTable(BackendService[] services, HostRoutes[] tables, string host) {
   foreach (group; tables) {
     foreach (route; group.routes) {
       auto index = findService(services, group.host, route.prefix);
       if (index < 0) {
         BackendService service;
-        service.name = namePrefix ~ " " ~ group.host ~ " " ~ route.prefix;
         service.host = group.host;
         service.contentPath = route.prefix;
         services ~= service;
@@ -168,7 +174,7 @@ void addInstance(ref BackendService service, string host, ushort port) {
   service.instances ~= BackendInstance(host, port);
 }
 
-/** 按最长前缀优先排序服务，并让每个服务的实例顺序稳定。 */
+/** 按最长前缀优先排序服务（前缀长度相同看 host，再看路径），并让实例顺序稳定。 */
 BackendService[] sortServices(BackendService[] services) {
   foreach (ref service; services) {
     sort!((a, b) => a.host == b.host ? a.port < b.port : a.host < b.host)(service.instances);
@@ -178,7 +184,7 @@ BackendService[] sortServices(BackendService[] services) {
       return a.contentPath.length > b.contentPath.length;
     }
     if (a.host != b.host) return a.host < b.host;
-    return a.name < b.name;
+    return a.contentPath < b.contentPath;
   })(services);
   return services;
 }
@@ -192,12 +198,9 @@ struct Snippet {
 /** 单机部署时本机后端的回源主机：路由表里的端口都在这台机器上。 */
 enum localBackendHost = "127.0.0.1";
 
-/** 本机服务的名字前缀，用来和 peer 名区分开。 */
-private enum localServicePrefix = "local";
-
 /** 把本机路由表转成服务列表（单机部署形态）。 */
 BackendService[] collectLocalServices(HostRoutes[] routes) {
-  return sortServices(mergePeerTable([], routes, localBackendHost, localServicePrefix));
+  return sortServices(mergePeerTable([], routes, localBackendHost));
 }
 
 /** 按数据来源取得后端服务：`peers` 合并对端路由表，或本机路由表（单机部署，

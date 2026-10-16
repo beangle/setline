@@ -62,9 +62,9 @@ PeerConfig peerWithUrl(string url) {
 @("peer merges same route across peers") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api/edu","port":9002}]}`),
-    "10.0.1.10", "app1");
+    "10.0.1.10");
   services = mergePeerTable(services,
-    parsePeerRoutes(`{"app.example.com":[{"prefix":"/api/edu","ports":[9002,9003]}]}`), "10.0.1.11", "app2");
+    parsePeerRoutes(`{"app.example.com":[{"prefix":"/api/edu","ports":[9002,9003]}]}`), "10.0.1.11");
   sortServices(services);
 
   assert(services.length == 1);
@@ -78,7 +78,7 @@ PeerConfig peerWithUrl(string url) {
 @("peer orders longest prefix first") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"h":[{"prefix":"/api","port":1},{"prefix":"/","port":9},` ~
-    `{"prefix":"/api/edu","port":9002}]}`), "10.0.1.10", "app");
+    `{"prefix":"/api/edu","port":9002}]}`), "10.0.1.10");
   sortServices(services);
   assert(services[0].contentPath == "/api/edu");
   assert(services[1].contentPath == "/api");
@@ -114,26 +114,27 @@ PeerConfig peerWithUrl(string url) {
   assert(services[0].instances.length == 2);
 
   auto rendered = renderHaproxyBackends(services);
-  assert(rendered.canFind("backend be_peerA_app_example_com_api_edu"));
-  assert(rendered.canFind("server peerA_app_example_com_api_edu_0 10.0.1.10:9002 check"));
-  assert(rendered.canFind("server peerA_app_example_com_api_edu_1 10.0.1.11:9002 check"));
+  // 标识只看 host + 前缀：两个 peer 的同一条路由合并成一个后端，谁先谁后都不该进名字。
+  assert(rendered.canFind("backend b_app_example_com_api_edu"));
+  assert(rendered.canFind("server app_example_com_api_edu_0 10.0.1.10:9002 check"));
+  assert(rendered.canFind("server app_example_com_api_edu_1 10.0.1.11:9002 check"));
   assert(!rendered.canFind("\ndefaults"));
 }
 
 @("peer renders nginx upstreams and locations") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api","port":9001}]}`),
-    "10.0.1.10", "app");
+    "10.0.1.10");
   sortServices(services);
 
   // 片段不带监听段：upstream 进 http{}，location 进主配置的 server{}。
   auto upstreams = renderNginxUpstreams(services);
-  assert(upstreams.canFind("upstream app_app_example_com_api"));
+  assert(upstreams.canFind("upstream app_example_com_api"));
   assert(!upstreams.canFind("listen "));
 
   auto locations = renderNginxLocations(services, "app.example.com");
   assert(locations.canFind("location /api {"));
-  assert(locations.canFind("proxy_pass http://app_app_example_com_api;"));
+  assert(locations.canFind("proxy_pass http://app_example_com_api;"));
 }
 
 @("peer writes snippet only when changed") unittest {
@@ -166,10 +167,10 @@ PeerConfig peerWithUrl(string url) {
   auto snippets = renderAgentSnippets(agent, routes);
   assert(snippets.length == 2);
   assert(snippets[0].path == "/tmp/setline-conf/local/haproxy/setline.cfg");
-  assert(snippets[0].text.canFind("backend be_local_localhost_tools"));
-  assert(snippets[0].text.canFind("server local_localhost_tools_0 127.0.0.1:20000 check"));
+  assert(snippets[0].text.canFind("backend b_localhost_tools"));
+  assert(snippets[0].text.canFind("server localhost_tools_0 127.0.0.1:20000 check"));
   assert(snippets[1].path == "/tmp/setline-conf/local/haproxy/setline.map");
-  assert(snippets[1].text.canFind("localhost~/tools be_local_localhost_tools"));
+  assert(snippets[1].text.canFind("localhost~/tools b_localhost_tools"));
 }
 
 @("single-host agent renders business ports, never the setline listen port") unittest {
@@ -182,8 +183,8 @@ PeerConfig peerWithUrl(string url) {
   // 数据面片段只认业务端口：haproxy 直接回源，setline 的 listen 只是控制面。
   auto config = parseConfigFile(path);
   auto snippets = renderAgentSnippets(config.agent, config.routes);
-  assert(snippets[0].text.canFind("server local_app_example_com_api_edu_0 127.0.0.1:9002 check"));
-  assert(snippets[0].text.canFind("server local_app_example_com_api_edu_1 127.0.0.1:9003 check"));
+  assert(snippets[0].text.canFind("server app_example_com_api_edu_0 127.0.0.1:9002 check"));
+  assert(snippets[0].text.canFind("server app_example_com_api_edu_1 127.0.0.1:9003 check"));
   foreach (snippet; snippets) assert(!snippet.text.canFind("18090"));
 
   auto nginx = layoutSnippets(collectLocalServices(config.routes), "nginx",
@@ -195,23 +196,23 @@ PeerConfig peerWithUrl(string url) {
 @("peer renders rules-only snippets without a listener") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api/edu","port":9002}],` ~
-    `"*":[{"prefix":"/","port":9090}]}`), "10.0.1.10", "app");
+    `"*":[{"prefix":"/","port":9090}]}`), "10.0.1.10");
   services = sortServices(services);
 
   auto haproxy = layoutSnippets(services, "haproxy", "/tmp/setline-conf");
   assert(haproxy.length == 2);
   assert(haproxy[0].path == "/tmp/setline-conf/haproxy/setline.cfg");
-  assert(haproxy[0].text.canFind("backend be_app_app_example_com_api_edu"));
+  assert(haproxy[0].text.canFind("backend b_app_example_com_api_edu"));
   assert(!haproxy[0].text.canFind("\nfrontend "));
   assert(!haproxy[0].text.canFind("bind "));
   assert(haproxy[1].path == "/tmp/setline-conf/haproxy/setline.map");
-  assert(haproxy[1].text.canFind("app.example.com~/api/edu be_app_app_example_com_api_edu"));
-  assert(haproxy[1].text.canFind("\n/ be_app__\n"));
+  assert(haproxy[1].text.canFind("app.example.com~/api/edu b_app_example_com_api_edu"));
+  assert(haproxy[1].text.canFind("\n/ b_default\n"));
 
   auto nginx = layoutSnippets(services, "nginx", "/tmp/setline-conf");
   assert(nginx.length == 3);
   assert(nginx[0].path == "/tmp/setline-conf/nginx/setline.conf");
-  assert(nginx[0].text.canFind("upstream app_app_example_com_api_edu"));
+  assert(nginx[0].text.canFind("upstream app_example_com_api_edu"));
   assert(!nginx[0].text.canFind("listen "));
   assert(nginx[1].path == "/tmp/setline-conf/nginx/setline.app.example.com.conf");
   assert(nginx[1].text.canFind("location /api/edu {"));
@@ -222,7 +223,7 @@ PeerConfig peerWithUrl(string url) {
 @("peer keeps snippet names relative when output root is unset") unittest {
   BackendService[] services;
   services = mergePeerTable(services, parsePeerRoutes(`{"app.example.com":[{"prefix":"/api","port":9001}]}`),
-    "10.0.1.10", "app");
+    "10.0.1.10");
   services = sortServices(services);
 
   // 没有 output 根目录 = 片段打到标准输出：路径只剩文件名，标题行才不会带一串目录。

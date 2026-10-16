@@ -324,12 +324,15 @@ frontend http_in
 setline 生成的 map 形如：
 
 ```
-app.example.com~/api/edu be_app1_app_example_com_api_edu
-/ be_app2_default
+app.example.com~/api/edu b_app_example_com_api_edu
+/ b_default
 ```
 
-backend 名由服务名转换而来，不要手写 backend 段；map 文件与 backend 片段由 setline
-一起生成、一起原子替换。
+backend 名是 `b_` 加上标识，标识 = host 分组名 + 路径前缀（`*` 分组写作 `default`，
+根路径 `/` 不单独占一段），例如 `b_app_example_com_api_edu`、`b_default`；名字里的
+非字母数字都变成下划线并折叠。它与后端来自哪台机器无关——同一 host + 前缀无论来自
+几个 peer 都合并成同一个 backend。不要手写 backend 段；map 文件与 backend 片段由
+setline 一起生成、一起原子替换。
 
 ## 校验与热加载
 
@@ -368,7 +371,7 @@ reload 到底有没有发生（master PID 不变、worker PID 换掉、`show pro
 | `Could not open configuration file <目录>` | 目录不存在（老发行版没有 `conf.d`），或 HAProxy < 1.7 根本不认 `-f <目录>`（本项目最低要求 2.0，见「版本要求」） |
 | `invalid variable 'set-var-fmt(...)'` / `unknown fetch method` | 用了 2.6+ 的 `set-var-fmt`，或拿 log-format 去喂 `set-var`；换成上面的 `set-var` + `concat` 四行（2.0 起通用） |
 | `/api/xxx` 返回 503 且日志无异常 | map 命中了 backend，但 backend 里 `server` 健康检查失败（对端不可达） |
-| `Server be_xxx/... is DOWN, reason: Layer7 wrong status, code: 404` | 主配置（`defaults` 或你自己的 backend）里有 `option httpchk`：setline 片段只发 TCP `check`，不会产生这条例；把该 HTTP 检查挪走或换一个返回 2xx 的路径 |
+| `Server b_xxx/... is DOWN, reason: Layer7 wrong status, code: 404` | 主配置（`defaults` 或你自己的 backend）里有 `option httpchk`：setline 片段只发 TCP `check`，不会产生这条例；把该 HTTP 检查挪走或换一个返回 2xx 的路径 |
 | WebSocket 升级请求回 `400 Bad request` | haproxy 自己就要求带 `Upgrade: websocket` 的请求有合法的 `Sec-WebSocket-Key` 头；缺了它连 setline 都不会看到 |
 | WebSocket 握手回 `502 Bad Gateway`（消息是 *invalid or incomplete response*） | 后端的 101 缺 `Sec-WebSocket-Accept`，或者算错。haproxy 3.0 起会校验它，setline 只是原样透传后端响应，所以问题在业务后端而不是代理 |
 | 改了路由但流量没变 | 片段没写出（agent 未运行/未同步）、静默窗口还没过，或 `*.map` 未被引用 |

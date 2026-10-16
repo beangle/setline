@@ -366,8 +366,8 @@ JSON
     fail "peer renderer did not exit 0: $(cat "$WORK/peer-render.log")"
   fi
   [ -s "$dir/haproxy/setline.cfg" ] || fail "peer renderer did not write the backend fragment"
-  grep -q '^  server peer_' "$dir/haproxy/setline.cfg" ||
-    fail "peer renderer did not name the backend after the peer"
+  grep -q '^  server local_test_0 127.0.0.1:' "$dir/haproxy/setline.cfg" ||
+    fail "peer renderer did not name the backend after host + path"
   grep -q '127.0.0.1:' "$dir/haproxy/setline.cfg" ||
     fail "peer renderer did not rewrite the route port onto the peer host"
   echo "PASS peer renderer writes fragments and exits after one round"

@@ -26,9 +26,8 @@ BackendInstance at(string host, ushort port) {
 }
 
 /** 构造一个后端服务；services 列表顺序就是渲染顺序。 */
-BackendService service(string name, string host, string contentPath, BackendInstance[] instances) {
+BackendService service(string host, string contentPath, BackendInstance[] instances) {
   BackendService result;
-  result.name = name;
   result.host = host;
   result.contentPath = contentPath;
   result.instances = instances;
@@ -37,15 +36,16 @@ BackendService service(string name, string host, string contentPath, BackendInst
 
 @("edge renders haproxy backends with TCP checks only") unittest {
   auto services = [
-    service("edu-learning", "local.example.com", "/m/edu/learning", [at("10.0.1.10", 18001)]),
-    service("app", "*", "/a", [at("10.0.1.30", 18003)]),
+    service("local.example.com", "/m/edu/learning", [at("10.0.1.10", 18001)]),
+    service("*", "/a", [at("10.0.1.30", 18003)]),
   ];
 
   auto backends = renderHaproxyBackends(services);
-  assert(backends.canFind("backend be_edu_learning"));
-  assert(backends.canFind("server edu_learning_0 10.0.1.10:18001 check"));
-  assert(backends.canFind("backend be_app"));
-  assert(backends.canFind("server app_0 10.0.1.30:18003 check"));
+  // 标识 = host 分组名 + 路径前缀，`*` 分组写作 default。
+  assert(backends.canFind("backend b_local_example_com_m_edu_learning"));
+  assert(backends.canFind("server local_example_com_m_edu_learning_0 10.0.1.10:18001 check"));
+  assert(backends.canFind("backend b_default_a"));
+  assert(backends.canFind("server default_a_0 10.0.1.30:18003 check"));
   // 片段只发 TCP `check`，绝不发 httpchk：HTTP 检查会把应用返回 404/401 的根路径判成 DOWN。
   assert(!backends.canFind("option httpchk"));
   assert(!backends.canFind("del-header"));
@@ -53,8 +53,8 @@ BackendService service(string name, string host, string contentPath, BackendInst
 
 @("edge renders haproxy routing map usable from 2.0") unittest {
   auto services = [
-    service("app", "app.example.com", "/api/edu", [at("10.0.1.10", 18001)]),
-    service("fallback", "*", "/", [at("10.0.1.20", 18002)]),
+    service("app.example.com", "/api/edu", [at("10.0.1.10", 18001)]),
+    service("*", "/", [at("10.0.1.20", 18002)]),
   ];
 
   auto map = renderHaproxyMap(services, "/var/lib/setline/haproxy/setline.map");
@@ -67,8 +67,9 @@ BackendService service(string name, string host, string contentPath, BackendInst
   assert(map.canFind("use_backend %[var(txn.setline_route),map_beg(" ~
     "/var/lib/setline/haproxy/setline.map)] if { var(txn.setline_route),map_beg(" ~
     "/var/lib/setline/haproxy/setline.map) -m found }"));
-  assert(map.canFind("app.example.com~/api/edu be_app"));
-  assert(map.canFind("/ be_fallback"));
+  assert(map.canFind("app.example.com~/api/edu b_app_example_com_api_edu"));
+  // 根路径不单独占一段：`*` + `/` 的标识就是 default。
+  assert(map.canFind("/ b_default"));
   // set-var-fmt 是 2.6 才有的动作，规则模式只用 2.0 起就有的 set-var + concat，
   // 且绝不生成会跟着请求到应用的内部头。
   assert(!map.canFind("set-var-fmt"));
@@ -78,18 +79,18 @@ BackendService service(string name, string host, string contentPath, BackendInst
 
 @("edge renders nginx upstreams and locations separately") unittest {
   auto services = [
-    service("permission-service", "*", "/api/permission", [at("10.0.2.10", 19001)]),
+    service("*", "/api/permission", [at("10.0.2.10", 19001)]),
   ];
 
   // 规则模式把 upstream 与 location 拆成两份：前者只能出现在 http{}，后者只能出现在 server{}。
   auto upstreams = renderNginxUpstreams(services);
-  assert(upstreams.canFind("upstream permission_service"));
+  assert(upstreams.canFind("upstream default_api_permission"));
   assert(upstreams.canFind("server 10.0.2.10:19001;"));
   assert(!upstreams.canFind("listen "));
   assert(!upstreams.canFind("location "));
 
   auto locations = renderNginxLocations(services, "*");
   assert(locations.canFind("location /api/permission"));
-  assert(locations.canFind("proxy_pass http://permission_service;"));
+  assert(locations.canFind("proxy_pass http://default_api_permission;"));
   assert(!locations.canFind("listen "));
 }
