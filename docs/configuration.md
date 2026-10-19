@@ -62,7 +62,7 @@ owner = setline:beangle
 | | `configs` | 按代理类型推导 | 给 `haproxy -f` 或 `nginx -c` 的配置列表 |
 | | `fragmentDir` | `<output>/<type>` | 片段目录 |
 | | `service` | 取代理类型 | `systemctl reload` 的服务名 |
-| | `quietSeconds` | `15` | 片段最后一次修改后的静默窗口 |
+| | `quietSeconds` | `15` | 手工 apply 和单机模式的静默窗口；`setline-agent` 在 peer 渲染完成后用 `--now` 跳过它 |
 | | `runtimeDir` | `/run` | 锁文件位置 |
 | | `owner` | `setline:beangle` | 片段目录属主为 root 时纠正成它 |
 
@@ -182,7 +182,7 @@ setline 进程可以绑定完全相同的地址。默认关闭，避免无意间
 
 **路由完全来自配置文件、不需要运行时下发时**，可以写 `"listen": false`：setline 不绑任何
 端口，启动时按配置文件渲染一次片段就退出，没有管理接口，也没有数据面。适合「静态路由 +
-片段渲染」和 `setline-apply.timer` 配合的部署；此时 `[agent] type` 必填（否则进程无事可做），
+片段渲染」和 `setline-agent.timer` 配合的部署；此时 `[agent] type` 必填（否则进程无事可做），
 单机部署下 `[agent] output` 仍必填。
 
 ### adminListen：写操作的独立入口
@@ -384,28 +384,30 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 
 | 配置 | 形态 | setline 自身 | 触发重渲染的时机 |
 |---|---|---|---|
-| 配 `peers` | 纯渲染机：合并多台对端 setline 的路由表 | **不监听**，跑一轮就退出 | `setline-render.timer` 周期驱动（包内 unit） |
+| 配 `peers` | 纯渲染机：合并多台对端 setline 的路由表 | **不监听**，跑一轮就退出 | `setline-agent.timer` 周期驱动（包内 unit） |
 | 不配 `peers`（**单机部署**） | haproxy/nginx、setline、basctl 同机 | **照常监听**，但只当控制面入口 | 启动时渲染一次，之后每次经管理接口改路由立即重渲染 |
 
 单机部署下 setline 是路由表的**登记处**（接收 basctl 推来的路由）和**渲染器**，同时
 保留一个本机代理用于调试：业务流量并不经过它，同机的 haproxy/nginx 按片段直接回源
 业务端口（见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md` 的
-「数据面与控制面」）。因此不需要 `peers`（不要求边缘代理和管理入口互相访问），也不需要
-外部 timer —— 路由一变片段就重渲染。此时 `output` 必填。
+「数据面与控制面」）。因此不需要 `peers`（不要求边缘代理和管理入口互相访问），渲染也不
+依赖外部 timer —— 路由一变片段就重渲染；但校验和 reload 仍由 `setline-agent.timer`
+周期完成。此时 `output` 必填。
 
 如果连「登记处」都不需要（路由只在配置文件里，没有 basctl 推），在这套基础上加
 `"listen": false`：setline 不绑监听，启动时渲染一次片段后退出。
 
 纯渲染机（`peers`）也走「跑一轮就退出」：**setline 进程里没有调度循环**，
-周期刷新由 systemd timer 驱动（包里的 `setline-render.timer`，每 30s 拉起一次
-`setline-render.service`）。节奏统一由 systemd 管，`systemctl list-timers` / `journalctl`
-里看得见，配置里也不再需要 `sync`。纯渲染机启用 `setline-render.timer`；单机部署启用
-`setline.service` 常驻，两者不要同时开（两个渲染器写同一批文件是多余的）。
+周期刷新由 systemd timer 驱动（包里的 `setline-agent.timer`，每 30s 拉起一次
+`setline-agent.service`）。节奏统一由 systemd 管，`systemctl list-timers` / `journalctl`
+里看得见，配置里也不再需要 `sync`。纯渲染机只启用 `setline-agent.timer`；单机部署同时
+启用常驻的 `setline.service` 和 `setline-agent.timer`，由前者渲染、后者 apply。
+不要再额外启动第二个渲染器写同一批片段。
 三种形态的 `listen` 取值归纳如下：
 
 | 数据来源 | `listen` | 进程行为 |
 |---|---|---|
-| `peers` | 不用写（写了也不监听） | 渲染一轮后退出，由 `setline-render.timer` 周期拉起 |
+| `peers` | 不用写（写了也不监听） | 渲染一轮后退出，由 `setline-agent.timer` 周期拉起 |
 | 配置文件（单机部署，需运行时改路由） | 地址或端口 | 监听控制面，改路由立即重渲染 |
 | 配置文件（纯渲染，无运行时变更） | `false` | 渲染一次后退出，不监听 |
 
@@ -433,12 +435,14 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 `agent` 下没有让片段自带监听的开关。接线步骤（haproxy 的 `-f <dir>` 与四条 map 查询、
 nginx 的 `include`）见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
 
-`type` 也是热加载分派的依据：`setline-apply.timer` 只启用一个，`setline-apply auto`
-执行 `setline --apply-config --conf /etc/setline/setline.conf`，按 `[agent] type` 决定
-校验和 reload 谁。reload 的其余参数也从同一个 `[apply]` 段读取。所以改 `type` 之后
-不需要动 systemd。timer 装完不会自动启用：
-`sudo systemctl enable --now setline-apply.timer`（启用、手工执行与参数见
-`docs/agent-reload.md` 的「启用与使用」）。
+`type` 也是热加载分派的依据：`setline-agent.timer` 只启用一个。
+`setline-agent` 在 peer 模式下先以 `setline` 用户渲染一轮，再执行
+`setline-apply --now auto`；单机模式下常驻的 `setline.service` 负责渲染，
+`setline-agent` 只执行 `setline-apply auto`。`setline-apply` 通过
+`setline --apply-config --conf /etc/setline/setline.conf` 读取 `[apply]` 段，并按
+`[agent] type` 决定校验和 reload 谁。所以改 `type` 之后不需要动 systemd。timer
+装完不会自动启用：`sudo systemctl enable --now setline-agent.timer`（启用、手工执行与
+参数见 `docs/agent-reload.md` 的「启用与使用」）。
 
 ### peers
 
@@ -523,7 +527,8 @@ output = /var/lib/setline
 回源主机固定为 `127.0.0.1` —— 单机部署下路由端口都在本机。生成的服务名用 `local`
 前缀（例如 `local_app_example_com_api_edu`），与 peer 模式的服务名区分开。
 
-单机模式下 `setline-apply.timer` 仍然有用：片段变了就 reload 代理，片段没变则无动作。
+单机模式下 `setline-agent.timer` 仍然有用：常驻的 `setline.service` 负责渲染，
+timer 只负责 apply；片段变了就 reload 代理，片段没变则无动作。
 
 ### output 的目录布局
 

@@ -34,9 +34,9 @@ The binary package installs:
 - `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`
 - `/usr/share/doc/setline/*.md` (all of `docs/`, plus `CHANGELOG.md`)
 - `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
+- `/usr/lib/setline/setline-agent` (one-round render/apply orchestrator)
 - `/usr/lib/systemd/system/setline.service`
-- `/usr/lib/systemd/system/setline-render.service` + `setline-render.timer`
-- `/usr/lib/systemd/system/setline-apply.service` + `setline-apply.timer`
+- `/usr/lib/systemd/system/setline-agent.service` + `setline-agent.timer`
 - `/etc/setline/setline.conf` and `/etc/setline/setline.json` (created on first install)
 
 `scripts/build_srpm.sh` produces the same package from source on the target
@@ -47,21 +47,21 @@ use section names at the start of a line, which is what older `rpmbuild` (the
 rpm 4.11 on CentOS 7) needs.
 
 The packages install the units but never enable them. A machine whose config
-has an `agent` block needs
+has an `[agent] type` needs
 
 ```bash
-sudo systemctl enable --now setline-apply.timer  # validate + reload when fragments change
+sudo systemctl enable --now setline-agent.timer  # render (peer mode) + validate/reload
 ```
 
-otherwise the generated fragment is never validated or reloaded. How to run it
-by hand, its exit codes and the `[apply]` settings in `setline.conf` are in
-`docs/agent-reload.md`. A pure render machine (`[agent] peers`, no `listen`) drives rendering with `setline-render.timer` instead of a resident
-process: the timer re-runs `setline-render.service` every 30s, because one run
-renders one round and exits. A single-host deployment (`listen` set) is the
-opposite - it keeps `setline.service` resident (`sudo systemctl enable --now
-setline.service`) and re-renders on every route change, so do **not** enable
-`setline-render.timer` there: two renderers writing the same files are
-redundant.
+otherwise the generated fragment is never rendered, validated or reloaded. How
+to run it by hand, its exit codes and the `[apply]` settings in `setline.conf`
+are in `docs/agent-reload.md`. A pure render machine (`[agent] peers`, no
+`listen`) has no resident process: `setline-agent.timer` runs
+`setline-agent.service` every 30s, which renders one round as `setline` and then
+applies it as root. A single-host deployment (`listen` set) keeps
+`setline.service` resident (`sudo systemctl enable --now setline.service`) and
+re-renders on every route change; the same `setline-agent.timer` only applies
+the fragments. Do not run a second renderer on that machine.
 
 The systemd service runs:
 
@@ -69,10 +69,10 @@ The systemd service runs:
 /usr/bin/setline --conf /etc/setline/setline.conf
 ```
 
-`setline-render.service` runs the same command as `setline` (the unprivileged
-user) and exits after one round; drop a
-`/etc/systemd/system/setline-render.service.d/*.conf` with an `ExecStart=`
-override if `setline.conf` lives elsewhere.
+`setline-agent.service` runs as root, but only orchestrates: in peer mode it
+drops to the `setline` user for rendering, then calls `setline-apply --now` as
+root. Drop a `/etc/systemd/system/setline-agent.service.d/*.conf` with an
+`ExecStart=` override if `setline.conf` lives elsewhere.
 
 Runtime route updates rewrite the topology file named by `[topology] file`, so
 package install scripts make `/etc/setline/setline.json` writable by the
@@ -132,8 +132,8 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
    root 运行（硬性要求，见 `docs/project-constraints.md` 的 Privilege Model）。
 
 3. `refusing to run as root: ...` —— 手工 `sudo setline ...` 起服务时最常见。代理和
-   渲染 agent 都要求非 root；`setline-apply` 以 root 调用的 `--agent-type`/`--sync-map`
-   两个出口、以及 `-c` 校验不受影响。这条以退出码 `2` 结束，unit 里的
+   渲染 agent 都要求非 root；`setline-apply` 以 root 调用的
+   `--agent-type`/`--agent-peers`/`--sync-map` 出口、以及 `-c` 校验不受影响。这条以退出码 `2` 结束，unit 里的
    `RestartPreventExitStatus=2` 会直接停住，不会重启五次。
 
 前台手工复现最直接，注意用服务账号，才和 unit 里的权限一致：
@@ -315,10 +315,11 @@ the listener; how to wire each proxy is in `docs/haproxy-integration.md` and
 `docs/nginx-integration.md`.
 
 Reloading is separate and privileged. `setline` runs as the unprivileged
-`setline` user and only writes the fragment; `setline-apply` (root, oneshot,
-timer-driven) validates it, runs `systemctl reload`, and rolls the fragment
-directory back if either step fails. Running the daemon as root is a hard
-requirement to avoid, not a tuning choice: see the Privilege Model in
+`setline` user and only writes the fragment; `setline-agent` (root, oneshot)
+orchestrates a peer render through `runuser`, then `setline-apply` (root helper)
+validates the result, runs `systemctl reload`, and rolls the fragment directory
+back if either step fails. Running the daemon as root is a hard requirement to
+avoid, not a tuning choice: see the Privilege Model in
 `docs/project-constraints.md`. See `docs/agent-reload.md` for the reload flow.
 
 When routes change, setline rebuilds the next host route trees, writes the new

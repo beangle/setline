@@ -89,10 +89,14 @@ These are intentionally out of scope unless the project goal changes:
   effective uid 0 prints a refusal and exits with code 2, which the shipped unit
   maps to `RestartPreventExitStatus=2` so systemd does not loop. `setline-apply`
   is not gated, and neither are the exits it invokes as root
-  (`setline --agent-type`, `setline --sync-map`) or `-c` and `--help`.
-- Privileged work belongs only to `setline-apply`, the short-lived root oneshot:
-  validating fragments, running `systemctl reload`, rolling the fragment
-  directory back, and talking to a proxy admin socket.
+  (`setline --agent-type`, `setline --agent-peers`, `setline --sync-map`) or
+  `-c` and `--help`.
+- Privileged work belongs to one short-lived root unit,
+  `setline-agent.service`, and its root helper `setline-apply`. The agent only
+  orchestrates: in peer mode it drops to the `setline` user with `runuser` for
+  rendering, then invokes `setline-apply`. `setline-apply` validates fragments,
+  runs `systemctl reload`, rolls the fragment directory back, and talks to a
+  proxy admin socket.
 - The shipped `setline.service` enforces the split with `User=setline` and
   `Group=beangle`. Do not remove those lines, and do not add a replacement unit
   or a manual command that starts `setline` as root.
@@ -101,7 +105,7 @@ These are intentionally out of scope unless the project goal changes:
 - Needing a port below 1024 is not a reason to run as root. Use
   `AmbientCapabilities=CAP_NET_BIND_SERVICE` on the unit instead.
 - If a feature seems to need root, implement it in `setline-apply` (or in a
-  helper that `setline-apply` runs as root) rather than raising the daemon's
+  helper that a short-lived root unit runs) rather than raising the daemon's
   privileges.
 - Shipped binaries are linked with full RELRO: `dub.json` passes `-z now` as
   `lflags`, so the GOT is resolved at load time and made read-only and a
@@ -248,8 +252,9 @@ Nginx fragment, written atomically under the `[agent] output` root directory
 proxy's own main config file: the fragment is included (Nginx) or concatenated
 (HAProxy, which has no `include`) by deployment tooling. The process renders
 exactly one round and exits; the cadence is external
-(`setline-render.timer` in the package), so there is no in-process scheduler and no
-`sync` config.
+(`setline-agent.timer` in the package), so there is no in-process scheduler and no
+`sync` config. In peer mode the same timer first runs the renderer as the
+`setline` user, then applies the result as root through `setline-apply`.
 
 With no `peers`, the same renderer reads the local route table instead
 (single-host deployment, where the proxy and setline share a machine).

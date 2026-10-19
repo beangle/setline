@@ -1,0 +1,51 @@
+#!/bin/bash
+# setline-agent: one periodic agent round.
+#
+# The service unit runs as root only to orchestrate the privilege boundary:
+#   - peer mode: render fragments as the setline user, then apply them as root;
+#   - single-host mode: the resident setline.service already renders on route
+#     changes, so this round only applies whatever is on disk.
+#
+# Rendering must never happen in this process: setline parses HTTP responses
+# from peers, and the project requires that parser to stay unprivileged.
+set -euo pipefail
+
+SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline}"
+SETLINE_CONF="${SETLINE_CONF:-/etc/setline/setline.conf}"
+SETLINE_APPLY="${SETLINE_APPLY:-/usr/lib/setline/setline-apply}"
+RUN_USER="${SETLINE_AGENT_USER:-setline}"
+RUN_GROUP="${SETLINE_AGENT_GROUP:-beangle}"
+
+log() { echo "setline-agent: $*"; }
+die() { echo "setline-agent: $*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "must run as root (setline-apply needs to reload the proxy)"
+[ -x "$SETLINE_BIN" ] || die "$SETLINE_BIN not found"
+[ -x "$SETLINE_APPLY" ] || die "$SETLINE_APPLY not found"
+[ -f "$SETLINE_CONF" ] || die "control config not found: $SETLINE_CONF"
+command -v runuser >/dev/null 2>&1 || die "runuser not found (install util-linux)"
+
+agent_type="$("$SETLINE_BIN" --agent-type --conf "$SETLINE_CONF")" ||
+  die "cannot read [agent] type from $SETLINE_CONF"
+if [ -z "$agent_type" ]; then
+  log "no [agent] type in $SETLINE_CONF, nothing to do"
+  exit 0
+fi
+
+peers="$("$SETLINE_BIN" --agent-peers --conf "$SETLINE_CONF")" ||
+  die "cannot read [agent] peers from $SETLINE_CONF"
+case "$peers" in
+  ''|*[!0-9]*) die "unexpected [agent] peer count: $peers" ;;
+esac
+
+if [ "$peers" -gt 0 ]; then
+  # Peer mode: the renderer reads remote route tables, so drop to setline.
+  runuser -u "$RUN_USER" -g "$RUN_GROUP" -- "$SETLINE_BIN" --conf "$SETLINE_CONF"
+  # Rendering finished in this process, so the apply helper must not wait for
+  # the quiet window before validating and reloading.
+  "$SETLINE_APPLY" --now auto
+else
+  # Single-host mode: setline.service renders as routes change. Keep the quiet
+  # window so a half-written fragment set is never applied.
+  "$SETLINE_APPLY" auto
+fi

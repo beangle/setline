@@ -53,6 +53,7 @@ int main(string[] args) {
   string confPath = defaultControlPath;
   string configPath;
   bool agentType;
+  bool agentPeers;
   bool applyConfig;
   bool check;
   bool help;
@@ -61,6 +62,7 @@ int main(string[] args) {
     "conf", "Path to setline.conf", &confPath,
     "file|f", "Path to topology JSON (overrides [topology] file)", &configPath,
     "agent-type", "Print [agent] type from setline.conf and exit", &agentType,
+    "agent-peers", "Print [agent] peer count from setline.conf and exit", &agentPeers,
     "apply-config", "Print setline-apply settings as shell assignments and exit", &applyConfig,
     "sync-map", "Sync a HAProxy map file into the running instance via its admin socket",
       &syncMapSocket,
@@ -69,7 +71,7 @@ int main(string[] args) {
 
   if (help) {
     defaultGetoptPrinter("Usage: setline [--conf setline.conf] [-f setline.json] " ~
-      "[--agent-type] [--apply-config] [-c] " ~
+      "[--agent-type] [--agent-peers] [--apply-config] [-c] " ~
       "[--sync-map <socket> <mapfile>]\n" ~
       "       setline pull [--conf setline.conf]\n" ~
       "       setline init [path]", helpInfo.options);
@@ -106,6 +108,10 @@ int main(string[] args) {
       stdout.writefln("%s", control.agent.type);
       return 0;
     }
+    if (agentPeers) {
+      stdout.writefln("%s", control.agent.peers.length);
+      return 0;
+    }
     if (applyConfig) {
       stdout.write(renderApplyShell(control));
       return 0;
@@ -117,8 +123,9 @@ int main(string[] args) {
       return 0;
     }
 
-    // 主服务与渲染 agent 都以非 root 运行：只有 setline-apply 需要 root，而它调用的
-    // --agent-type / --sync-map 在上面就返回了。退出码 2 对上 unit 里的
+    // 主服务与渲染 agent 都以非 root 运行：只有短命的
+    // setline-agent/setline-apply 需要 root，而它们调用的
+    // --agent-type / --agent-peers / --sync-map 在上面就返回了。退出码 2 对上 unit 里的
     // RestartPreventExitStatus=2，不会陷入「重启五次后 failed」。
     if (rejectsRootUser(geteuid())) {
       stderr.writefln("%s", rootRunRefusalMessage());
@@ -127,7 +134,7 @@ int main(string[] args) {
 
     auto config = loadConfig(configPath, control);
     // 配了 peers 的机器是「纯渲染机」：不监听，渲染一轮就退出，
-    // 周期刷新由 setline-render.timer（systemd）驱动。
+    // 周期刷新由 setline-agent.timer（systemd）驱动。
     if (config.agent.type.length > 0 && !usesLocalRoutes(config.agent)) {
       return renderAgentOnce(config.agent);
     }

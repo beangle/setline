@@ -93,15 +93,14 @@ cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
 # 变更历史随包安装：升级前想知道「这一版动了什么」不该先去找仓库。
 cp -f "$SETLINE_HOME/CHANGELOG.md" usr/share/doc/setline/CHANGELOG.md
 cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
+cp -f "$SETLINE_HOME/scripts/package/setline-agent" usr/lib/setline/setline-agent
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
-cp -f "$SETLINE_HOME/scripts/package/setline-render.service" usr/lib/systemd/system/setline-render.service
-cp -f "$SETLINE_HOME/scripts/package/setline-render.timer" usr/lib/systemd/system/setline-render.timer
-cp -f "$SETLINE_HOME/scripts/package/setline-apply.service" usr/lib/systemd/system/setline-apply.service
-cp -f "$SETLINE_HOME/scripts/package/setline-apply.timer" usr/lib/systemd/system/setline-apply.timer
+cp -f "$SETLINE_HOME/scripts/package/setline-agent.service" usr/lib/systemd/system/setline-agent.service
+cp -f "$SETLINE_HOME/scripts/package/setline-agent.timer" usr/lib/systemd/system/setline-agent.timer
 
 chmod -R 0755 .
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-render.service usr/lib/systemd/system/setline-render.timer usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
-chmod 0755 usr/bin/setline usr/lib/setline/setline-apply
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent.timer
+chmod 0755 usr/bin/setline usr/lib/setline/setline-apply usr/lib/setline/setline-agent
 
 cd ..
 DATE=$(LC_ALL=C date '+%a %b %d %Y')
@@ -122,7 +121,7 @@ URL: https://github.com/beangle/setline
 Vendor: ${VENDOR}
 Packager: ${MAINTAINER}
 ExclusiveArch: ${ARCH}
-Requires: systemd
+Requires: systemd util-linux
 Provides: setline(${ARCH}) = ${VERSION}-${REVISION}
 
 %description

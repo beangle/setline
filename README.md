@@ -140,10 +140,12 @@ With `[agent] type` in `setline.conf`, `setline` renders a HAProxy or Nginx **fr
 route table: its own, or a set of live `setline` peers (`[agent] peers`). It
 never rewrites the proxy's own
 config, and a render-only machine has no listener at all: it renders one round
-and exits, re-rendering on a systemd timer (`setline-render.timer`). The unprivileged
-`setline` writes fragments atomically; the root-owned `setline-apply` validates
-and reloads them, hot-syncing a routes-only map change without a reload when a
-HAProxy admin socket is available.
+and exits. `setline-agent.timer` drives one round: it renders as the unprivileged
+`setline` user and then runs the root-owned `setline-apply --now` to validate
+and reload, hot-syncing a routes-only map change without a reload when a
+HAProxy admin socket is available. A single-host deployment keeps
+`setline.service` resident instead; the same timer applies its fragments but
+does not render them again.
 
 Fields and examples: `docs/configuration.md`. Wiring: `docs/haproxy-integration.md`
 and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
@@ -178,7 +180,7 @@ files instead of leaving an old key behind.
 - `docs/configuration.md` - every config field, defaults, validation errors, examples.
 - `docs/deployment.md` - where setline sits, the file descriptor budget, systemd units, packaging, shutdown.
 - `docs/haproxy-integration.md`, `docs/nginx-integration.md` - fragment layout and wiring.
-- `docs/agent-reload.md` - applying and reloading fragments (`setline-apply`, the timer, HAProxy map hot-sync).
+- `docs/agent-reload.md` - rendering, applying and reloading fragments (`setline-agent`, `setline-apply`, the timer, HAProxy map hot-sync).
 - `docs/runtime-routes-api.md` - runtime route API, credentials, the status page and `status.json`.
 - `docs/transparent-proxy-design.md` - the streaming and connection model, including the WebSocket tunnel.
 - `docs/project-constraints.md` - scope, the privilege model and the constraints behind them.

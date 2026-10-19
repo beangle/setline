@@ -29,6 +29,13 @@ Per-release notes with the upgrade steps spelled out live in
   target does not exist.
 - `setline --apply-config` exports the resolved `[apply]` settings for
   `setline-apply`; `--agent-type` reads the proxy type from the same file.
+- `setline --agent-peers` reports the number of configured `[agent] peers`,
+  so the orchestrator can decide whether a render round is needed without
+  parsing INI in shell.
+- `setline-agent` and `setline-agent.timer` replace the separate render and
+  apply timers. One oneshot renders in peer mode as the `setline` user with
+  `runuser`, then runs `setline-apply --now` as root; in single-host mode it
+  only applies the fragments written by the resident `setline.service`.
 
 ### Changed
 
@@ -38,6 +45,8 @@ Per-release notes with the upgrade steps spelled out live in
 - `setline-apply` reads all reload settings from `setline.conf` instead of
   `apply.conf` and environment variables. Fragment paths and the HAProxy config
   list now follow a custom `[agent] output` root.
+- `setline-apply` accepts `--now` to skip the quiet window when the caller has
+  just completed a render round.
 - Package install creates `/etc/setline/setline.conf` (`root:beangle 0640`) on
   first install and preserves it on upgrades.
 
@@ -46,6 +55,9 @@ Per-release notes with the upgrade steps spelled out live in
 - `download-setline`, `download-haproxy`, `download-proxy`,
   `/etc/setline/apply.conf` and the separate reload environment-variable
   configuration. No compatibility fallback is provided.
+- `setline-render.{service,timer}` and `setline-apply.{service,timer}`. Package
+  upgrades remove their enable links and migrate an enabled timer to
+  `setline-agent.timer`, starting it if the old timer was running.
 
 ## [0.0.4] - 2026-10-16
 

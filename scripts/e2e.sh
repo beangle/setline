@@ -357,7 +357,7 @@ check_admin_write_gate() {
 }
 check_admin_write_gate
 
-# peers：纯渲染机跑一轮就退出。渲染节奏归 systemd timer（setline-render.timer），
+# peers：纯渲染机跑一轮就退出。渲染节奏归 systemd timer（setline-agent.timer），
 # 进程里不再有 sync 循环，所以这里必须看到它自己退出（timeout 兜住挂住的情况）。
 check_peer_render_once() {
   local dir="$WORK/peer-render"
@@ -371,6 +371,8 @@ CONF
   cat >"$WORK/peer-render.json" <<JSON
 {"routes":{}}
 JSON
+  [ "$("$ROOT/target/setline" --agent-peers --conf "$WORK/peer-render.conf")" = "1" ] ||
+    fail "setline --agent-peers did not report the configured peer"
   if ! timeout 20 "$ROOT/target/setline" --conf "$WORK/peer-render.conf" \
       -f "$WORK/peer-render.json" \
       >"$WORK/peer-render.log" 2>&1; then

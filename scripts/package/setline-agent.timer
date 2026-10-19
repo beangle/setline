@@ -1,0 +1,16 @@
+[Unit]
+Description=Periodically render and apply setline agent fragments
+Documentation=file:///usr/share/doc/setline/agent-reload.md
+Documentation=file:///usr/share/doc/setline/haproxy-integration.md
+Documentation=file:///usr/share/doc/setline/nginx-integration.md
+
+[Timer]
+# 一轮同时完成渲染和 apply：peer 模式先以 setline 用户渲染，再以 root 应用；
+# 单机模式由常驻 setline.service 渲染，这里只负责定时 apply。节奏交给 systemd，
+# 进程内不维护调度循环，systemctl list-timers / journalctl 直接可见。
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

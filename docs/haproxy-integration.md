@@ -149,13 +149,12 @@ peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 | `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `haproxy/` 并写固定文件名 `setline.cfg`（`-f <dir>` 只加载 `*.cfg`）与 `setline.map` |
 | `[agent] peers` | `app1=http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
-纯渲染机上 `setline` **跑一轮就退出**：进程里没有调度循环，重渲染由包里的
-`setline-render.timer`（每 30s）拉起 `setline-render.service` 再来一轮。所以要启用的是 timer，不是
-常驻服务：
+纯渲染机上 `setline` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
+`setline-agent.timer`（每 30s）拉起 `setline-agent.service` 完成一轮。所以要启用的是
+timer，不是常驻服务：
 
 ```bash
-sudo systemctl enable --now setline-render.timer      # 纯渲染机：周期重渲染
-sudo systemctl enable --now setline-apply.timer # 片段变了就校验 + reload
+sudo systemctl enable --now setline-agent.timer  # 纯渲染机：渲染 + 校验/reload
 ```
 
 某一台 peer 暂时读不到只会在这一轮打一行 `setline agent render failed: ...` 并以非 0
@@ -191,9 +190,9 @@ output = /var/lib/setline
 | `listen` / `routes` | 不配（纯渲染机，不监听） | 配（控制面入口，basctl 推到这里） |
 | 服务名前缀 | peer 的 `name` | `local` |
 | 回源主机 | 各 peer 的 `url` 主机 | `127.0.0.1` |
-| 重渲染时机 | `setline-render.timer` 周期拉起（跑一轮就退出） | 启动一次 + 每次管理接口改路由（进程常驻） |
+| 重渲染时机 | `setline-agent.timer` 周期拉起（跑一轮就退出） | 启动一次 + 每次管理接口改路由（进程常驻） |
 
-`setline-apply.timer` 仍然照用：片段变了才 reload（见「校验与热加载」）。
+`setline-agent.timer` 仍然照用：单机模式下它只负责 apply，片段变了才 reload（见「校验与热加载」）。
 
 写完先校验，这一步不需要 peer 在线：
 
@@ -333,8 +332,8 @@ setline 一起生成、一起原子替换。
 
 ## 校验与热加载
 
-片段落盘后由 root 的 `setline-apply` 负责（`setline-apply.timer` 周期驱动，自动按
-`[agent] type` 选中 haproxy；手工排查时可显式跑 `setline-apply haproxy`）。它按顺序做：
+片段落盘后由 root 的 `setline-apply` 负责（`setline-agent.timer` 周期驱动，自动按
+`[agent] type` 选中 haproxy；手工排查时可显式跑 `/usr/lib/setline/setline-apply haproxy`）。它按顺序做：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；
 2. 片段目录整体内容哈希没变就直接退出（幂等）；
@@ -347,8 +346,7 @@ setline 一起生成、一起原子替换。
 退出码：`1` 片段本身不合法（已回滚），`3` 接线错误（片段留在磁盘上，等修接线），
 `2` 用法错误。为什么用 `systemctl reload` 而不是 `-sf`/`-x`/`SIGHUP`，见
 `docs/agent-reload.md`。**timer 装完不会自动启用**，要 `sudo systemctl enable --now
-setline-apply.timer`；手工执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
-纯渲染机还要启用 `setline-render.timer`（周期重渲染），见「聚合多台 setline（peers）」。
+setline-agent.timer`；手工执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
 reload 到底有没有发生（master PID 不变、worker PID 换掉、`show proc` 的 reload 计数）
 见 `docs/agent-reload.md` 的「如何确认 reload 真的发生」。
 

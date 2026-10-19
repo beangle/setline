@@ -50,8 +50,8 @@ the start of a line.
 
 `/usr/bin/setline`; `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`;
 `/usr/share/doc/setline/*.md` (everything under `docs/`, plus the `CHANGELOG.md`);
-`/usr/lib/setline/setline-apply`;
-`/usr/lib/systemd/system/{setline.service,setline-render.service,setline-render.timer,setline-apply.service,setline-apply.timer}`;
+`/usr/lib/setline/{setline-agent,setline-apply}`;
+`/usr/lib/systemd/system/{setline.service,setline-agent.service,setline-agent.timer}`;
 `/etc/setline/{setline.conf,setline.json}`; `/var/lib/setline/{haproxy,nginx,apply}/`.
 
 The first install copies `setline.conf.default` and `setline.json.default` to
@@ -74,13 +74,13 @@ alternatives: `docs/agent-reload.md`.
   adding or removing a backend reloads.
 
 Enable it with one timer - `[agent] type` in `setline.conf` picks the proxy:
-`systemctl enable --now setline-apply.timer`. A pure render machine
-(`[agent] peers`, no `listen`) also enables `setline-render.timer`,
-which re-runs `setline-render.service` every 30s (one run renders one round and
-exits); a single-host deployment keeps `setline.service` resident instead.
-`setline-apply auto` reads `[agent] type` from
-`/etc/setline/setline.conf`; with no type it is a no-op, so an idle timer on a
-plain proxy host is normal. `setline-apply haproxy` runs one by hand.
+`systemctl enable --now setline-agent.timer`. A pure render machine
+(`[agent] peers`, no `listen`) has no resident process: every 30s the timer
+renders one round as the `setline` user and then applies it as root. A
+single-host deployment keeps `setline.service` resident; the same timer only
+applies the fragments it renders. `setline-agent` exits 0 when `[agent] type`
+is empty, so an idle timer on a plain proxy host is normal. Run
+`sudo /usr/lib/setline/setline-apply --now auto` to apply once by hand.
 
 ## End-to-end regression and benchmarks
 

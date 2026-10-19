@@ -94,7 +94,7 @@ struct PeerConfig {
     也就是 haproxy/nginx 与 setline、basctl 同机的单机部署，此时必须有 `output`。
 
     `peers` 形态下 setline 每次只渲染一轮就退出，周期性刷新交给 systemd
-    timer（包里的 `setline-render.timer`），进程里不带自己的调度循环——节奏统一由 systemd 管，
+    timer（包里的 `setline-agent.timer`），进程里不带自己的调度循环——节奏统一由 systemd 管，
     `systemctl status`/`journalctl` 里看得见，也不用再维护一个配置项。
 
     曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）

@@ -31,8 +31,9 @@ import setline.util : rejectsRootUser, requiredFileDescriptorBudget, rootRunRefu
 }
 
 @("util refuses to run the proxy and the agent as root") unittest {
-  // 这两个入口（serve 与渲染一轮）都以非 root 运行；setline-apply 才需要 root，
-  // 它走的是 main 里更早返回的 --agent-type / --sync-map 出口，不受这条判据约束。
+  // 这两个入口（serve 与渲染一轮）都以非 root 运行；short-lived 的
+  // setline-agent/setline-apply 才需要 root，它们走的是 main 里更早返回的
+  // --agent-type / --agent-peers / --sync-map 出口，不受这条判据约束。
   assert(rejectsRootUser(0));
   assert(!rejectsRootUser(1));
   assert(!rejectsRootUser(1000));

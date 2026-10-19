@@ -35,18 +35,40 @@ chmod 2775 /etc/setline
 chown -R setline:beangle /var/lib/setline /var/log/setline
 chmod 2775 /var/lib/setline /var/log/setline
 chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
+# 旧版把渲染和 apply 拆成两个 timer。升级时清掉它们的 enable 链接；
+# 如果其中任何一个原本启用，就把启用意图迁移到新的合并 timer。
+migrated=0
+was_active=0
+for unit in setline-render.timer setline-apply.timer; do
+  link="/etc/systemd/system/timers.target.wants/$unit"
+  if [ -L "$link" ]; then
+    migrated=1
+    systemctl is-active --quiet "$unit" 2>/dev/null && was_active=1
+    systemctl stop "$unit" 2>/dev/null || :
+    rm -f "$link"
+  fi
+done
+if [ "$migrated" = 1 ] && [ -f /usr/lib/systemd/system/setline-agent.timer ]; then
+  systemctl enable setline-agent.timer 2>/dev/null || :
+  # 旧 timer 原本在跑时，新 timer 也要立刻接上，不能等到下次重启。
+  [ "$was_active" = 0 ] || systemctl start setline-agent.timer 2>/dev/null || :
+fi
+for link in /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
+  [ -e "$link" ] || continue
+  rm -f "$link"
+done
 systemctl daemon-reload 2>/dev/null || :
 
 %preun
 if [ "$1" = 0 ]; then
   systemctl stop setline 2>/dev/null || :
   systemctl disable setline 2>/dev/null || :
-  # setline-apply@*.timer 是老版本的按代理模板单元，升级上来的机器可能还开着。
-  for unit in /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
+  systemctl disable --now setline-agent.timer 2>/dev/null || :
+  # setline-render/setline-apply 和 setline-apply@*.timer 是旧版单元，
+  # 从这里升级上来的机器可能还留着 enable 链接。
+  for unit in /etc/systemd/system/timers.target.wants/setline-agent.timer /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
     [ -e "$unit" ] || continue
-    # 保留 .timer 后缀：要禁用的是 timer 单元本身。写成 basename "$unit" .timer 会去
-    # disable 一个不存在的同名 service，链接原地不动，systemd 继续报悬空单元。
-    systemctl disable --now "$(basename "$unit")" 2>/dev/null || :
+    rm -f "$unit"
   done
 fi
 
@@ -62,8 +84,7 @@ systemctl daemon-reload 2>/dev/null || :
 %attr(0644,root,root) /usr/share/setline/haproxy-setline-cfgdir.conf.example
 %attr(0644,root,root) /usr/share/doc/setline/*.md
 %attr(0755,root,root) /usr/lib/setline/setline-apply
+%attr(0755,root,root) /usr/lib/setline/setline-agent
 %attr(0644,root,root) /usr/lib/systemd/system/setline.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-render.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-render.timer
-%attr(0644,root,root) /usr/lib/systemd/system/setline-apply.service
-%attr(0644,root,root) /usr/lib/systemd/system/setline-apply.timer
+%attr(0644,root,root) /usr/lib/systemd/system/setline-agent.service
+%attr(0644,root,root) /usr/lib/systemd/system/setline-agent.timer

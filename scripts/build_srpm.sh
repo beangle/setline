@@ -105,7 +105,7 @@ ExclusiveArch: x86_64
 URL: https://github.com/beangle/setline
 Source0: %{name}-%{version}.tar.gz
 BuildRequires: ldc dub git gcc make zlib-devel openssl-devel binutils
-Requires: systemd
+Requires: systemd util-linux
 Provides: setline(x86_64) = %{version}-%{release}
 
 %description
@@ -131,11 +131,10 @@ install -d -m 0755 %{buildroot}/usr/share/doc/setline
 install -m 0644 docs/*.md %{buildroot}/usr/share/doc/setline/
 install -m 0644 CHANGELOG.md %{buildroot}/usr/share/doc/setline/CHANGELOG.md
 install -D -m 0755 scripts/package/setline-apply %{buildroot}/usr/lib/setline/setline-apply
+install -D -m 0755 scripts/package/setline-agent %{buildroot}/usr/lib/setline/setline-agent
 install -D -m 0644 scripts/package/setline.service %{buildroot}/usr/lib/systemd/system/setline.service
-install -D -m 0644 scripts/package/setline-render.service %{buildroot}/usr/lib/systemd/system/setline-render.service
-install -D -m 0644 scripts/package/setline-render.timer %{buildroot}/usr/lib/systemd/system/setline-render.timer
-install -D -m 0644 scripts/package/setline-apply.service %{buildroot}/usr/lib/systemd/system/setline-apply.service
-install -D -m 0644 scripts/package/setline-apply.timer %{buildroot}/usr/lib/systemd/system/setline-apply.timer
+install -D -m 0644 scripts/package/setline-agent.service %{buildroot}/usr/lib/systemd/system/setline-agent.service
+install -D -m 0644 scripts/package/setline-agent.timer %{buildroot}/usr/lib/systemd/system/setline-agent.timer
 EOF
 
 # 脚本段与 %files 来自共用片段，与 build_rpm.sh 的二进制包完全一致。

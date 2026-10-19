@@ -6,16 +6,25 @@
 #   - 只做「片段已在磁盘上之后」的事，不参与生成；
 #   - 幂等：内容哈希没变就直接退出，重复触发是免费的；
 #   - 防抖用 mtime 静默窗口，不在脚本里 sleep 占住 oneshot；
+#   - `--now` 供 setline-agent 在“本轮渲染已经完成”后跳过静默窗口；
 #   - 校验/重载一律走 systemctl reload，不自己碰进程和信号；
 #   - 失败整体还原 last-known-good 目录，不留半新半旧状态；
 #   - 代理由配置决定：`auto` 从 setline.conf 的 `[agent] type` 里读，不必手工挑 timer 实例。
 set -euo pipefail
 
-MODE="${1:-}"
-case "$MODE" in
-  haproxy|nginx|auto) ;;
-  *) echo "usage: setline-apply <haproxy|nginx|auto>" >&2; exit 2 ;;
-esac
+MODE=""
+NOW=0
+for arg in "$@"; do
+  case "$arg" in
+    --now) NOW=1 ;;
+    haproxy|nginx|auto)
+      [ -z "$MODE" ] || { echo "usage: setline-apply [--now] <haproxy|nginx|auto>" >&2; exit 2; }
+      MODE="$arg"
+      ;;
+    *) echo "usage: setline-apply [--now] <haproxy|nginx|auto>" >&2; exit 2 ;;
+  esac
+done
+[ -n "$MODE" ] || { echo "usage: setline-apply [--now] <haproxy|nginx|auto>" >&2; exit 2; }
 
 # 所有 reload 参数都在 /etc/setline/setline.conf 的 [apply] 段。SETLINE_BIN / SETLINE_CONF
 # 只用于测试或非标准安装位置。
@@ -37,6 +46,10 @@ if ! apply_env=$("$SETLINE_BIN" --apply-config --conf "$SETLINE_CONF"); then
   die "cannot read setline.conf: $SETLINE_CONF"
 fi
 eval "$apply_env"
+# setline-agent 在同一个 oneshot 里刚跑完渲染，可以立刻 apply；手工执行保留静默窗口。
+if [ "$NOW" = 1 ]; then
+  QUIET_SECONDS=0
+fi
 
 # auto：setline.conf 选中谁就处理谁；没有 [agent] type 就什么都不做。
 if [ "$MODE" = "auto" ]; then

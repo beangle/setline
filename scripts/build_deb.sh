@@ -72,11 +72,10 @@ cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
 # 变更历史随包安装：升级前想知道「这一版动了什么」不该先去找仓库。
 cp -f "$SETLINE_HOME/CHANGELOG.md" usr/share/doc/setline/CHANGELOG.md
 cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
+cp -f "$SETLINE_HOME/scripts/package/setline-agent" usr/lib/setline/setline-agent
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
-cp -f "$SETLINE_HOME/scripts/package/setline-render.service" usr/lib/systemd/system/setline-render.service
-cp -f "$SETLINE_HOME/scripts/package/setline-render.timer" usr/lib/systemd/system/setline-render.timer
-cp -f "$SETLINE_HOME/scripts/package/setline-apply.service" usr/lib/systemd/system/setline-apply.service
-cp -f "$SETLINE_HOME/scripts/package/setline-apply.timer" usr/lib/systemd/system/setline-apply.timer
+cp -f "$SETLINE_HOME/scripts/package/setline-agent.service" usr/lib/systemd/system/setline-agent.service
+cp -f "$SETLINE_HOME/scripts/package/setline-agent.timer" usr/lib/systemd/system/setline-agent.timer
 
 # Debian Policy 12.5 要求 /usr/share/doc/<pkg>/copyright，缺失是 lintian 的
 # no-copyright-file 错误，不是可选装饰。
@@ -103,8 +102,8 @@ License: GPL-3.0-or-later
 DEBCOPYRIGHT
 
 chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/setline usr/lib/systemd usr/lib/systemd/system
-chmod 0755 usr/bin/setline usr/lib/setline/setline-apply
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-render.service usr/lib/systemd/system/setline-render.timer usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
+chmod 0755 usr/bin/setline usr/lib/setline/setline-apply usr/lib/setline/setline-agent
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent.timer
 
 mkdir -p DEBIAN
 
@@ -118,7 +117,7 @@ Priority: optional
 Architecture: ${ARCH}
 Maintainer: ${MAINTAINER}
 Homepage: https://github.com/beangle/setline
-Depends: adduser
+Depends: adduser, util-linux
 Description: Beangle local HTTP path proxy
  setline is a small local HTTP path router and transparent proxy.
  It routes by host and URL path prefix to local backend ports.
@@ -159,6 +158,28 @@ chown -R setline:beangle /var/lib/setline /var/log/setline
 chmod 2775 /var/lib/setline /var/log/setline
 chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
 if command -v systemctl >/dev/null 2>&1; then
+  # 旧版把渲染和 apply 拆成两个 timer。升级时清掉它们的 enable 链接；
+  # 如果其中任何一个原本启用，就把启用意图迁移到新的合并 timer。
+  migrated=0
+  was_active=0
+  for unit in setline-render.timer setline-apply.timer; do
+    link="/etc/systemd/system/timers.target.wants/$unit"
+    if [ -L "$link" ]; then
+      migrated=1
+      systemctl is-active --quiet "$unit" && was_active=1
+      systemctl stop "$unit" || true
+      rm -f "$link"
+    fi
+  done
+  if [ "$migrated" = 1 ] && [ -f /usr/lib/systemd/system/setline-agent.timer ]; then
+    systemctl enable setline-agent.timer || true
+    # 旧 timer 原本在跑时，新 timer 也要立刻接上，不能等到下次重启。
+    [ "$was_active" = 0 ] || systemctl start setline-agent.timer || true
+  fi
+  for link in /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
+    [ -e "$link" ] || continue
+    rm -f "$link"
+  done
   systemctl daemon-reload || true
 fi
 POSTINST
@@ -169,14 +190,13 @@ set -e
 if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
   systemctl stop setline 2>/dev/null || true
   systemctl disable setline 2>/dev/null || true
+  systemctl disable --now setline-agent.timer 2>/dev/null || true
   # 卸载时清掉 timer 的 enable 链接，否则会留下指向已删除脚本的悬空 unit，
-  # timer 继续按周期失败。setline-apply@*.timer 是老版本的按代理模板单元，
-  # 升级上来的机器可能还开着，一并清掉。
-  for unit in /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
+  # timer 继续按周期失败。setline-render/setline-apply 和 setline-apply@*.timer
+  # 是旧版单元，从这里升级上来的机器可能还留着 enable 链接，一并清掉。
+  for unit in /etc/systemd/system/timers.target.wants/setline-agent.timer /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
     [ -e "$unit" ] || continue
-    # 保留 .timer 后缀：要禁用的是 timer 单元本身，去掉后缀会去 disable 一个不存在的同名
-    # service，enable 链接清不掉。
-    systemctl disable --now "$(basename "$unit")" 2>/dev/null || true
+    rm -f "$unit"
   done
 fi
 PRERM

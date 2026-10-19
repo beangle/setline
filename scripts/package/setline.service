@@ -19,7 +19,7 @@ StartLimitInterval=120
 StandardOutput=journal
 StandardError=journal
 # User=/Group= 是硬性要求，不是可调项：setline 是面向网络的数据平面，以 root 运行会把
-# 任一解析/内存 bug 直接变成 root 失陷。特权统一留给 root 的 setline-apply。
+# 任一解析/内存 bug 直接变成 root 失陷。特权统一留给短命的 setline-agent/setline-apply。
 # 需要绑 1024 以下端口时用 AmbientCapabilities=CAP_NET_BIND_SERVICE，别去掉这两行。
 # 详见 docs/project-constraints.md 的 Privilege Model。
 User=setline
