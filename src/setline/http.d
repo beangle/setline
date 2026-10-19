@@ -468,10 +468,14 @@ string bodyOf(string request) {
   return pos < 0 ? "" : request[pos + 4 .. $];
 }
 
+/** 渲染管理接口的 JSON 文本：路径保持 `/tools`，不写成 `\/tools`。 */
+string jsonText(JSONValue value) {
+  return value.toString(JSONOptions.doNotEscapeSlashes);
+}
+
 /** 发送 JSON 响应。 */
 void sendJson(TCPConnection socket, JSONValue value) {
-  auto body = value.toString();
-  sendRaw(socket, "200 OK", "application/json", body);
+  sendRaw(socket, "200 OK", "application/json", jsonText(value));
 }
 
 /** 发送纯文本错误或提示响应。 */

@@ -244,7 +244,7 @@ Snippet[] layoutSnippets(BackendService[] services, string kind, string outputRo
     auto mapPath = joinPath(dir, snippetStem ~ ".map");
     return [
       Snippet(joinPath(dir, mainName), renderHaproxyBackends(services)),
-      Snippet(mapPath, renderHaproxyMap(services, mapPath)),
+      Snippet(mapPath, renderHaproxyMap(services)),
     ];
   }
   Snippet[] snippets = [Snippet(joinPath(dir, mainName), renderNginxUpstreams(services))];
@@ -275,7 +275,7 @@ bool writeSnippet(string path, string text) {
 /** 写出一批片段；`outputRoot` 为空时打到标准输出（每个文件前加一行标题）。
 
     setline.service 的即时渲染与 agent 的一轮渲染共用这里：每个文件按内容哈希幂等
-    写出，日志里逐个文件报告 updated / unchanged。目录不存在时由
+    写出，只有内容发生变化时才报告，无变化的一轮保持静默。目录不存在时由
     {@link writeSnippet} 逐级创建。
 */
 void writeSnippets(Snippet[] snippets, string outputRoot) {
@@ -288,6 +288,6 @@ void writeSnippets(Snippet[] snippets, string outputRoot) {
   }
   foreach (snippet; snippets) {
     auto changed = writeSnippet(snippet.path, snippet.text);
-    stdout.writefln("setline agent wrote %s (%s)", snippet.path, changed ? "updated" : "unchanged");
+    if (changed) stdout.writefln("setline agent wrote %s (updated)", snippet.path);
   }
 }

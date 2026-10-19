@@ -74,7 +74,6 @@ sudo /usr/lib/setline/setline-apply nginx           # 只处理 nginx
 | 日志 | 含义 |
 |---|---|
 | `no [agent] type in ..., nothing to do` | 普通代理机，没有 agent 配置 |
-| `fragment unchanged, nothing to do` | 内容哈希与上次应用相同，幂等跳过 |
 | `fragment changed Ns ago (< 15s), deferring` | 单机/手工 apply 还在静默窗口内，等下一拍 |
 | `no fragment in <dir>, nothing to apply` | setline 还没写出片段（agent 没跑起来或没写出） |
 | `reloaded haproxy` | 校验、接线检查、reload 全部成功 |
@@ -219,8 +218,9 @@ setline-apply[haproxy]: hot-synced 1 map file(s) via /run/haproxy/admin.sock (no
 journalctl -u setline-agent -n 5 -o cat    # 成功时最后一行是 "reloaded <服务名>"
 ```
 
-如果打的是 `fragment unchanged, nothing to do`，说明片段没变、**故意没有** reload，
-那是对的行为，不是故障。
+如果这一轮完全没有输出，通常说明片段没变、**故意没有** reload；可以用
+`cat "$(dirname "$fragmentDir")/apply/<proxy>/applied.sha256"` 或下一轮真正变更时的
+`hot-synced` / `reloaded` 日志确认。静默是对的行为，不是故障。
 
 再确认 haproxy 侧。判断依据是 **master PID 不变、worker PID 换掉**——`-Ws` 下 master
 持有监听 socket，reload 只是 fork 一个新 worker 接管，记在同一个 master 上：

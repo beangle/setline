@@ -234,7 +234,7 @@ PeerConfig peerWithUrl(string url) {
   assert(haproxy.length == 2);
   assert(haproxy[0].path == "setline.cfg");
   assert(haproxy[1].path == "setline.map");
-  assert(haproxy[1].text.canFind("map_beg(setline.map)"));
+  assert(haproxy[1].text == "app.example.com~/api b_app_example_com_api\n");
 
   auto nginx = layoutSnippets(services, "nginx", "");
   assert(nginx.length == 2);

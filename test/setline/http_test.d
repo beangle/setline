@@ -16,10 +16,19 @@
 
 module setline.http_test;
 
-import std.algorithm : startsWith;
+import std.algorithm : canFind, startsWith;
 import std.exception : assertThrown;
+import std.json : JSONValue;
 
 import setline.http;
+
+@("http json keeps paths readable without escaping slashes") unittest {
+  JSONValue[string] route;
+  route["prefix"] = JSONValue("/tools");
+  auto text = jsonText(JSONValue(route));
+  assert(text.canFind("\"prefix\":\"/tools\""), text);
+  assert(!text.canFind(`\/`), text);
+}
 
 @("http requestPath removes query string") unittest {
   auto target = "/m/edu/learning/src/App.vue?t=1780556259104";

@@ -289,7 +289,6 @@ fi
 
 current_hash=$(dir_hash "$FRAG_DIR")
 if [ -f "$HASHFILE" ] && [ "$(cat "$HASHFILE")" = "$current_hash" ]; then
-  log "fragment unchanged, nothing to do"
   exit 0
 fi
 # backend 片段（非 *.map）与上次应用内容的哈希：只改路由表时可以不 reload 就地热同步。

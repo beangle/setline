@@ -114,6 +114,9 @@ grep -n '^  server ' /var/lib/setline/haproxy/setline.cfg
 <output>/haproxy/setline.map     # 路由表：host~path → backend 名
 ```
 
+`setline.map` 只包含路由数据，不写注释；frontend 的四行 `set-var` / `concat` / `map_beg`
+接线属于主配置，维护在本文的接线步骤里。
+
 片段**永远不含 `frontend` / `bind`**：监听归你自己的主配置（曾经有个 `agent.bind`
 开关让片段自带监听，已取消）。
 

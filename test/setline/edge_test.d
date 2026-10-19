@@ -57,19 +57,14 @@ BackendService service(string host, string contentPath, BackendInstance[] instan
     service("*", "/", [at("10.0.1.20", 18002)]),
   ];
 
-  auto map = renderHaproxyMap(services, "/var/lib/setline/haproxy/setline.map");
+  auto map = renderHaproxyMap(services);
   // 键里的 host 必须小写（与 setline 的 normalizeRequestHost 口径一致）；map 的键由
   // 上游路由表解析时归一化，这里直接给规范形式。
-  // 免改请求头：键拼在事务变量里，请求原样透传给后端。
-  assert(map.canFind("#   http-request set-var(txn.setline_path) path"));
-  assert(map.canFind("#   http-request set-var(txn.setline_route) " ~
-    "req.hdr(host),lower,field(1,:),concat(~,txn.setline_path)"));
-  assert(map.canFind("use_backend %[var(txn.setline_route),map_beg(" ~
-    "/var/lib/setline/haproxy/setline.map)] if { var(txn.setline_route),map_beg(" ~
-    "/var/lib/setline/haproxy/setline.map) -m found }"));
   assert(map.canFind("app.example.com~/api/edu b_app_example_com_api_edu"));
   // 根路径不单独占一段：`*` + `/` 的标识就是 default。
   assert(map.canFind("/ b_default"));
+  // map 是纯路由数据，主配置里的 map_beg 接线说明只留在文档中。
+  assert(!map.canFind("#"), map);
   // set-var-fmt 是 2.6 才有的动作，规则模式只用 2.0 起就有的 set-var + concat，
   // 且绝不生成会跟着请求到应用的内部头。
   assert(!map.canFind("set-var-fmt"));
