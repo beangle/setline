@@ -93,9 +93,9 @@ struct PeerConfig {
     数据来源两种：`peers` 聚合远端 setline 的路由表；不配 `peers` 时渲染本进程的路由表，
     也就是 haproxy/nginx 与 setline、basctl 同机的单机部署，此时必须有 `output`。
 
-    `peers` 形态下 setline 每次只渲染一轮就退出，周期性刷新交给 systemd
-    timer（包里的 `setline-agent.timer`），进程里不带自己的调度循环——节奏统一由 systemd 管，
-    `systemctl status`/`journalctl` 里看得见，也不用再维护一个配置项。
+    `peers` 只影响 setline-agent 的 render 数据源。常驻的 setline.service 仍然可以
+    同时监听和代理；周期渲染由包里的 `setline-agent.timer` 驱动，进程里不带自己的调度
+    循环——节奏统一由 systemd 管，`systemctl status`/`journalctl` 里看得见。
 
     曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）
     与配套的 `agent.workDir`：集中打包发布听起来好用，实际与 `peers` 提供的「从运行中的

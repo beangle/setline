@@ -131,8 +131,9 @@ setline、basctl **同机**时不配 `peers`，setline 边收 basctl 推的路�
 ### 聚合多台 setline（peers）
 
 跑 haproxy 这台机器上，本机参数和远端 peers 都写在 `/etc/setline/setline.conf`；
-`setline.json` 不是必需的（纯渲染机没有本地 `listen` / `routes`）。配了
-`[agent] type` 且没有本地监听时，它只负责渲染片段。
+如果这台机器同时运行 `setline.service`，就照常提供 `listen` / `routes`；只跑 agent 的
+纯渲染机可以不提供 `setline.json`，也不要启用 `setline.service`。配了 `[agent] type`
+后，`setline-agent` 负责把 peer 路由渲染成片段。
 
 ```ini
 [agent]
@@ -149,12 +150,13 @@ peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 | `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `haproxy/` 并写固定文件名 `setline.cfg`（`-f <dir>` 只加载 `*.cfg`）与 `setline.map` |
 | `[agent] peers` | `app1=http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
-纯渲染机上 `setline` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
-`setline-agent.timer`（每 30s）拉起 `setline-agent.service` 完成一轮。所以要启用的是
-timer，不是常驻服务：
+渲染入口 `setline render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
+`setline-agent.timer`（每 30s）拉起 `setline-agent.service` 完成一轮。只要 `listen`
+不是 `false`，`setline.service` 仍作为常驻监听/代理进程一起运行：
 
 ```bash
-sudo systemctl enable --now setline-agent.timer  # 纯渲染机：渲染 + 校验/reload
+sudo systemctl enable --now setline.service      # 监听/代理
+sudo systemctl enable --now setline-agent.timer  # 渲染 + 校验/reload
 ```
 
 某一台 peer 暂时读不到只会在这一轮打一行 `setline agent render failed: ...` 并以非 0
@@ -187,12 +189,13 @@ output = /var/lib/setline
 
 | 项 | peers 模式 | 单机模式 |
 |---|---|---|
-| `listen` / `routes` | 不配（纯渲染机，不监听） | 配（控制面入口，basctl 推到这里） |
+| `listen` / `routes` | 配（setline.service 监听/代理） | 配（控制面入口，basctl 推到这里） |
 | 服务名前缀 | peer 的 `name` | `local` |
 | 回源主机 | 各 peer 的 `url` 主机 | `127.0.0.1` |
-| 重渲染时机 | `setline-agent.timer` 周期拉起（跑一轮就退出） | 启动一次 + 每次管理接口改路由（进程常驻） |
+| 重渲染时机 | `setline-agent` 周期聚合 peers | 启动一次 + 每次管理接口改路由，另有 agent 周期兜底 |
 
-`setline-agent.timer` 仍然照用：单机模式下它只负责 apply，片段变了才 reload（见「校验与热加载」）。
+`setline-agent.timer` 两种模式都照用；它调用 `setline render` 后执行 apply，
+片段变了才 reload（见「校验与热加载」）。
 
 写完先校验，这一步不需要 peer 在线：
 

@@ -2,9 +2,8 @@
 # setline-agent: one periodic agent round.
 #
 # The service unit runs as root only to orchestrate the privilege boundary:
-#   - peer mode: render fragments as the setline user, then apply them as root;
-#   - single-host mode: the resident setline.service already renders on route
-#     changes, so this round only applies whatever is on disk.
+#   - render one round as the setline user through `setline render`;
+#   - validate and reload the fragments as root through `setline-apply`.
 #
 # Rendering must never happen in this process: setline parses HTTP responses
 # from peers, and the project requires that parser to stay unprivileged.
@@ -32,20 +31,9 @@ if [ -z "$agent_type" ]; then
   exit 0
 fi
 
-peers="$("$SETLINE_BIN" --agent-peers --conf "$SETLINE_CONF")" ||
-  die "cannot read [agent] peers from $SETLINE_CONF"
-case "$peers" in
-  ''|*[!0-9]*) die "unexpected [agent] peer count: $peers" ;;
-esac
-
-if [ "$peers" -gt 0 ]; then
-  # Peer mode: the renderer reads remote route tables, so drop to setline.
-  runuser -u "$RUN_USER" -g "$RUN_GROUP" -- "$SETLINE_BIN" --conf "$SETLINE_CONF"
-  # Rendering finished in this process, so the apply helper must not wait for
-  # the quiet window before validating and reloading.
-  "$SETLINE_APPLY" --now auto
-else
-  # Single-host mode: setline.service renders as routes change. Keep the quiet
-  # window so a half-written fragment set is never applied.
-  "$SETLINE_APPLY" auto
-fi
+# The renderer reads remote route tables when peers are configured, so drop to
+# setline. Rendering is complete when this process returns; no quiet window is
+# needed before validation and reload.
+runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \
+  "$SETLINE_BIN" render --conf "$SETLINE_CONF"
+"$SETLINE_APPLY" --now auto

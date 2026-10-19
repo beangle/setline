@@ -74,12 +74,12 @@ alternatives: `docs/agent-reload.md`.
   adding or removing a backend reloads.
 
 Enable it with one timer - `[agent] type` in `setline.conf` picks the proxy:
-`systemctl enable --now setline-agent.timer`. A pure render machine
-(`[agent] peers`, no `listen`) has no resident process: every 30s the timer
-renders one round as the `setline` user and then applies it as root. A
-single-host deployment keeps `setline.service` resident; the same timer only
-applies the fragments it renders. `setline-agent` exits 0 when `[agent] type`
-is empty, so an idle timer on a plain proxy host is normal. Run
+`systemctl enable --now setline-agent.timer`. `setline.service` remains the
+resident listener whenever `listen` is enabled, including with `[agent] peers`.
+Every 30s the timer runs `setline render` as the `setline` user and then applies
+the result as root; peers only change the renderer's data source.
+`setline-agent` exits 0 when `[agent] type` is empty, so an idle timer on a
+plain proxy host is normal. Run
 `sudo /usr/lib/setline/setline-apply --now auto` to apply once by hand.
 
 ## End-to-end regression and benchmarks

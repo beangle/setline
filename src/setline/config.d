@@ -418,10 +418,11 @@ HealthConfig parseHealthConfig(JSONValue value) {
   return config;
 }
 
-/** agent 是否渲染**本机**路由表，也就是没配 `peers` 的单机部署形态。
+/** agent 是否以**本机**路由表为数据源，也就是没配 `peers` 的单机部署形态。
 
     `peers` 要求边缘代理和管理入口能互相访问，haproxy/nginx 与 setline、basctl 同机时
-    没必要绕这一圈：路由表就在本进程里，直接渲染即可。
+    没必要绕这一圈：路由表就在本进程里，可以让常驻的 setline.service 直接即时渲染。
+    配置了 peers 时改由 setline-agent 的 render 入口聚合远端路由。
 */
 bool usesLocalRoutes(const AgentConfig agent) {
   return agent.peers.length == 0;

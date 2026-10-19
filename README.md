@@ -138,14 +138,13 @@ examples - is `docs/configuration.md`.
 
 With `[agent] type` in `setline.conf`, `setline` renders a HAProxy or Nginx **fragment** from a
 route table: its own, or a set of live `setline` peers (`[agent] peers`). It
-never rewrites the proxy's own
-config, and a render-only machine has no listener at all: it renders one round
-and exits. `setline-agent.timer` drives one round: it renders as the unprivileged
-`setline` user and then runs the root-owned `setline-apply --now` to validate
-and reload, hot-syncing a routes-only map change without a reload when a
-HAProxy admin socket is available. A single-host deployment keeps
-`setline.service` resident instead; the same timer applies its fragments but
-does not render them again.
+never rewrites the proxy's own config. `setline.service` stays the resident
+listener whenever `listen` is enabled, even when peers are configured.
+`setline-agent.timer` drives one round: `setline render` runs as the unprivileged
+`setline` user and `setline-apply --now` validates and reloads as root,
+hot-syncing a routes-only map change without a reload when a HAProxy admin
+socket is available. With no peers the service also re-renders local route
+changes immediately; with peers the agent is the only renderer.
 
 Fields and examples: `docs/configuration.md`. Wiring: `docs/haproxy-integration.md`
 and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.

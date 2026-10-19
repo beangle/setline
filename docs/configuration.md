@@ -11,13 +11,17 @@ agent 数据只写 `setline.conf`。`setline.json` 里出现任何 `agent` 字�
 `setline -c` 拒绝。
 
 ```bash
-setline --conf /etc/setline/setline.conf             # 启动
+setline --conf /etc/setline/setline.conf             # 带控制面配置启动
+setline -f /etc/setline/setline.json                 # 直接启动代理；--conf 可省略
 setline --conf /etc/setline/setline.conf -c          # 只校验
+setline render --conf /etc/setline/setline.conf      # agent 的一轮渲染，不监听
 setline --conf ./setline.conf -f ./setline.json      # 临时指定拓扑文件
 ```
 
 启动时拓扑文件**可以不存在**：只打印一条提示并按空路由表启动，方便先起代理再用运行时
 API 加路由。校验（`-c`）要求拓扑文件必须存在；`--conf` 显式指定但文件缺失时直接报错。
+不写 `--conf` 时使用缺省控制配置路径，文件不存在就按空控制配置启动；`[agent]` 配置不会
+改变 `listen` 是否生效。
 
 ## setline.conf
 
@@ -100,7 +104,7 @@ owner = setline:beangle
 | `webSocketIdleTimeoutMillis` | 整数 ≥ 0 | `0` | WebSocket 隧道两个方向都静默多久后断开；`0` 表示不断开 |
 | `maxConnections` | 整数 > 0 | `65535` | 并发客户端连接上限，超出返回 `503` |
 | `healthCheck` | 对象 | 见下 | 后端健康检查（始终开启，只调参数） |
-| `agent` | 对象 | 无 | 边缘代理片段渲染模式，见「agent」一节（配了 `peers` 才是纯渲染机） |
+| `agent` | 对象 | 无 | JSON 顶层不接受该字段；agent 配置在 `setline.conf`，见「agent」一节 |
 | `routes` | 对象 | `{}` | host → 路径前缀 → 端口，见「routes」一节 |
 
 `maxConnections` 是并发**连接**上限，不是请求数上限：一条连接从 `accept` 到 `close` 一直
@@ -379,43 +383,42 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 > `[agent]` 段只存在于 `setline.conf`：`type`、`output`、`peers` 都在这里。
 > `setline.json` 出现任何 `agent` 字段都会被 `setline -c` 拒绝。
 
-`[agent]` 让 setline 渲染供边缘代理（haproxy / nginx）使用的配置片段。数据来源有两种，
-由是否配置 `peers` 决定：
+`[agent]` 让 setline 渲染供边缘代理（haproxy / nginx）使用的配置片段。它不是
+`setline.service` 的模式开关：只要 `listen` 不是 `false`，常驻服务就负责监听和代理。
+数据来源由是否配置 `peers` 决定，渲染入口固定为 `setline render`：
 
-| 配置 | 形态 | setline 自身 | 触发重渲染的时机 |
-|---|---|---|---|
-| 配 `peers` | 纯渲染机：合并多台对端 setline 的路由表 | **不监听**，跑一轮就退出 | `setline-agent.timer` 周期驱动（包内 unit） |
-| 不配 `peers`（**单机部署**） | haproxy/nginx、setline、basctl 同机 | **照常监听**，但只当控制面入口 | 启动时渲染一次，之后每次经管理接口改路由立即重渲染 |
+| 配置 | setline.service | setline-agent |
+|---|---|---|
+| 配 `peers` | 照常监听和代理；不自行渲染 peer 片段 | 聚合多台对端 setline 的路由表，渲染后 apply |
+| 不配 `peers`（**单机部署**） | 照常监听和代理；本机路由变化时即时重渲染 | 也渲染本机拓扑并 apply，作为周期兜底 |
+| `listen: false` | 不启动代理进程 | 一次性渲染本机拓扑或 peers 片段 |
 
-单机部署下 setline 是路由表的**登记处**（接收 basctl 推来的路由）和**渲染器**，同时
+单机部署下 setline 是路由表的**登记处**（接收 basctl 推来的路由）和**即时渲染器**，同时
 保留一个本机代理用于调试：业务流量并不经过它，同机的 haproxy/nginx 按片段直接回源
 业务端口（见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md` 的
 「数据面与控制面」）。因此不需要 `peers`（不要求边缘代理和管理入口互相访问），渲染也不
-依赖外部 timer —— 路由一变片段就重渲染；但校验和 reload 仍由 `setline-agent.timer`
+依赖外部 timer —— 路由一变片段就重渲染；校验和 reload 仍由 `setline-agent.timer`
 周期完成。此时 `output` 必填。
 
 如果连「登记处」都不需要（路由只在配置文件里，没有 basctl 推），在这套基础上加
 `"listen": false`：setline 不绑监听，启动时渲染一次片段后退出。
 
-纯渲染机（`peers`）也走「跑一轮就退出」：**setline 进程里没有调度循环**，
-周期刷新由 systemd timer 驱动（包里的 `setline-agent.timer`，每 30s 拉起一次
-`setline-agent.service`）。节奏统一由 systemd 管，`systemctl list-timers` / `journalctl`
-里看得见，配置里也不再需要 `sync`。纯渲染机只启用 `setline-agent.timer`；单机部署同时
-启用常驻的 `setline.service` 和 `setline-agent.timer`，由前者渲染、后者 apply。
-不要再额外启动第二个渲染器写同一批片段。
-三种形态的 `listen` 取值归纳如下：
+渲染本身没有调度循环：周期刷新由 systemd timer 驱动（包里的
+`setline-agent.timer`，每 30s 拉起一次 `setline-agent.service`）。它降权执行
+`setline render`，再以 root 调用 `setline-apply --now auto`。`peers` 只改变 render 的
+数据源，不再让 `setline.service` 退出。`listen:false` 才是纯渲染部署，此时只启用 timer。
 
 | 数据来源 | `listen` | 进程行为 |
 |---|---|---|
-| `peers` | 不用写（写了也不监听） | 渲染一轮后退出，由 `setline-agent.timer` 周期拉起 |
-| 配置文件（单机部署，需运行时改路由） | 地址或端口 | 监听控制面，改路由立即重渲染 |
-| 配置文件（纯渲染，无运行时变更） | `false` | 渲染一次后退出，不监听 |
+| `peers` | 地址或端口 | `setline.service` 监听/代理；agent 周期渲染 peer 片段 |
+| 配置文件（单机部署，需运行时改路由） | 地址或端口 | `setline.service` 监听并即时渲染；agent 周期渲染/apply |
+| 配置文件（无需运行时变更） | `false` | 没有常驻代理；`setline render` 渲染一次后退出 |
 
 | 位置 | 字段 | 默认值 | 说明 |
 |---|---|---|---|
 | `setline.conf [agent]` | `type` | 空 | `haproxy` 或 `nginx`；空表示不渲染片段 |
 | `setline.conf [agent]` | `output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径） |
-| `setline.conf [agent]` | `peers` | 空 | 被聚合的远端 setline 实例；留空即单机部署 |
+| `setline.conf [agent]` | `peers` | 空 | agent 聚合的远端 setline 实例；留空则渲染本机拓扑 |
 
 `[agent] type` 与 `[agent] peers` 的边界：只写了 peers 而没写 `type` 报
 `[agent] peers requires [agent] type in setline.conf`。空的 `peers =` 合法，
@@ -436,9 +439,8 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 nginx 的 `include`）见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
 
 `type` 也是热加载分派的依据：`setline-agent.timer` 只启用一个。
-`setline-agent` 在 peer 模式下先以 `setline` 用户渲染一轮，再执行
-`setline-apply --now auto`；单机模式下常驻的 `setline.service` 负责渲染，
-`setline-agent` 只执行 `setline-apply auto`。`setline-apply` 通过
+`setline-agent` 始终先以 `setline` 用户执行 `setline render`，再以 root 执行
+`setline-apply --now auto`；`peers` 只决定 render 的数据源。`setline-apply` 通过
 `setline --apply-config --conf /etc/setline/setline.conf` 读取 `[apply]` 段，并按
 `[agent] type` 决定校验和 reload 谁。所以改 `type` 之后不需要动 systemd。timer
 装完不会自动启用：`sudo systemctl enable --now setline-agent.timer`（启用、手工执行与
@@ -513,11 +515,11 @@ output = /var/lib/setline
 }
 ```
 
-和纯渲染机（配了 `peers`）的三点区别：
+和配了 `peers` 的聚合部署相比：
 
-- setline **照常监听** `listen`，作为 basctl 推路由的登记处（控制面，业务流量不经过它）；
+- `setline.service` 同样监听 `listen`，作为 basctl 推路由的登记处（控制面，业务流量不经过它）；
 - 片段在**启动时渲染一次**，之后每次经管理接口（`PUT` / `DELETE /_setline/routes*`）
-  改路由就**立即重渲染**，不需要外部 timer，也不依赖外面再跑一次 `setline`；
+  改路由就**立即重渲染**；配了 `peers` 时则完全由 `setline-agent` 聚合远端数据；
 - `[agent] output` 不写时默认 `/var/lib/setline`；只有把 `[agent] type` 留空时才不会渲染片段。
 
 写片段失败（根目录不可写、磁盘满等）只打一行 `setline agent render failed: ...`，setline
@@ -527,8 +529,9 @@ output = /var/lib/setline
 回源主机固定为 `127.0.0.1` —— 单机部署下路由端口都在本机。生成的服务名用 `local`
 前缀（例如 `local_app_example_com_api_edu`），与 peer 模式的服务名区分开。
 
-单机模式下 `setline-agent.timer` 仍然有用：常驻的 `setline.service` 负责渲染，
-timer 只负责 apply；片段变了就 reload 代理，片段没变则无动作。
+单机模式下 `setline-agent.timer` 仍然有用：它周期执行 `setline render` 和 apply，
+片段变了就 reload 代理，片段没变则无动作；`setline.service` 对路由变化的即时渲染只是
+让片段更早落盘。
 
 ### output 的目录布局
 

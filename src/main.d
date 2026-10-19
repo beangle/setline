@@ -46,6 +46,8 @@ int main(string[] args) {
   if (args.length > 1) {
     if (args[1] == "pull")
       return runPull(args[1 .. $]);
+    if (args[1] == "render")
+      return runRender(args[1 .. $]);
     if (args[1] == "init")
       return runInit(args[1 .. $]);
   }
@@ -74,6 +76,7 @@ int main(string[] args) {
       "[--agent-type] [--agent-peers] [--apply-config] [-c] " ~
       "[--sync-map <socket> <mapfile>]\n" ~
       "       setline pull [--conf setline.conf]\n" ~
+      "       setline render [--conf setline.conf] [-f setline.json]\n" ~
       "       setline init [path]", helpInfo.options);
     return 0;
   }
@@ -133,19 +136,21 @@ int main(string[] args) {
     }
 
     auto config = loadConfig(configPath, control);
-    // 配了 peers 的机器是「纯渲染机」：不监听，渲染一轮就退出，
-    // 周期刷新由 setline-agent.timer（systemd）驱动。
-    if (config.agent.type.length > 0 && !usesLocalRoutes(config.agent)) {
-      return renderAgentOnce(config.agent);
+
+    // listen:false 没有代理进程可启动，保留「渲染一轮后退出」的用法。
+    // peers 仍由 agent 的 render 入口处理；这里只服务显式无监听的部署。
+    if (config.listenDisabled) {
+      renderAgentOnce(config.agent, config.routes);
+      stdout.writefln("setline rendered fragments without a listener (listen:false)");
+      return 0;
     }
 
     initialize(config, configPath);
-    if (!config.listenDisabled) {
-      warnIfFdBudgetInsufficient(config.maxConnections);
-    }
-    // 单机部署：既当本机代理（也是 basctl 推路由的登记处），又把自己的路由表渲染成片段。
-    // 片段在启动时出一版，之后每次管理接口改路由都重渲染，不需要 peers，也不需要轮询。
-    if (config.agent.type.length > 0) {
+    warnIfFdBudgetInsufficient(config.maxConnections);
+    // 单机部署：setline.service 既当本机代理（也是 basctl 推路由的登记处），
+    // 又对本机路由变化即时渲染。配置了 peers 时片段由 setline-agent 聚合远端路由后
+    // 渲染，service 只负责监听/代理，避免两个数据源互相覆盖。
+    if (config.agent.type.length > 0 && usesLocalRoutes(config.agent)) {
       auto agent = config.agent;
       void renderLocal(HostRoutes[] routes) {
         try {
@@ -158,13 +163,49 @@ int main(string[] args) {
       renderLocal(routesSnapshot());
     }
 
-    // 纯渲染部署：只把配置文件里的路由渲染成片段，不绑监听，也没有管理接口。
-    if (config.listenDisabled) {
-      stdout.writefln("setline rendered fragments without a listener (listen:false)");
+    serve(config.listen, config.adminListen);
+    return 0;
+  } catch (Exception e) {
+    stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
+    return 1;
+  }
+}
+
+/** `setline render`：由 setline-agent 调用的一轮渲染，不监听端口。
+
+    数据源由 `[agent] peers` 决定：有 peers 时聚合远端路由表，否则渲染本机拓扑。
+    这个入口保持非 root：它解析 peer 的 HTTP/JSON，不能继承 setline-agent 的特权。
+*/
+private int runRender(string[] args) {
+  string confPath = defaultControlPath;
+  string configPath;
+  bool help;
+  auto helpInfo = getopt(args,
+    "conf", "Path to setline.conf", &confPath,
+    "file|f", "Path to topology JSON (overrides [topology] file)", &configPath,
+    "help|h", "Show this help", &help);
+  if (help) {
+    defaultGetoptPrinter("Usage: setline render [--conf setline.conf] [-f setline.json]",
+      helpInfo.options);
+    return 0;
+  }
+
+  try {
+    if (confPath != defaultControlPath && !exists(confPath))
+      throw new Exception("control config not found: " ~ confPath);
+    auto control = loadControlConfig(confPath);
+    if (configPath.length == 0)
+      configPath = control.topologyPath;
+    if (rejectsRootUser(geteuid())) {
+      stderr.writefln("%s", rootRunRefusalMessage());
+      return 2;
+    }
+    auto config = loadConfig(configPath, control);
+    if (config.agent.type.length == 0) {
+      stdout.writefln("setline agent type is empty, nothing to render");
       return 0;
     }
-
-    serve(config.listen, config.adminListen);
+    renderAgentOnce(config.agent, config.routes);
     return 0;
   } catch (Exception e) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
@@ -265,14 +306,14 @@ private void renderLocalAgent(AgentConfig agent, HostRoutes[] routes) {
   writeSnippets(renderAgentSnippets(agent, routes), agent.output);
 }
 
-/** 纯渲染机（peers，没有监听）：渲染一轮片段并写入 output 根目录。
+/** 渲染一轮片段并写入 output 根目录。
 
     规则模式下会有多个片段文件（例如 haproxy 的 backend 片段加路由 map），
     全部按内容哈希幂等写出，未变化的文件不会被触碰；目录不存在时逐级创建。
-    未配置 output 时写到标准输出。重渲染由外层 systemd timer 每隔一段时间再跑一次，
-    进程里不做调度。
+    peers 非空时数据来自远端 setline，否则使用传入的本机拓扑。重渲染由外层
+    systemd timer 每隔一段时间再跑一次，进程里不做调度。
 */
-int renderAgentOnce(AgentConfig agent) {
-  writeSnippets(renderAgentSnippets(agent), agent.output);
+int renderAgentOnce(AgentConfig agent, HostRoutes[] localRoutes) {
+  writeSnippets(renderAgentSnippets(agent, localRoutes), agent.output);
   return 0;
 }

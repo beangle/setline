@@ -93,8 +93,8 @@ These are intentionally out of scope unless the project goal changes:
   `-c` and `--help`.
 - Privileged work belongs to one short-lived root unit,
   `setline-agent.service`, and its root helper `setline-apply`. The agent only
-  orchestrates: in peer mode it drops to the `setline` user with `runuser` for
-  rendering, then invokes `setline-apply`. `setline-apply` validates fragments,
+  orchestrates: it drops to the `setline` user with `runuser` for
+  `setline render`, then invokes `setline-apply`. `setline-apply` validates fragments,
   runs `systemctl reload`, rolls the fragment directory back, and talks to a
   proxy admin socket.
 - The shipped `setline.service` enforces the split with `User=setline` and
@@ -253,8 +253,9 @@ proxy's own main config file: the fragment is included (Nginx) or concatenated
 (HAProxy, which has no `include`) by deployment tooling. The process renders
 exactly one round and exits; the cadence is external
 (`setline-agent.timer` in the package), so there is no in-process scheduler and no
-`sync` config. In peer mode the same timer first runs the renderer as the
-`setline` user, then applies the result as root through `setline-apply`.
+`sync` config. The timer first runs `setline render` as the `setline` user, then
+applies the result as root through `setline-apply`. The resident
+`setline.service` keeps listening and proxying at the same time.
 
 With no `peers`, the same renderer reads the local route table instead
 (single-host deployment, where the proxy and setline share a machine).

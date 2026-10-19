@@ -11,6 +11,8 @@ SETLINE_ADMIN_PORT="${SETLINE_ADMIN_PORT:-19196}"
 # 管理面用例要单独起一个 setline，不能和上面那两个端口撞。
 SPLIT_DATA_PORT="${SPLIT_DATA_PORT:-19194}"
 SPLIT_ADMIN_PORT="${SPLIT_ADMIN_PORT:-19195}"
+PEER_SERVICE_PORT="${PEER_SERVICE_PORT:-19193}"
+PEER_SERVICE_ADMIN_PORT="${PEER_SERVICE_ADMIN_PORT:-19192}"
 READ_TIMEOUT_MILLIS="${READ_TIMEOUT_MILLIS:-500}"
 WS_IDLE_MILLIS="${WS_IDLE_MILLIS:-500}"
 # 池内空闲连接保留多久。比检查窗口长，这样「已回池」和「池已清空」两步都能稳定观察到。
@@ -20,15 +22,18 @@ BACKEND_PID=""
 SETLINE_PID=""
 HAPROXY_PID=""
 SPLIT_PID=""
+PEER_SERVICE_PID=""
 KEEPALIVE_PID=""
 
 cleanup() {
   [ -z "$HAPROXY_PID" ] || kill "$HAPROXY_PID" 2>/dev/null || true
   [ -z "$SETLINE_PID" ] || kill "$SETLINE_PID" 2>/dev/null || true
   [ -z "$SPLIT_PID" ] || kill "$SPLIT_PID" 2>/dev/null || true
+  [ -z "$PEER_SERVICE_PID" ] || kill "$PEER_SERVICE_PID" 2>/dev/null || true
   [ -z "$KEEPALIVE_PID" ] || kill "$KEEPALIVE_PID" 2>/dev/null || true
   [ -z "$BACKEND_PID" ] || kill "$BACKEND_PID" 2>/dev/null || true
-  wait "$HAPROXY_PID" "$SETLINE_PID" "$SPLIT_PID" "$KEEPALIVE_PID" "$BACKEND_PID" 2>/dev/null || true
+  wait "$HAPROXY_PID" "$SETLINE_PID" "$SPLIT_PID" "$PEER_SERVICE_PID" \
+    "$KEEPALIVE_PID" "$BACKEND_PID" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -357,8 +362,37 @@ check_admin_write_gate() {
 }
 check_admin_write_gate
 
-# peers：纯渲染机跑一轮就退出。渲染节奏归 systemd timer（setline-agent.timer），
-# 进程里不再有 sync 循环，所以这里必须看到它自己退出（timeout 兜住挂住的情况）。
+# peers：setline.service 仍然监听和代理；渲染由 setline-agent 调 `setline render`
+# 完成。两种角色共用同一份配置，但入口不同。
+check_peer_service_still_listens() {
+  local dir="$WORK/peer-service"
+  mkdir -p "$dir"
+  cat >"$WORK/peer-service.conf" <<CONF
+[agent]
+type = haproxy
+output = $dir
+peers = peer=http://127.0.0.1:$SETLINE_ADMIN_PORT
+CONF
+  cat >"$WORK/peer-service.json" <<JSON
+{"listen":"127.0.0.1:$PEER_SERVICE_PORT","adminListen":"127.0.0.1:$PEER_SERVICE_ADMIN_PORT","routes":{}}
+JSON
+  "$ROOT/target/setline" --conf "$WORK/peer-service.conf" \
+    -f "$WORK/peer-service.json" >"$WORK/peer-service.log" 2>&1 &
+  PEER_SERVICE_PID=$!
+  wait_for_port "$PEER_SERVICE_PORT" 50 ||
+    fail "setline.service did not listen with peers configured: $(cat "$WORK/peer-service.log")"
+  curl -fsS "http://127.0.0.1:$PEER_SERVICE_ADMIN_PORT/_setline/status.json" >/dev/null ||
+    fail "setline.service admin listener did not start with peers configured"
+  [ ! -e "$dir/haproxy/setline.cfg" ] ||
+    fail "setline.service rendered peer fragments itself instead of leaving that to the agent"
+  kill "$PEER_SERVICE_PID" 2>/dev/null || true
+  wait "$PEER_SERVICE_PID" 2>/dev/null || true
+  PEER_SERVICE_PID=""
+  echo "PASS setline.service keeps listening while peers are configured"
+}
+check_peer_service_still_listens
+
+# 一轮渲染由 agent 入口完成：读 peers、写片段、退出，不碰监听。
 check_peer_render_once() {
   local dir="$WORK/peer-render"
   mkdir -p "$dir"
@@ -373,7 +407,7 @@ CONF
 JSON
   [ "$("$ROOT/target/setline" --agent-peers --conf "$WORK/peer-render.conf")" = "1" ] ||
     fail "setline --agent-peers did not report the configured peer"
-  if ! timeout 20 "$ROOT/target/setline" --conf "$WORK/peer-render.conf" \
+  if ! timeout 20 "$ROOT/target/setline" render --conf "$WORK/peer-render.conf" \
       -f "$WORK/peer-render.json" \
       >"$WORK/peer-render.log" 2>&1; then
     fail "peer renderer did not exit 0: $(cat "$WORK/peer-render.log")"

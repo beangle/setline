@@ -1,8 +1,9 @@
 # Agent 片段的渲染、热加载（setline-agent / setline-apply）
 
 本文交代 `scripts/package/setline-agent`、`scripts/package/setline-apply` 与配套
-systemd 单元的设计考虑。`setline-agent` 编排一轮渲染和 apply，`setline-apply`
-处理片段落盘之后的校验、热加载和失败回滚。片段本身怎么接到 haproxy/nginx 上
+systemd 单元的设计考虑。常驻的 `setline.service` 负责监听和代理，`setline-agent`
+独立编排一轮渲染和 apply，`setline-apply` 处理片段落盘之后的校验、热加载和失败回滚。
+片段本身怎么接到 haproxy/nginx 上
 （两种模式、文件布局、一次性接线）见 `docs/haproxy-integration.md` 与
 `docs/nginx-integration.md`。
 
@@ -10,8 +11,9 @@ systemd 单元的设计考虑。`setline-agent` 编排一轮渲染和 apply，`s
 
 | 组件 | 负责 | 不负责 |
 |---|---|---|
-| `setline`（`User=setline`） | 读 peer 路由表、合并、原子写出片段 | 不碰系统配置目录、不发信号、不 reload |
-| `setline-agent`（root，oneshot） | 编排一轮：peer 模式下降权渲染，然后调用 apply | 不解析 peer 响应、不直接 reload |
+| `setline`（service，`User=setline`） | 监听、代理；无 peers 时也即时渲染本机路由变化 | 不读 peer、不发信号、不 reload |
+| `setline render`（`User=setline`） | 读 peers 或本机拓扑，合并并原子写出片段，然后退出 | 不监听端口、不发信号、不 reload |
+| `setline-agent`（root，oneshot） | 编排一轮：降权执行 `setline render`，然后调用 apply | 不解析 peer 响应、不直接 reload |
 | `setline-apply`（root，helper） | 校验、map 热同步、reload、回滚 | 不生成片段、不做服务发现 |
 | `haproxy` / `nginx` | 按各自方式加载片段 | 不感知 setline |
 
@@ -32,14 +34,13 @@ Model。
 
 包只**安装** `setline.service`、`setline-agent.{service,timer}` 和
 `/usr/lib/setline/{setline-agent,setline-apply}`，**不会**替你 enable。写了
-`[agent] type` 的机器装完后要自己把 timer 拉起来：
+`[agent] type` 的机器装完后要自己把 timer 拉起来；`listen` 不是 `false` 时还要启动
+常驻代理：
 
 ```bash
-# 1. 启用：开机自启 + 立刻跑第一轮
-sudo systemctl enable --now setline-agent.timer
-
-#    单机部署（[agent] type 但没有 peers）还要让 setline 常驻：
+# 1. 启用代理和渲染：开机自启 + 立刻跑第一轮
 sudo systemctl enable --now setline.service
+sudo systemctl enable --now setline-agent.timer
 
 # 2. 确认它在转：下次触发时间、上一次的结果
 systemctl list-timers setline-agent.timer
@@ -50,17 +51,18 @@ journalctl -u setline-agent -n 30 -o cat     # 最近一轮
 journalctl -u setline-agent -f               # 盯下一轮
 ```
 
-普通代理机器（`setline.conf` 没有 `[agent] type`）不需要启用它；就算开着也只是一轮打一行
-`no [agent] type in ..., nothing to do` 后退出 0，没有别的副作用。纯渲染机
-（`[agent] peers`）不要启用 `setline.service`；单机部署要同时启用 `setline.service`
-和 `setline-agent.timer`，由前者渲染、后者 apply。
+普通代理机器（`setline.conf` 没有 `[agent] type`）不需要启用 timer；就算开着也只是一轮
+打一行 `no [agent] type in ..., nothing to do` 后退出 0，没有别的副作用。`listen`
+不是 `false` 时始终启用 `setline.service`；`peers` 只决定 agent 从哪里取路由，不再让
+service 变成一次性进程。`listen:false` 才是不启动 service 的纯渲染部署。
 
 ### 手工执行
 
 timer 跑的就是 `setline-agent`；排查时可以分别跑渲染和 apply：
 
 ```bash
-sudo /usr/lib/setline/setline-agent                 # 跑完整一轮（peer 模式会先降权渲染）
+sudo /usr/lib/setline/setline-agent                 # 跑完整一轮（先降权渲染，再 apply）
+sudo -u setline -g beangle -- /usr/bin/setline render --conf /etc/setline/setline.conf
 sudo /usr/lib/setline/setline-apply auto            # 按 [agent] type 做校验 + reload
 sudo /usr/lib/setline/setline-apply --now auto      # 刚渲染完，跳过静默窗口立即 apply
 sudo /usr/lib/setline/setline-apply haproxy         # 只处理 haproxy，跳过探测
@@ -99,9 +101,9 @@ sudo systemctl edit setline-agent.timer      # 写 [Timer] 段覆盖 OnUnitInact
 推导；自定义了片段根目录时要确认 `[apply] configs` 里的片段路径也跟着改，否则校验的不是
 服务真正读的那份配置。
 
-`setline-agent` 在 peer 模式下刚跑完渲染，调用的是 `setline-apply --now`，所以不受
-`quietSeconds` 影响；单机模式下 `setline.service` 可能在后台写片段，`setline-agent`
-保持静默窗口，避免把半套片段应用到代理。
+`setline-agent` 在同一轮里刚跑完渲染，调用的是 `setline-apply --now`，所以不受
+`quietSeconds` 影响。单机模式下 `setline.service` 仍会对路由变化即时重渲染，
+两处写出的内容来自同一份路由表且按内容幂等。
 
 ## 为什么 reload 不能由 setline 做
 
@@ -309,11 +311,10 @@ setline --conf /etc/setline/setline.conf --agent-type   # 打印 haproxy / nginx
 
 - `--agent-type` 让 setline 自己解析 `setline.conf`（复用同一套配置校验），shell 侧只做
   字符串比较，避免在 bash 里手写 INI 解析；
-- `--agent-peers` 返回 `[agent] peers` 的数量，`setline-agent` 据此决定要不要先降权渲染；
-- peer 模式（数量 > 0）→ `runuser -u setline -g beangle -- setline ...` 渲染一轮，然后
-  `setline-apply --now auto` 立即校验/reload；
-- 单机模式（数量 = 0）→ 常驻的 `setline.service` 负责渲染，`setline-agent` 只跑
-  `setline-apply auto`，保留静默窗口；
+- `--agent-peers` 返回 `[agent] peers` 的数量，便于诊断，但不再决定 agent 是否渲染；
+- `setline-agent` 始终执行 `runuser -u setline -g beangle -- setline render ...`，
+  配了 peers 就聚合远端路由，否则渲染本机拓扑；
+- 渲染完成后执行 `setline-apply --now auto` 立即校验/reload；
 - `[agent] type` 为空（普通代理机器）→ 什么都不做，直接退出 0；
 - 配置的类型不是 `haproxy`/`nginx` 时在配置校验阶段就失败，不会静默跳过；
 - 退出码：片段不合法或 reload 失败为 1，接线错误为 3。
@@ -324,8 +325,8 @@ setline --conf /etc/setline/setline.conf --agent-type   # 打印 haproxy / nginx
   `exit 0`。重复触发是免费的，不需要精确防抖。
 - **静默窗口**：单机模式和手工 apply 时，片段最后一次修改距今不足
   `[apply] quietSeconds`（默认 15s）就跳过，等下一拍。滚动发布时多台 peer 先后更新，
-  窗口能避免按中间态反复 reload，对「摘除」尤其重要。peer 模式由 `setline-agent`
-  在同一次 oneshot 里渲染完成后调用 `setline-apply --now`，不需要再等窗口。
+  窗口能避免按中间态反复 reload，对「摘除」尤其重要。`setline-agent` 在同一次
+  oneshot 里渲染完成后调用 `setline-apply --now`，不需要再等窗口。
 - **不在脚本里 sleep 等稳定**：那会占住 oneshot，和 systemd 的记账、超时打架。
   用 mtime 判断，不阻塞。
 

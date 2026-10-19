@@ -50,18 +50,19 @@ The packages install the units but never enable them. A machine whose config
 has an `[agent] type` needs
 
 ```bash
-sudo systemctl enable --now setline-agent.timer  # render (peer mode) + validate/reload
+sudo systemctl enable --now setline.service       # listen and proxy (unless listen:false)
+sudo systemctl enable --now setline-agent.timer   # render + validate/reload
 ```
 
 otherwise the generated fragment is never rendered, validated or reloaded. How
 to run it by hand, its exit codes and the `[apply]` settings in `setline.conf`
-are in `docs/agent-reload.md`. A pure render machine (`[agent] peers`, no
-`listen`) has no resident process: `setline-agent.timer` runs
-`setline-agent.service` every 30s, which renders one round as `setline` and then
-applies it as root. A single-host deployment (`listen` set) keeps
-`setline.service` resident (`sudo systemctl enable --now setline.service`) and
-re-renders on every route change; the same `setline-agent.timer` only applies
-the fragments. Do not run a second renderer on that machine.
+are in `docs/agent-reload.md`. `setline.service` always remains the resident
+listener when `listen` is enabled, including when `[agent] peers` is configured.
+Every 30s `setline-agent.timer` runs `setline-agent.service`, which executes
+`setline render` as the unprivileged `setline` user and then applies the result
+as root. With no peers, `setline.service` additionally re-renders local route
+changes immediately; with peers, the agent is the renderer so the service never
+overwrites peer-derived fragments.
 
 The systemd service runs:
 
@@ -69,10 +70,10 @@ The systemd service runs:
 /usr/bin/setline --conf /etc/setline/setline.conf
 ```
 
-`setline-agent.service` runs as root, but only orchestrates: in peer mode it
-drops to the `setline` user for rendering, then calls `setline-apply --now` as
-root. Drop a `/etc/systemd/system/setline-agent.service.d/*.conf` with an
-`ExecStart=` override if `setline.conf` lives elsewhere.
+`setline-agent.service` runs as root, but only orchestrates: it drops to the
+`setline` user for `setline render`, then calls `setline-apply --now` as root.
+Drop a `/etc/systemd/system/setline-agent.service.d/*.conf` with an `ExecStart=`
+override if `setline.conf` lives elsewhere.
 
 Runtime route updates rewrite the topology file named by `[topology] file`, so
 package install scripts make `/etc/setline/setline.json` writable by the
@@ -303,9 +304,9 @@ knowing the admin listener. The status page and `status.json` live on
 `/_setline` denied at the proxy (a rule matching just `/_setline/routes` is
 enough) or keep `listen` on loopback.
 
-That read path is what `[agent] peers` uses: an edge proxy machine reads each
-peer's route table (no credential - the peer's `peerReaders` lists the edge),
-rewrites the peer's local ports to
+That read path is what `[agent] peers` uses: `setline-agent` reads each peer's
+route table (no credential - the peer's `peerReaders` lists the edge), rewrites
+the peer's local ports to
 `<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
 a HAProxy/Nginx fragment under the `[agent] output` root directory
 (`<root>/{haproxy,nginx}/setline.{cfg,conf}`). Leave `[agent] peers` empty and the
@@ -314,12 +315,12 @@ fragment carries only rules and backends, so the proxy's own config keeps
 the listener; how to wire each proxy is in `docs/haproxy-integration.md` and
 `docs/nginx-integration.md`.
 
-Reloading is separate and privileged. `setline` runs as the unprivileged
+Reloading is separate and privileged. `setline render` runs as the unprivileged
 `setline` user and only writes the fragment; `setline-agent` (root, oneshot)
-orchestrates a peer render through `runuser`, then `setline-apply` (root helper)
+orchestrates that render through `runuser`, then `setline-apply` (root helper)
 validates the result, runs `systemctl reload`, and rolls the fragment directory
-back if either step fails. Running the daemon as root is a hard requirement to
-avoid, not a tuning choice: see the Privilege Model in
+back if either step fails. Running the proxy daemon as root is a hard requirement
+to avoid, not a tuning choice: see the Privilege Model in
 `docs/project-constraints.md`. See `docs/agent-reload.md` for the reload flow.
 
 When routes change, setline rebuilds the next host route trees, writes the new

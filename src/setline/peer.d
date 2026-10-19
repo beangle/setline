@@ -274,8 +274,9 @@ bool writeSnippet(string path, string text) {
 
 /** 写出一批片段；`outputRoot` 为空时打到标准输出（每个文件前加一行标题）。
 
-    单机部署与纯渲染机共用这里：每个文件按内容哈希幂等写出，日志里逐个文件报告
-    updated / unchanged。目录不存在时由 {@link writeSnippet} 逐级创建。
+    setline.service 的即时渲染与 agent 的一轮渲染共用这里：每个文件按内容哈希幂等
+    写出，日志里逐个文件报告 updated / unchanged。目录不存在时由
+    {@link writeSnippet} 逐级创建。
 */
 void writeSnippets(Snippet[] snippets, string outputRoot) {
   if (outputRoot.length == 0) {

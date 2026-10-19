@@ -30,12 +30,13 @@ Per-release notes with the upgrade steps spelled out live in
 - `setline --apply-config` exports the resolved `[apply]` settings for
   `setline-apply`; `--agent-type` reads the proxy type from the same file.
 - `setline --agent-peers` reports the number of configured `[agent] peers`,
-  so the orchestrator can decide whether a render round is needed without
-  parsing INI in shell.
+  for diagnostics without parsing INI in shell.
+- `setline render` performs one render round without binding a listener. It
+  aggregates `[agent] peers` when configured and otherwise renders the local
+  topology; the root-owned agent helper invokes it through `runuser`.
 - `setline-agent` and `setline-agent.timer` replace the separate render and
-  apply timers. One oneshot renders in peer mode as the `setline` user with
-  `runuser`, then runs `setline-apply --now` as root; in single-host mode it
-  only applies the fragments written by the resident `setline.service`.
+  apply timers. One oneshot runs `setline render` as the `setline` user with
+  `runuser`, then runs `setline-apply --now` as root.
 
 ### Changed
 
@@ -47,6 +48,10 @@ Per-release notes with the upgrade steps spelled out live in
   list now follow a custom `[agent] output` root.
 - `setline-apply` accepts `--now` to skip the quiet window when the caller has
   just completed a render round.
+- `setline.service` always listens and proxies when `listen` is enabled,
+  including with `[agent] peers`. Peers now select the renderer's data source
+  instead of turning the resident process into a one-shot renderer. With no
+  peers it still re-renders local route changes immediately.
 - Package install creates `/etc/setline/setline.conf` (`root:beangle 0640`) on
   first install and preserves it on upgrades.
 
