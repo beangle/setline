@@ -1,0 +1,48 @@
+# setline local control plane.
+#
+# setline.json is the local machine topology: listen addresses and routes. All
+# deployment-specific parameters live here, so the service and setline-apply
+# never need command-line overrides. `setline init` writes this template only
+# when the target does not exist; package upgrades keep the existing file.
+
+[remote]
+# bashub root URL. Do not append /api or the Profile name.
+url = http://127.0.0.1:8082
+# Profile qualified name, e.g. openurp.prod.
+profile = org.name
+# Profile.key. Sent as `Authorization: Bearer <profile>:<key>`.
+token = change-me
+
+[topology]
+# Local topology file. `setline pull` leaves this file alone.
+file = /etc/setline/setline.json
+
+[proxy]
+# Optional. Defaults from [agent] type:
+#   haproxy -> /etc/haproxy/haproxy.cfg
+#   nginx   -> /etc/nginx/nginx.conf
+#file = /etc/haproxy/haproxy.cfg
+
+[agent]
+# haproxy or nginx. Empty disables fragment rendering.
+type = haproxy
+# Fragment root. Defaults to /var/lib/setline when type is set.
+output = /var/lib/setline
+# Filled by `setline pull`; name=url pairs separated by commas.
+peers =
+
+[apply]
+# The proxy is selected by [agent] type. The following values are derived from
+# it when omitted:
+#
+#type = haproxy
+#configs = /etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy
+#fragmentDir = /var/lib/setline/haproxy
+#service = haproxy
+
+# Wait this many seconds after the newest fragment change before reloading.
+quietSeconds = 15
+# Apply state is fixed at <agent.output>/apply.
+runtimeDir = /run
+# Only a fragment directory owned by root is corrected to this owner.
+owner = setline:beangle

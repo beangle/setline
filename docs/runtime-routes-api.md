@@ -28,7 +28,7 @@ allowed, a co-located tool (basctl) therefore stores nothing, and a caller from
 another host is allowed when its address is listed in `peerReaders`. There are no
 credentials anywhere in setline: no token header, no Basic Auth. The peer
 protocol is machine-to-machine with a single, fixed reader - another setline
-rendering a fragment from `agent.peers[].url` - so the reader is identified by
+rendering a fragment from a `[agent] peers` url - so the reader is identified by
 where it connects from rather than by a secret that would have to be synced to
 both machines and travels in cleartext.
 

@@ -17,20 +17,24 @@
 module main;
 
 import core.sys.posix.sys.resource : RLIMIT_NOFILE, getrlimit, rlimit;
-import std.file : readText;
+import std.file : exists, readText;
 import std.getopt : defaultGetoptPrinter, getopt;
 import std.stdio : stderr, stdout;
 
 import core.sys.posix.unistd : geteuid;
 
 import setline.config;
+import setline.control :
+  ControlConfig, defaultCertificateDir, defaultControlPath, loadControlConfig, renderApplyShell,
+  validateRemoteConfig, writeControlConfigTemplate;
+import setline.download : DownloadKind, downloadConfig, parseDownloadedPeers, rewriteAgentPeers,
+  writeCertificatePair, writeDownloaded;
 import setline.mapsync : syncMap;
 import setline.model : AgentConfig, HostRoutes;
 import setline.peer : renderAgentSnippets, writeSnippets;
 import setline.server;
 import setline.state;
-import setline.util :
-  defaultConfigPath, rejectsRootUser, requiredFileDescriptorBudget, rootRunRefusalMessage;
+import setline.util : rejectsRootUser, requiredFileDescriptorBudget, rootRunRefusalMessage;
 
 /** 解析命令行参数，检查或启动 setline 服务。 */
 int main(string[] args) {
@@ -39,22 +43,36 @@ int main(string[] args) {
     static assert(false, "setline is Linux-only");
   }
 
-  string configPath = defaultConfigPath;
+  if (args.length > 1) {
+    if (args[1] == "pull")
+      return runPull(args[1 .. $]);
+    if (args[1] == "init")
+      return runInit(args[1 .. $]);
+  }
+
+  string confPath = defaultControlPath;
+  string configPath;
   bool agentType;
+  bool applyConfig;
   bool check;
   bool help;
   string syncMapSocket;
   auto helpInfo = getopt(args,
-    "file|f", "Path to setline JSON config", &configPath,
-    "agent-type", "Print agent.type from the config and exit", &agentType,
+    "conf", "Path to setline.conf", &confPath,
+    "file|f", "Path to topology JSON (overrides [topology] file)", &configPath,
+    "agent-type", "Print [agent] type from setline.conf and exit", &agentType,
+    "apply-config", "Print setline-apply settings as shell assignments and exit", &applyConfig,
     "sync-map", "Sync a HAProxy map file into the running instance via its admin socket",
       &syncMapSocket,
     "check|c", "Check config and exit", &check,
     "help|h", "Show this help", &help);
 
   if (help) {
-    defaultGetoptPrinter("Usage: setline [-f setline.json] [--agent-type] [-c] " ~
-      "[--sync-map <socket> <mapfile>]", helpInfo.options);
+    defaultGetoptPrinter("Usage: setline [--conf setline.conf] [-f setline.json] " ~
+      "[--agent-type] [--apply-config] [-c] " ~
+      "[--sync-map <socket> <mapfile>]\n" ~
+      "       setline pull [--conf setline.conf]\n" ~
+      "       setline init [path]", helpInfo.options);
     return 0;
   }
 
@@ -76,15 +94,25 @@ int main(string[] args) {
   }
 
   try {
-    // 给 setline-apply 的自动分派用：只回显 agent.type（没配 agent 就是空行），
-    // 让 shell 侧不必自己解析 JSON。
+    if (confPath != defaultControlPath && !exists(confPath))
+      throw new Exception("control config not found: " ~ confPath);
+    auto control = loadControlConfig(confPath);
+    if (configPath.length == 0)
+      configPath = control.topologyPath;
+
+    // 给 setline-apply 的自动分派用：只回显 [agent] type（没配就是空行），
+    // 让 shell 侧不必自己解析 INI。
     if (agentType) {
-      stdout.writefln("%s", loadConfig(configPath).agent.type);
+      stdout.writefln("%s", control.agent.type);
+      return 0;
+    }
+    if (applyConfig) {
+      stdout.write(renderApplyShell(control));
       return 0;
     }
 
     if (check) {
-      checkConfig(configPath);
+      checkConfig(configPath, control);
       stdout.writefln("Config %s is valid", configPath);
       return 0;
     }
@@ -97,7 +125,7 @@ int main(string[] args) {
       return 2;
     }
 
-    auto config = loadConfig(configPath);
+    auto config = loadConfig(configPath, control);
     // 配了 peers 的机器是「纯渲染机」：不监听，渲染一轮就退出，
     // 周期刷新由 setline-render.timer（systemd）驱动。
     if (config.agent.type.length > 0 && !usesLocalRoutes(config.agent)) {
@@ -133,6 +161,82 @@ int main(string[] args) {
     return 0;
   } catch (Exception e) {
     stderr.writefln("Config %s is invalid: %s", configPath, e.msg);
+    return 1;
+  }
+}
+
+/** 读取下载命令使用的 setline.conf；缺失是配置错误，不再退回命令行参数。 */
+private ControlConfig commandControl(string confPath) {
+  if (!exists(confPath))
+    throw new Exception("control config not found: " ~ confPath);
+  return loadControlConfig(confPath);
+}
+
+/** `setline pull`：按 `[remote]` 下载 peers、代理主配置和证书。 */
+private int runPull(string[] args) {
+  string confPath = defaultControlPath;
+  bool help;
+  auto helpInfo = getopt(args,
+    "conf", "Path to setline.conf", &confPath,
+    "help|h", "Show this help", &help);
+  auto usage = "Usage: setline pull [--conf setline.conf]";
+  if (help) {
+    defaultGetoptPrinter(usage, helpInfo.options);
+    return 0;
+  }
+
+  try {
+    auto control = commandControl(confPath);
+    validateRemoteConfig(control.remote, confPath);
+    auto peersText = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
+      DownloadKind.peers);
+    auto peers = parseDownloadedPeers(peersText);
+    string proxy;
+    if (control.proxyPath.length > 0) {
+      proxy = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
+        DownloadKind.proxy);
+    }
+    auto cert = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
+      DownloadKind.certificate);
+    auto key = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
+      DownloadKind.certificateKey);
+
+    // 四份内容都拿到且证书对通过校验后才触碰磁盘，网络或 PEM 错误不会留下半套更新。
+    auto updatedControl = rewriteAgentPeers(readText(confPath), peers);
+    auto certChanged = writeCertificatePair(defaultCertificateDir, cert, key);
+    if (control.proxyPath.length > 0) {
+      auto proxyChanged = writeDownloaded(control.proxyPath, proxy);
+      stdout.writefln("setline downloaded proxy config %s (%s)", control.proxyPath,
+        proxyChanged ? "updated" : "unchanged");
+    }
+    stdout.writefln("setline downloaded certificate pair %s (%s)", defaultCertificateDir,
+      certChanged ? "updated" : "unchanged");
+    auto changed = writeDownloaded(confPath, updatedControl);
+    stdout.writefln("setline updated peers in %s (%s)", confPath,
+      changed ? "updated" : "unchanged");
+    return 0;
+  } catch (Exception e) {
+    stderr.writefln("setline pull failed: %s", e.msg);
+    return 1;
+  }
+}
+
+/** `setline init [path]`：写入 setline.conf 模板，已有文件保持不动。 */
+private int runInit(string[] args) {
+  bool help;
+  auto helpInfo = getopt(args, "help|h", "Show this help", &help);
+  auto usage = "Usage: setline init [setline.conf]";
+  if (help) {
+    defaultGetoptPrinter(usage, helpInfo.options);
+    return 0;
+  }
+  auto path = args.length > 1 ? args[1] : defaultControlPath;
+  try {
+    auto written = writeControlConfigTemplate(path);
+    stdout.writefln("%s %s", written ? "wrote" : "kept", path);
+    return 0;
+  } catch (Exception e) {
+    stderr.writefln("setline init failed: %s", e.msg);
     return 1;
   }
 }

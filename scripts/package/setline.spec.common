@@ -23,8 +23,13 @@ mkdir -p /etc/setline
 if [ ! -f /etc/setline/setline.json ]; then
   cp -f /usr/share/setline/setline.json.default /etc/setline/setline.json
 fi
+if [ ! -f /etc/setline/setline.conf ]; then
+  cp -f /usr/share/setline/setline.conf.default /etc/setline/setline.conf
+fi
 chown setline:beangle /etc/setline/setline.json
 chmod 0664 /etc/setline/setline.json
+chown root:beangle /etc/setline/setline.conf
+chmod 0640 /etc/setline/setline.conf
 chown setline:beangle /etc/setline
 chmod 2775 /etc/setline
 chown -R setline:beangle /var/lib/setline /var/log/setline
@@ -48,12 +53,12 @@ fi
 %postun
 systemctl daemon-reload 2>/dev/null || :
 
-# /etc/setline/setline.json is created by the post scriptlet and kept out of the
-# file list, so package removal preserves the local runtime config.
+# /etc/setline/setline.conf and setline.json are created by the post scriptlet
+# and kept out of the file list, so package removal preserves local config.
 %files
 %attr(0755,root,root) /usr/bin/setline
 %attr(0644,root,root) /usr/share/setline/setline.json.default
-%attr(0644,root,root) /usr/share/setline/apply.conf.example
+%attr(0644,root,root) /usr/share/setline/setline.conf.default
 %attr(0644,root,root) /usr/share/setline/haproxy-setline-cfgdir.conf.example
 %attr(0644,root,root) /usr/share/doc/setline/*.md
 %attr(0755,root,root) /usr/lib/setline/setline-apply

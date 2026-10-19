@@ -17,5 +17,5 @@ StartLimitInterval=0
 User=setline
 Group=beangle
 UMask=0002
-ExecStart=/usr/bin/setline -f /etc/setline/setline.json
+ExecStart=/usr/bin/setline --conf /etc/setline/setline.conf
 TimeoutStartSec=60s

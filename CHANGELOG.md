@@ -7,6 +7,46 @@ All notable changes to setline are recorded here. The format follows
 Per-release notes with the upgrade steps spelled out live in
 `docs/release-note-<version>.md`.
 
+## [Unreleased]
+
+### Added
+
+- `setline.conf` is now the local control plane, matching `basctl.conf`: it
+  holds `[remote]` URL/Profile/key, the topology and proxy download targets,
+  `[agent] type/output/peers`, and every `[apply]` reload parameter.
+- `[proxy] file` is optional: it defaults to `/etc/haproxy/haproxy.cfg` for
+  haproxy and `/etc/nginx/nginx.conf` for nginx.
+- Apply state is fixed at `<agent.output>/apply`; there is no separate
+  `[apply] stateDir` setting.
+- `setline pull` downloads the peer list, proxy config and HTTPS certificate
+  pair from bashub using the Profile key from `setline.conf`, then rewrites
+  only `[agent] peers` in `setline.conf` with atomic no-op updates when content
+  is unchanged. Certificates are split
+  into `cert.pem`/`key.pem` for nginx and concatenated into `bundle.pem` for
+  haproxy under the fixed `/etc/setline/certs` directory; private-key files are
+  mode `0600`, and clearing the Profile certificate removes the managed files.
+- `setline init` writes a commented `setline.conf` template only when the
+  target does not exist.
+- `setline --apply-config` exports the resolved `[apply]` settings for
+  `setline-apply`; `--agent-type` reads the proxy type from the same file.
+
+### Changed
+
+- `setline.json` is now topology-only: `listen`, `adminListen`, timeouts and
+  `routes`. Any `agent` field in JSON is rejected; `[agent] type/output/peers`
+  belong to `setline.conf`.
+- `setline-apply` reads all reload settings from `setline.conf` instead of
+  `apply.conf` and environment variables. Fragment paths and the HAProxy config
+  list now follow a custom `[agent] output` root.
+- Package install creates `/etc/setline/setline.conf` (`root:beangle 0640`) on
+  first install and preserves it on upgrades.
+
+### Removed
+
+- `download-setline`, `download-haproxy`, `download-proxy`,
+  `/etc/setline/apply.conf` and the separate reload environment-variable
+  configuration. No compatibility fallback is provided.
+
 ## [0.0.4] - 2026-10-16
 
 The release that turns setline into something deployable: the data plane and

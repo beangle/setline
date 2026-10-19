@@ -33,7 +33,7 @@ import setline.util : adminPrefix, peerRoutesPath;
 
 /** 计算 peer 路由表接口 URL；给出的既可以是 setline 基地址，也可以是完整的 routes URL。 */
 string peerRoutesUrl(PeerConfig peer) {
-  enforce(peer.url.length > 0, "agent.peers[].url must not be empty");
+  enforce(peer.url.length > 0, "[agent] peers url must not be empty");
   if (peer.url.canFind(peerRoutesPath)) return peer.url;
   return peer.url.stripRight("/") ~ peerRoutesPath;
 }
@@ -50,10 +50,10 @@ string peerAddress(PeerConfig peer) {
   auto slash = rest.indexOf("/");
   if (slash >= 0) rest = rest[0 .. slash];
   enforce(rest.length > 0,
-    "cannot derive backend host from agent.peers[].url, which needs a host: " ~ peer.url);
+    "cannot derive backend host from [agent] peers url, which needs a host: " ~ peer.url);
   if (rest[0] == '[') {
     auto close = rest.indexOf("]");
-    enforce(close > 0, "invalid IPv6 host in agent.peers[].url: " ~ peer.url);
+    enforce(close > 0, "invalid IPv6 host in [agent] peers url: " ~ peer.url);
     return rest[0 .. close + 1];
   }
   auto colon = rest.indexOf(":");
@@ -129,7 +129,7 @@ string requiredPeerString(JSONValue value, string key) {
 */
 BackendService[] collectPeerServices(AgentConfig agent,
     HostRoutes[] delegate(PeerConfig) fetcher = toDelegate(&fetchPeerRoutes)) {
-  enforce(agent.peers.length > 0, "agent.peers must not be empty");
+  enforce(agent.peers.length > 0, "[agent] peers must not be empty");
   BackendService[] services;
   foreach (peer; agent.peers) {
     auto host = peerAddress(peer);

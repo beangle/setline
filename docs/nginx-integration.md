@@ -28,16 +28,16 @@ setline **只生成片段**，不生成也不改动 `/etc/nginx/nginx.conf`：
 ## 文件布局
 
 ```
-<agent.output>/nginx/setline.conf                 # 只有 upstream，在 http {} 里 include
-<agent.output>/nginx/setline.<host>.conf          # 该 host 的 location，在对应 server {} 里 include
-<agent.output>/nginx/setline.default.conf         # host 为 * 的回退路由，放进默认 server
+<output>/nginx/setline.conf                 # 只有 upstream，在 http {} 里 include
+<output>/nginx/setline.<host>.conf          # 该 host 的 location，在对应 server {} 里 include
+<output>/nginx/setline.default.conf         # host 为 * 的回退路由，放进默认 server
 ```
 
 片段**永远不含 `server` / `listen`**：监听和 `server_name` 归你自己的主配置（曾经有个
 `agent.bind` 开关让片段自带 `server`，已取消）。
 
-`agent.output` 是**根目录**，`nginx/` 子目录与文件名都由 setline 决定（不开放配置，
-`setline-apply` 的 `NGINX_FRAGMENT_DIR` 与 nginx 的 `include` 按这套固定路径接线）。
+`[agent] output` 是**根目录**，`nginx/` 子目录与文件名都由 setline 决定（不开放配置，
+`setline-apply` 的 `[apply] fragmentDir` 与 nginx 的 `include` 按这套固定路径接线）。
 例如 `output=/var/lib/setline` 会写出 `/var/lib/setline/nginx/setline.conf`（upstream）、
 `/var/lib/setline/nginx/setline.app.example.com.conf` 与 `.../setline.default.conf`，
 目录不存在时自动创建。
@@ -116,28 +116,23 @@ setline、basctl **同机**时不配 `peers`，setline 边收 basctl 推的路�
 
 ### 聚合多台 setline（peers）
 
-跑 nginx 这台机器上，`/etc/setline/setline.json` 只有 `agent` 一段，**没有 `listen`、
-没有 `routes`**：配了 `agent` 就不再启动本地代理，它只负责渲染片段。
+跑 nginx 这台机器上，本机参数和远端 peers 都写在 `/etc/setline/setline.conf`；
+`setline.json` 不是必需的（纯渲染机没有本地 `listen` / `routes`）。配了
+`[agent] type` 且没有本地监听时，它只负责渲染片段。
 
-```json
-{
-  "agent": {
-    "type": "nginx",
-    "output": "/var/lib/setline",
-    "peers": [
-      { "name": "app1", "url": "http://10.0.1.10:8080" },
-      { "name": "app2", "url": "http://10.0.1.11:8080" }
-    ]
-  }
-}
+```ini
+[agent]
+type = nginx
+output = /var/lib/setline
+peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 ```
 
 各字段在这里的作用：
 
 | 字段 | 值 | 说明 |
 |---|---|---|
-| `type` | `nginx` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
-| `output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `nginx/` 并写固定文件名 `setline.conf`（upstream）与 `setline.<host>.conf` / `setline.default.conf` |
+| `[agent] type` | `nginx` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
+| `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `nginx/` 并写固定文件名 `setline.conf`（upstream）与 `setline.<host>.conf` / `setline.default.conf` |
 | `peers[].url` | `http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
 纯渲染机上 `setline` **跑一轮就退出**：进程里没有调度循环，重渲染由包里的
@@ -158,13 +153,15 @@ nginx、setline、basctl 装在同一台机器上时，upstream 就是 setline �
 （控制面，业务流量不经过它），同时把本机路由表渲染成片段（upstream 服务器固定
 `127.0.0.1`）。
 
+```ini
+[agent]
+type = nginx
+output = /var/lib/setline
+```
+
 ```json
 {
   "listen": "127.0.0.1:8080",
-  "agent": {
-    "type": "nginx",
-    "output": "/var/lib/setline"
-  },
   "routes": {
     "app.example.com": {
       "/api/edu": [9002, 9003]
@@ -187,7 +184,7 @@ nginx、setline、basctl 装在同一台机器上时，upstream 就是 setline �
 写完先校验，这一步不需要 peer 在线：
 
 ```bash
-setline -c -f /etc/setline/setline.json
+setline -c
 ```
 
 片段的 include 接线见下一节。
@@ -204,8 +201,8 @@ nginx -V 2>&1 | tr ' ' '\n' | grep -- --conf-path=     # 编译进去的默认�
 ```
 
 多数发行版不带 `-c`，用编译进去的默认值（通常是 `/etc/nginx/nginx.conf`，也就是
-`setline-apply` 里 `NGINX_CONFIG` 的默认值）。单元自己指定了 `-c` 时以单元为准，
-`NGINX_CONFIG` 也要跟着改（见 `docs/agent-reload.md` 的「启用与使用」）。
+`setline.conf` 里 `[apply] configs` 的默认值）。单元自己指定了 `-c` 时以单元为准，
+`[apply] configs` 也要跟着改（见 `docs/agent-reload.md` 的「启用与使用」）。
 
 ### 2. 加 include
 
@@ -255,7 +252,7 @@ location 的路径**不会**落到 `*`，而是走这个 server 自己的 `root`
 ## 校验与热加载
 
 片段落盘后由 root 的 `setline-apply` 负责（`setline-apply.timer` 周期驱动，自动按
-`agent.type` 选中 nginx；手工排查时可显式跑 `setline-apply nginx`）：
+`[agent] type` 选中 nginx；手工排查时可显式跑 `setline-apply nginx`）：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；
 2. 片段目录整体内容哈希没变就直接退出（幂等）；

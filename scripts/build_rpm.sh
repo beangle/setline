@@ -85,7 +85,7 @@ mkdir -p usr/bin usr/share/setline usr/share/doc/setline usr/lib/setline usr/lib
 cp -f "$SETLINE_HOME/target/setline" usr/bin/setline
 strip --strip-unneeded usr/bin/setline
 cp -f "$SETLINE_HOME/scripts/package/setline.json" usr/share/setline/setline.json.default
-cp -f "$SETLINE_HOME/scripts/package/apply.conf.example" usr/share/setline/apply.conf.example
+cp -f "$SETLINE_HOME/scripts/package/setline.conf.default" usr/share/setline/setline.conf.default
 cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/share/setline/haproxy-setline-cfgdir.conf.example
 # 用户文档整目录安装：配置参考、reload 设计、部署、API 说明与发布说明都在 docs 里，
 # 只装其中一篇会让包内的 Documentation= 指向一份孤零零的文档。
@@ -100,7 +100,7 @@ cp -f "$SETLINE_HOME/scripts/package/setline-apply.service" usr/lib/systemd/syst
 cp -f "$SETLINE_HOME/scripts/package/setline-apply.timer" usr/lib/systemd/system/setline-apply.timer
 
 chmod -R 0755 .
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/apply.conf.example usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-render.service usr/lib/systemd/system/setline-render.timer usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-render.service usr/lib/systemd/system/setline-render.timer usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
 chmod 0755 usr/bin/setline usr/lib/setline/setline-apply
 
 cd ..

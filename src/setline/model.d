@@ -150,8 +150,8 @@ struct Config {
   /** 允许跨机读取路由表与状态页的来源地址（读写都只看地址，没有凭据）。
 
       本机来源本来就免凭据（见 `isLocalAdminRequest`），这里写的是**远端读方**的地址，
-      典型场景就是边缘机上那个 `setline -f`：它按 `agent.peers[].url` 读各实例的
-      `GET /_setline/routes`，而 `peers[].url` 只是地址，不带任何凭据。
+      典型场景就是边缘机上的 `setline`：它按 `[agent] peers` 的 url 读各实例的
+      `GET /_setline/routes`，而 peer url 只是地址，不带任何凭据。
 
       写数值地址（`10.0.1.7`、`fe80::1`），不支持主机名和 CIDR；列出回环地址会报错——
       本机来源本来就放行，写上去是个空操作，容易让人以为它还有别的含义。

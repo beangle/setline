@@ -110,14 +110,14 @@ grep -n '^  server ' /var/lib/setline/haproxy/setline.cfg
 ## 文件布局
 
 ```
-<agent.output>/haproxy/setline.cfg     # 只有 backend 段（必须是 *.cfg，见下）
-<agent.output>/haproxy/setline.map     # 路由表：host~path → backend 名
+<output>/haproxy/setline.cfg     # 只有 backend 段（必须是 *.cfg，见下）
+<output>/haproxy/setline.map     # 路由表：host~path → backend 名
 ```
 
 片段**永远不含 `frontend` / `bind`**：监听归你自己的主配置（曾经有个 `agent.bind`
 开关让片段自带监听，已取消）。
 
-`agent.output` 是**根目录**，`haproxy/` 子目录与两个文件名都由 setline 决定（不开放
+`[agent] output` 是**根目录**，`haproxy/` 子目录与两个文件名都由 setline 决定（不开放
 配置，`setline-apply` 与 `-f <dir>` 按这套固定路径接线）。例如
 `output=/var/lib/setline` 会写出 `/var/lib/setline/haproxy/setline.cfg` 和
 `/var/lib/setline/haproxy/setline.map`，目录不存在时自动创建。
@@ -130,29 +130,24 @@ setline、basctl **同机**时不配 `peers`，setline 边收 basctl 推的路�
 
 ### 聚合多台 setline（peers）
 
-跑 haproxy 这台机器上，`/etc/setline/setline.json` 只有 `agent` 一段，**没有 `listen`、
-没有 `routes`**：配了 `agent` 就不再启动本地代理，它只负责渲染片段。
+跑 haproxy 这台机器上，本机参数和远端 peers 都写在 `/etc/setline/setline.conf`；
+`setline.json` 不是必需的（纯渲染机没有本地 `listen` / `routes`）。配了
+`[agent] type` 且没有本地监听时，它只负责渲染片段。
 
-```json
-{
-  "agent": {
-    "type": "haproxy",
-    "output": "/var/lib/setline",
-    "peers": [
-      { "name": "app1", "url": "http://10.0.1.10:8080" },
-      { "name": "app2", "url": "http://10.0.1.11:8080" }
-    ]
-  }
-}
+```ini
+[agent]
+type = haproxy
+output = /var/lib/setline
+peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 ```
 
 各字段在这里的作用：
 
 | 字段 | 值 | 说明 |
 |---|---|---|
-| `type` | `haproxy` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
-| `output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `haproxy/` 并写固定文件名 `setline.cfg`（`-f <dir>` 只加载 `*.cfg`）与 `setline.map` |
-| `peers[].url` | `http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
+| `[agent] type` | `haproxy` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
+| `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `haproxy/` 并写固定文件名 `setline.cfg`（`-f <dir>` 只加载 `*.cfg`）与 `setline.map` |
+| `[agent] peers` | `app1=http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
 纯渲染机上 `setline` **跑一轮就退出**：进程里没有调度循环，重渲染由包里的
 `setline-render.timer`（每 30s）拉起 `setline-render.service` 再来一轮。所以要启用的是 timer，不是
@@ -172,13 +167,15 @@ haproxy、setline、basctl 装在同一台机器上时，回源目标和 setline
 进程，不配 `peers` 即可：setline 监听 `listen` 接收 basctl 推的路由
 （控制面，业务流量不经过它），同时把本机路由表渲染成片段（回源主机固定 `127.0.0.1`）。
 
+```ini
+[agent]
+type = haproxy
+output = /var/lib/setline
+```
+
 ```json
 {
   "listen": "127.0.0.1:8080",
-  "agent": {
-    "type": "haproxy",
-    "output": "/var/lib/setline"
-  },
   "routes": {
     "app.example.com": {
       "/api/edu": [9002, 9003]
@@ -201,7 +198,7 @@ haproxy、setline、basctl 装在同一台机器上时，回源目标和 setline
 写完先校验，这一步不需要 peer 在线：
 
 ```bash
-setline -c -f /etc/setline/setline.json
+setline -c
 ```
 
 片段落盘后的校验与热加载见「校验与热加载」一节。
@@ -337,7 +334,7 @@ setline 一起生成、一起原子替换。
 ## 校验与热加载
 
 片段落盘后由 root 的 `setline-apply` 负责（`setline-apply.timer` 周期驱动，自动按
-`agent.type` 选中 haproxy；手工排查时可显式跑 `setline-apply haproxy`）。它按顺序做：
+`[agent] type` 选中 haproxy；手工排查时可显式跑 `setline-apply haproxy`）。它按顺序做：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；
 2. 片段目录整体内容哈希没变就直接退出（幂等）；
@@ -365,7 +362,7 @@ reload 到底有没有发生（master PID 不变、worker PID 换掉、`show pro
 
 | 现象 | 原因 |
 |---|---|
-| `wiring error: ... does not load <片段目录>` | 单元没给 `-f` 片段目录（见「接线（一次性）」），或 `HAPROXY_CONFIGS` 与实际单元不一致 |
+| `wiring error: ... does not load <片段目录>` | 单元没给 `-f` 片段目录（见「接线（一次性）」），或 `[apply] configs` 与实际单元不一致 |
 | `wiring error: .../setline.map is not referenced` | 主配置 frontend 缺 `map_beg(...)` 那几行（规则模式） |
 | `Configuration file has no error but will not start (no listener)` | 主配置里没有任何 `bind`；setline 的片段不含监听段（监听归主配置） |
 | `Could not open configuration file <目录>` | 目录不存在（老发行版没有 `conf.d`），或 HAProxy < 1.7 根本不认 `-f <目录>`（本项目最低要求 2.0，见「版本要求」） |

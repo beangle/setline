@@ -31,13 +31,13 @@ scripts/build_srpm.sh
 The binary package installs:
 
 - `/usr/bin/setline`
-- `/usr/share/setline/{setline.json.default,apply.conf.example,haproxy-setline-cfgdir.conf.example}`
+- `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`
 - `/usr/share/doc/setline/*.md` (all of `docs/`, plus `CHANGELOG.md`)
 - `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
 - `/usr/lib/systemd/system/setline.service`
 - `/usr/lib/systemd/system/setline-render.service` + `setline-render.timer`
 - `/usr/lib/systemd/system/setline-apply.service` + `setline-apply.timer`
-- `/etc/setline/setline.json`
+- `/etc/setline/setline.conf` and `/etc/setline/setline.json` (created on first install)
 
 `scripts/build_srpm.sh` produces the same package from source on the target
 host: the binary and source specs share the file list and the scriptlets
@@ -54,8 +54,8 @@ sudo systemctl enable --now setline-apply.timer  # validate + reload when fragme
 ```
 
 otherwise the generated fragment is never validated or reloaded. How to run it
-by hand, its exit codes and the `/etc/setline/apply.conf` overrides are in
-`docs/agent-reload.md`. A pure render machine (`agent.peers`, no `listen`) drives rendering with `setline-render.timer` instead of a resident
+by hand, its exit codes and the `[apply]` settings in `setline.conf` are in
+`docs/agent-reload.md`. A pure render machine (`[agent] peers`, no `listen`) drives rendering with `setline-render.timer` instead of a resident
 process: the timer re-runs `setline-render.service` every 30s, because one run
 renders one round and exits. A single-host deployment (`listen` set) is the
 opposite - it keeps `setline.service` resident (`sudo systemctl enable --now
@@ -66,18 +66,20 @@ redundant.
 The systemd service runs:
 
 ```text
-/usr/bin/setline -f /etc/setline/setline.json
+/usr/bin/setline --conf /etc/setline/setline.conf
 ```
 
 `setline-render.service` runs the same command as `setline` (the unprivileged
 user) and exits after one round; drop a
 `/etc/systemd/system/setline-render.service.d/*.conf` with an `ExecStart=`
-override if the config lives elsewhere.
+override if `setline.conf` lives elsewhere.
 
-Runtime route updates rewrite the configured JSON file, so package install
-scripts make `/etc/setline/setline.json` writable by the `setline` service user.
-The config file is generated on first install and is not tracked as a package
-file, so removing the package preserves `/etc/setline/setline.json`.
+Runtime route updates rewrite the topology file named by `[topology] file`, so
+package install scripts make `/etc/setline/setline.json` writable by the
+`setline` service user. `setline.conf` stays root-owned and readable by the
+`beangle` group, because it contains the Profile key. Both files are generated
+on first install and are not tracked as package files, so removing the package
+preserves them.
 
 ### systemd 版本兼容
 
@@ -120,7 +122,7 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
    不需要起服务、不需要 root：
 
    ```bash
-   setline -c -f /etc/setline/setline.json
+   setline -c
    ```
 
 2. 监听失败也走同一个 catch-all，所以端口被占、无权限绑低端口会伪装成
@@ -129,7 +131,7 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
    `AmbientCapabilities=CAP_NET_BIND_SERVICE`——**不要**为了绑低端口让服务以
    root 运行（硬性要求，见 `docs/project-constraints.md` 的 Privilege Model）。
 
-3. `refusing to run as root: ...` —— 手工 `sudo setline -f ...` 起服务时最常见。代理和
+3. `refusing to run as root: ...` —— 手工 `sudo setline ...` 起服务时最常见。代理和
    渲染 agent 都要求非 root；`setline-apply` 以 root 调用的 `--agent-type`/`--sync-map`
    两个出口、以及 `-c` 校验不受影响。这条以退出码 `2` 结束，unit 里的
    `RestartPreventExitStatus=2` 会直接停住，不会重启五次。
@@ -137,7 +139,7 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
 前台手工复现最直接，注意用服务账号，才和 unit 里的权限一致：
 
 ```bash
-sudo -u setline /usr/bin/setline -f /etc/setline/setline.json
+sudo -u setline /usr/bin/setline --conf /etc/setline/setline.conf
 ```
 
 修好之后必须清掉限流计数，否则 systemd 还在「repeated too quickly」状态里拒绝启动：
@@ -301,12 +303,12 @@ knowing the admin listener. The status page and `status.json` live on
 `/_setline` denied at the proxy (a rule matching just `/_setline/routes` is
 enough) or keep `listen` on loopback.
 
-That read path is what `agent.peers` uses: an edge proxy machine reads each
+That read path is what `[agent] peers` uses: an edge proxy machine reads each
 peer's route table (no credential - the peer's `peerReaders` lists the edge),
 rewrites the peer's local ports to
 `<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
-a HAProxy/Nginx fragment under the `agent.output` root directory
-(`<root>/{haproxy,nginx}/setline.{cfg,conf}`). Leave `agent.peers` empty and the
+a HAProxy/Nginx fragment under the `[agent] output` root directory
+(`<root>/{haproxy,nginx}/setline.{cfg,conf}`). Leave `[agent] peers` empty and the
 same output is rendered from the local route table instead. By default the
 fragment carries only rules and backends, so the proxy's own config keeps
 the listener; how to wire each proxy is in `docs/haproxy-integration.md` and

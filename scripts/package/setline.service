@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/setline -f /etc/setline/setline.json
+ExecStart=/usr/bin/setline --conf /etc/setline/setline.conf
 Restart=on-failure
 RestartPreventExitStatus=2
 # 收到 SIGTERM 后 setline 会停监听、把在途请求跑完再退出；这里给的时间要大于

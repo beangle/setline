@@ -8,7 +8,7 @@
 #   - 防抖用 mtime 静默窗口，不在脚本里 sleep 占住 oneshot；
 #   - 校验/重载一律走 systemctl reload，不自己碰进程和信号；
 #   - 失败整体还原 last-known-good 目录，不留半新半旧状态；
-#   - 代理由配置决定：`auto` 从 setline 配置的 `agent.type` 里读，不必手工挑 timer 实例。
+#   - 代理由配置决定：`auto` 从 setline.conf 的 `[agent] type` 里读，不必手工挑 timer 实例。
 set -euo pipefail
 
 MODE="${1:-}"
@@ -17,99 +17,66 @@ case "$MODE" in
   *) echo "usage: setline-apply <haproxy|nginx|auto>" >&2; exit 2 ;;
 esac
 
-# 默认值可被环境变量或 /etc/setline/apply.conf 覆盖（文件优先级最高）。
+# 所有 reload 参数都在 /etc/setline/setline.conf 的 [apply] 段。SETLINE_BIN / SETLINE_CONF
+# 只用于测试或非标准安装位置。
 SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline}"
-SETLINE_CONFIGS="${SETLINE_CONFIGS:-/etc/setline/setline.json}"
-HAPROXY_CONFIGS="${HAPROXY_CONFIGS:-/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy}"
-HAPROXY_FRAGMENT_DIR="${HAPROXY_FRAGMENT_DIR:-/var/lib/setline/haproxy}"
-HAPROXY_SERVICE="${HAPROXY_SERVICE:-haproxy}"
-NGINX_CONFIG="${NGINX_CONFIG:-/etc/nginx/nginx.conf}"
-NGINX_FRAGMENT_DIR="${NGINX_FRAGMENT_DIR:-/var/lib/setline/nginx}"
-NGINX_SERVICE="${NGINX_SERVICE:-nginx}"
-SETLINE_APPLY_QUIET_SECONDS="${SETLINE_APPLY_QUIET_SECONDS:-15}"
-SETLINE_APPLY_STATE_DIR="${SETLINE_APPLY_STATE_DIR:-/var/lib/setline/apply}"
-SETLINE_APPLY_RUNTIME_DIR="${SETLINE_APPLY_RUNTIME_DIR:-/run}"
-# 片段目录必须归 setline 服务账号所有，否则 setline 写不进片段。只在目录属主是 root 时纠正。
-SETLINE_APPLY_FRAGMENT_OWNER="${SETLINE_APPLY_FRAGMENT_OWNER:-setline:beangle}"
-
-if [ -r /etc/setline/apply.conf ]; then
-  # shellcheck disable=SC1091
-  . /etc/setline/apply.conf
-fi
+SETLINE_CONF="${SETLINE_CONF:-/etc/setline/setline.conf}"
 
 log() { echo "setline-apply[${PROXY:-$MODE}]: $*"; }
-# 告警一律走 stderr：detect_proxies 的 stdout 是「代理列表」，被 $(...) 捕获，
-# 混进去的行会被当成代理名。
 warn() { echo "setline-apply[${PROXY:-$MODE}]: WARNING: $*" >&2; }
 die() { echo "setline-apply[${PROXY:-$MODE}]: $*" >&2; exit 1; }
 # 配置接线错误与「片段本身不合法」要能区分开，方便运维判断该改哪边。
 die_wiring() { echo "setline-apply[${PROXY:-$MODE}]: $*" >&2; exit 3; }
 
-# 从 setline 配置里取 agent.type；配置是唯一事实来源，让 setline 自己解析 JSON，
-# shell 侧只做字符串比较，避免手写 JSON 解析。
-detect_proxies() {
-  local cfg kind proxies=""
-  if ! command -v "$SETLINE_BIN" >/dev/null 2>&1; then
-    warn "$SETLINE_BIN not found, cannot detect agent.type; nothing to do"
-    return 0
-  fi
-  for cfg in $SETLINE_CONFIGS; do
-    [ -e "$cfg" ] || continue
-    if ! kind=$("$SETLINE_BIN" -f "$cfg" --agent-type 2>/dev/null); then
-      warn "cannot read agent.type from $cfg, skipping"
-      continue
-    fi
-    case "$kind" in
-      haproxy|nginx) ;;
-      *) continue ;;
-    esac
-    case " $proxies " in
-      *" $kind "*) ;;
-      *) proxies="${proxies:+$proxies }$kind" ;;
-    esac
-  done
-  printf '%s\n' "$proxies"
-}
+# 让 setline 解析 INI，shell 只消费它输出的赋值；不在这里手写 INI/JSON 解析。
+if ! command -v "$SETLINE_BIN" >/dev/null 2>&1; then
+  warn "$SETLINE_BIN not found, nothing to apply"
+  exit 0
+fi
+if ! apply_env=$("$SETLINE_BIN" --apply-config --conf "$SETLINE_CONF"); then
+  die "cannot read setline.conf: $SETLINE_CONF"
+fi
+eval "$apply_env"
 
-# auto：谁被 agent.type 选中就处理谁，一个都不选就什么都不做（普通代理机器上
-# timer 会一直空转，这是正常的）。
+# auto：setline.conf 选中谁就处理谁；没有 [agent] type 就什么都不做。
 if [ "$MODE" = "auto" ]; then
-  proxies=$(detect_proxies)
-  if [ -z "$proxies" ]; then
-    log "no agent.type in ${SETLINE_CONFIGS}, nothing to apply"
+  MODE="$SETLINE_APPLY_TYPE"
+  if [ -z "$MODE" ]; then
+    log "no [agent] type in $SETLINE_CONF, nothing to apply"
     exit 0
   fi
-  rc=0
-  for proxy in $proxies; do
-    if ! command -v "$proxy" >/dev/null 2>&1; then
-      warn "$proxy is not installed, skipping"
-      continue
-    fi
-    log "applying $proxy (agent.type)"
-    child_rc=0
-    "$0" "$proxy" || child_rc=$?
-    # 片段不合法(1)比接线错误(3)更该被看见，取更严重的那个。
-    if [ "$child_rc" -ne 0 ] && { [ "$rc" -eq 0 ] || [ "$child_rc" -eq 1 ]; }; then
-      rc=$child_rc
-    fi
-  done
-  exit "$rc"
+fi
+
+case "$MODE" in
+  haproxy|nginx) ;;
+  *) die "unknown proxy: $MODE (expected haproxy or nginx)" ;;
+esac
+if [ -n "$SETLINE_APPLY_TYPE" ] && [ "$SETLINE_APPLY_TYPE" != "$MODE" ]; then
+  die_wiring "requested $MODE but setline.conf selects $SETLINE_APPLY_TYPE"
 fi
 
 PROXY="$MODE"
-if [ "$PROXY" = "haproxy" ]; then
-  FRAG_DIR="$HAPROXY_FRAGMENT_DIR"
-  SERVICE="$HAPROXY_SERVICE"
-else
-  FRAG_DIR="$NGINX_FRAGMENT_DIR"
-  SERVICE="$NGINX_SERVICE"
+if [ -z "${SETLINE_APPLY_CONFIGS:-}" ]; then
+  if [ "$PROXY" = "haproxy" ]; then
+    SETLINE_APPLY_CONFIGS="/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy"
+  else
+    SETLINE_APPLY_CONFIGS="/etc/nginx/nginx.conf"
+  fi
 fi
-STATE_DIR="$SETLINE_APPLY_STATE_DIR/$PROXY"
+CONFIGS="$SETLINE_APPLY_CONFIGS"
+FRAG_DIR="${SETLINE_APPLY_FRAGMENT_DIR:-/var/lib/setline/$PROXY}"
+SERVICE="${SETLINE_APPLY_SERVICE:-$PROXY}"
+QUIET_SECONDS="${SETLINE_APPLY_QUIET_SECONDS:-15}"
+STATE_ROOT="${SETLINE_APPLY_STATE_DIR:-/var/lib/setline/apply}"
+RUNTIME_DIR="${SETLINE_APPLY_RUNTIME_DIR:-/run}"
+FRAGMENT_OWNER="${SETLINE_APPLY_FRAGMENT_OWNER:-setline:beangle}"
+NGINX_CONFIG="${CONFIGS%% *}"
+STATE_DIR="$STATE_ROOT/$PROXY"
 LASTGOOD="$STATE_DIR/lastgood"
 HASHFILE="$STATE_DIR/applied.sha256"
 # 只覆盖 backend 片段（非 *.map）。它没变时说明本次只有路由表变了，可以走热同步。
 CFGHASHFILE="$STATE_DIR/applied.cfg.sha256"
-LOCKFILE="$SETLINE_APPLY_RUNTIME_DIR/setline-apply-$PROXY.lock"
+LOCKFILE="$RUNTIME_DIR/setline-apply-$PROXY.lock"
 
 
 # FRAG_DIR 会被整体替换，先挡住危险的取值。
@@ -136,7 +103,7 @@ map_files() {
 validate() {
   if [ "$PROXY" = "haproxy" ]; then
     local args=() f
-    for f in $HAPROXY_CONFIGS; do args+=(-f "$f"); done
+    for f in $CONFIGS; do args+=(-f "$f"); done
     haproxy "${args[@]}" -c -q
   else
     nginx -t -c "$NGINX_CONFIG"
@@ -167,14 +134,14 @@ check_wiring() {
 }
 
 # 规则模式：*.map 由主配置 frontend 里的 map_beg(...) 引用。
-# 片段目录本身可能出现在 HAPROXY_CONFIGS 里（backend 片段靠 -f <dir> 生效），
+# 片段目录本身可能出现在 CONFIGS 里（backend 片段靠 -f <dir> 生效），
 # 但 map 文件里印着自己的路径，从那里搜会自证，所以跳过片段目录、并排除 *.map。
 check_haproxy_maps() {
   local map f found missing=()
   while IFS= read -r map; do
     [ -n "$map" ] || continue
     found=0
-    for f in $HAPROXY_CONFIGS; do
+    for f in $CONFIGS; do
       [ "$f" = "$FRAG_DIR" ] && continue
       if [ -d "$f" ]; then
         grep -rqsF --exclude='*.map' -- "$map" "$f" && { found=1; break; }
@@ -210,11 +177,11 @@ ensure_fragment_dir_owner() {
   [ "$(id -u)" -eq 0 ] || return 0
   [ -d "$FRAG_DIR" ] || return 0
   [ "$(stat -c '%u' "$FRAG_DIR" 2>/dev/null || echo 0)" = "0" ] || return 0
-  if chown "$SETLINE_APPLY_FRAGMENT_OWNER" "$FRAG_DIR" 2>/dev/null; then
+  if chown "$FRAGMENT_OWNER" "$FRAG_DIR" 2>/dev/null; then
     chmod 0755 "$FRAG_DIR" 2>/dev/null || true
-    log "took ownership of $FRAG_DIR as $SETLINE_APPLY_FRAGMENT_OWNER"
+    log "took ownership of $FRAG_DIR as $FRAGMENT_OWNER"
   else
-    warn "cannot chown $FRAG_DIR to $SETLINE_APPLY_FRAGMENT_OWNER;" \
+    warn "cannot chown $FRAG_DIR to $FRAGMENT_OWNER;" \
       "setline may be unable to write fragments"
   fi
 }
@@ -226,7 +193,7 @@ ensure_fragment_dir_owner() {
 # 任何一个探不通就换下一个，全都不可用则回退 reload。
 list_haproxy_sockets() {
   local f
-  for f in $HAPROXY_CONFIGS; do
+  for f in $CONFIGS; do
     if [ -d "$f" ]; then
       grep -rhsE '^[[:space:]]*stats[[:space:]]+socket[[:space:]]+' --include='*.cfg' "$f" 2>/dev/null
     elif [ -f "$f" ]; then
@@ -285,7 +252,7 @@ restore_lastgood() {
   ensure_fragment_dir_owner
 }
 
-mkdir -p "$STATE_DIR" "$FRAG_DIR" "$SETLINE_APPLY_RUNTIME_DIR"
+mkdir -p "$STATE_DIR" "$FRAG_DIR" "$RUNTIME_DIR"
 ensure_fragment_dir_owner
 
 exec 9>"$LOCKFILE"
@@ -302,8 +269,8 @@ fi
 # 静默窗口：等到片段不再变化再动手，避免滚动发布期间按中间态反复 reload。
 newest=$(find "$FRAG_DIR" -type f -printf '%T@\n' | sort -n | tail -1)
 age=$(( $(date +%s) - ${newest%.*} ))
-if [ "$age" -lt "$SETLINE_APPLY_QUIET_SECONDS" ]; then
-  log "fragment changed ${age}s ago (< ${SETLINE_APPLY_QUIET_SECONDS}s), deferring"
+if [ "$age" -lt "$QUIET_SECONDS" ]; then
+  log "fragment changed ${age}s ago (< ${QUIET_SECONDS}s), deferring"
   exit 0
 fi
 

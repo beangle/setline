@@ -22,6 +22,7 @@ import std.file : exists, mkdirRecurse, readText, remove, rmdirRecurse, write;
 import std.path : buildPath;
 
 import setline.config : parseConfigFile;
+import setline.control : ControlConfig;
 import setline.edge;
 import setline.model;
 import setline.peer;
@@ -175,13 +176,15 @@ PeerConfig peerWithUrl(string url) {
 
 @("single-host agent renders business ports, never the setline listen port") unittest {
   auto path = "/tmp/setline-peer-local-listen-test.json";
-  write(path, `{"listen":"*:18090","agent":{"type":"haproxy",` ~
-    `"output":"/tmp/setline-conf/local-listen"},` ~
+  write(path, `{"listen":"*:18090",` ~
     `"routes":{"app.example.com":{"/api/edu":[9002,9003]}}}`);
   scope (exit) if (exists(path)) remove(path);
 
   // 数据面片段只认业务端口：haproxy 直接回源，setline 的 listen 只是控制面。
-  auto config = parseConfigFile(path);
+  ControlConfig control;
+  control.agent.type = "haproxy";
+  control.agent.output = "/tmp/setline-conf/local-listen";
+  auto config = parseConfigFile(path, control);
   auto snippets = renderAgentSnippets(config.agent, config.routes);
   assert(snippets[0].text.canFind("server app_example_com_api_edu_0 127.0.0.1:9002 check"));
   assert(snippets[0].text.canFind("server app_example_com_api_edu_1 127.0.0.1:9003 check"));

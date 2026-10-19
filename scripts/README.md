@@ -48,15 +48,17 @@ the start of a line.
 
 ## Install layout
 
-`/usr/bin/setline`; `/usr/share/setline/{setline.json.default,apply.conf.example,haproxy-setline-cfgdir.conf.example}`;
+`/usr/bin/setline`; `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`;
 `/usr/share/doc/setline/*.md` (everything under `docs/`, plus the `CHANGELOG.md`);
 `/usr/lib/setline/setline-apply`;
 `/usr/lib/systemd/system/{setline.service,setline-render.service,setline-render.timer,setline-apply.service,setline-apply.timer}`;
-`/etc/setline/setline.json`; `/var/lib/setline/{haproxy,nginx,apply}/`.
+`/etc/setline/{setline.conf,setline.json}`; `/var/lib/setline/{haproxy,nginx,apply}/`.
 
-The first install copies `setline.json.default` to `/etc/setline/setline.json`.
-Runtime route updates write that file back, so it is owned by `setline:beangle`
-and group-writable, and the package neither tracks nor removes it.
+The first install copies `setline.conf.default` and `setline.json.default` to
+`/etc/setline/` and never overwrites either on upgrade. Runtime route updates
+write `setline.json`, so it is owned by `setline:beangle` and group-writable.
+`setline.conf` holds the Profile key and stays `root:beangle 0640`. The package
+neither tracks nor removes either file.
 
 ## Fragment reload
 
@@ -71,15 +73,14 @@ alternatives: `docs/agent-reload.md`.
   `server {}`. A routes-only change (`*.map`) is hot-synced without a reload;
   adding or removing a backend reloads.
 
-Enable it with one timer - `agent.type` picks the proxy:
+Enable it with one timer - `[agent] type` in `setline.conf` picks the proxy:
 `systemctl enable --now setline-apply.timer`. A pure render machine
-(`agent.peers`, no `listen`) also enables `setline-render.timer`,
+(`[agent] peers`, no `listen`) also enables `setline-render.timer`,
 which re-runs `setline-render.service` every 30s (one run renders one round and
 exits); a single-host deployment keeps `setline.service` resident instead.
-`setline-apply auto` dispatches on
-`setline -f <cfg> --agent-type` for every config in `SETLINE_CONFIGS` (default
-`/etc/setline/setline.json`); with no agent-mode config it is a no-op, so an idle
-timer on a plain proxy host is normal. `setline-apply haproxy` runs one by hand.
+`setline-apply auto` reads `[agent] type` from
+`/etc/setline/setline.conf`; with no type it is a no-op, so an idle timer on a
+plain proxy host is normal. `setline-apply haproxy` runs one by hand.
 
 ## End-to-end regression and benchmarks
 

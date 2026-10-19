@@ -20,7 +20,6 @@ import std.array : appender, split;
 import std.conv : to;
 import std.string : strip;
 
-enum defaultConfigPath = "setline.json";
 enum adminPrefix = "/_setline";
 /** 跨机读取路由表的端点；它是数据面 `listen` 上唯一承接的管理路径（见 `server.handleRequest`）。 */
 enum peerRoutesPath = adminPrefix ~ "/routes";

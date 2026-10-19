@@ -193,7 +193,7 @@ because proxy headers are user-controlled input at this security boundary.
 
 Read operations (`GET` routes and the status page) sit on the other side of the
 boundary: they stay reachable from other hosts, because the route table is read
-by same-network peers - the agent that renders `agent.peers` into a haproxy or
+by same-network peers - the agent that renders `[agent] peers` into a haproxy or
 nginx config. Their gate is the source address (localhost, or an address listed
 in `peerReaders`), so setline holds no credential at all.
 
@@ -291,13 +291,13 @@ Keep the boundary simple:
 - Any external proxy configuration should be owned by deployment tooling that
   has the complete service topology, not by a single setline instance.
 
-When `agent.type` is configured, `setline -f` is a separate agent-style helper
-for that deployment tooling boundary. It renders proxy configuration text for
-an edge proxy machine, without touching the normal local transparent proxy route
-model.
+When `[agent] type` is configured in `setline.conf`, `setline` can also act as
+an agent-style helper for that deployment tooling boundary. It renders proxy
+configuration text for an edge proxy machine, without touching the normal local
+transparent proxy route model.
 
-The helper reads live peers: `agent.peers` lists remote setline instances, and
-`setline -f` aggregates their `GET /_setline/routes` tables into one HAProxy or
+The helper reads live peers: `[agent] peers` lists remote setline instances, and
+`setline` aggregates their `GET /_setline/routes` tables into one HAProxy or
 Nginx fragment. With no `peers` it renders the local route table instead. This
 is a rendered fragment, not a full config, so the edge proxy keeps owning its
 own `global`/`defaults`/`http` content.

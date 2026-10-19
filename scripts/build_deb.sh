@@ -64,7 +64,7 @@ mkdir -p usr/bin usr/share/setline usr/share/doc/setline usr/lib/setline usr/lib
 cp -f "$SETLINE_HOME/target/setline" usr/bin/setline
 strip --strip-unneeded usr/bin/setline
 cp -f "$SETLINE_HOME/scripts/package/setline.json" usr/share/setline/setline.json.default
-cp -f "$SETLINE_HOME/scripts/package/apply.conf.example" usr/share/setline/apply.conf.example
+cp -f "$SETLINE_HOME/scripts/package/setline.conf.default" usr/share/setline/setline.conf.default
 cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/share/setline/haproxy-setline-cfgdir.conf.example
 # 用户文档整目录安装：配置参考、reload 设计、部署、API 说明与发布说明都在 docs 里，
 # 只装其中一篇会让包内的 Documentation= 指向一份孤零零的文档。
@@ -104,7 +104,7 @@ DEBCOPYRIGHT
 
 chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/setline usr/lib/systemd usr/lib/systemd/system
 chmod 0755 usr/bin/setline usr/lib/setline/setline-apply
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/apply.conf.example usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-render.service usr/lib/systemd/system/setline-render.timer usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-render.service usr/lib/systemd/system/setline-render.timer usr/lib/systemd/system/setline-apply.service usr/lib/systemd/system/setline-apply.timer
 
 mkdir -p DEBIAN
 
@@ -146,8 +146,13 @@ mkdir -p /etc/setline
 if [ ! -f /etc/setline/setline.json ]; then
   cp -f /usr/share/setline/setline.json.default /etc/setline/setline.json
 fi
+if [ ! -f /etc/setline/setline.conf ]; then
+  cp -f /usr/share/setline/setline.conf.default /etc/setline/setline.conf
+fi
 chown setline:beangle /etc/setline/setline.json
 chmod 0664 /etc/setline/setline.json
+chown root:beangle /etc/setline/setline.conf
+chmod 0640 /etc/setline/setline.conf
 chown setline:beangle /etc/setline
 chmod 2775 /etc/setline
 chown -R setline:beangle /var/lib/setline /var/log/setline

@@ -43,8 +43,8 @@ journalctl -u setline-apply -n 30 -o cat     # 最近一轮
 journalctl -u setline-apply -f               # 盯下一轮
 ```
 
-普通代理机器（配置里没有 `agent`）不需要启用它；就算开着也只是一轮打一行
-`no agent.type in ..., nothing to apply` 后退出 0，没有别的副作用。单机部署（`agent`
+普通代理机器（`setline.conf` 没有 `[agent] type`）不需要启用它；就算开着也只是一轮打一行
+`no [agent] type in ..., nothing to apply` 后退出 0，没有别的副作用。单机部署（`[agent]`
 只有 `type`/`output`，没有 `peers`）同样需要它——setline 负责写片段，reload 仍由它做。
 
 ### 手工执行
@@ -52,7 +52,7 @@ journalctl -u setline-apply -f               # 盯下一轮
 timer 跑的就是这条命令；排查时手动跑同一套逻辑即可：
 
 ```bash
-sudo setline-apply auto       # 按配置里的 agent.type 挑代理（timer 用的就是它）
+sudo setline-apply auto       # 按 setline.conf 的 [agent] type 挑代理（timer 用的就是它）
 sudo setline-apply haproxy    # 只处理 haproxy，跳过探测
 sudo setline-apply nginx      # 只处理 nginx
 ```
@@ -73,7 +73,7 @@ sudo setline-apply nginx      # 只处理 nginx
 reload 失败（已回滚）或片段目录取值本身有问题；`2` 用法错误（参数不是
 `haproxy`/`nginx`/`auto`）；`3` 接线错误。
 
-### 频率与参数
+### 频率与 reload 参数
 
 timer 的节奏：开机 30s 后第一轮，之后每轮**结束后** 20s 再跑
 （`OnBootSec=30s` + `OnUnitInactiveSec=20s` + `AccuracySec=1s`）。改周期别直接改包里的
@@ -83,11 +83,11 @@ unit（升级会被覆盖），用 drop-in：
 sudo systemctl edit setline-apply.timer      # 写 [Timer] 段覆盖 OnUnitInactiveSec 等
 ```
 
-`setline-apply` 自己的默认值都在 `/etc/setline/apply.conf`（模板见
-`/usr/share/setline/apply.conf.example`）：片段目录、`HAPROXY_CONFIGS` 的 `-f` 列表、
-`HAPROXY_SERVICE`/`NGINX_SERVICE`、静默窗口 `SETLINE_APPLY_QUIET_SECONDS`（默认 15s）。
-注意 `HAPROXY_CONFIGS` 必须和 `haproxy.service` 实际加载的完全一致，否则校验的不是服务
-真正读的那份配置。周期与静默窗口没有硬性大小关系，但周期小于窗口时，片段写入后要多等
+`setline-apply` 的 reload 参数都在 `/etc/setline/setline.conf` 的 `[apply]` 段：片段目录、
+`haproxy -f` / `nginx -c` 的配置列表、服务名和静默窗口 `quietSeconds`（默认 15s）。
+`type`、`configs`、`fragmentDir`、`service` 省略时由 `[agent] type` 和 `[agent] output`
+推导；自定义了片段根目录时要确认 `[apply] configs` 里的片段路径也跟着改，否则校验的不是
+服务真正读的那份配置。周期与静默窗口没有硬性大小关系，但周期小于窗口时，片段写入后要多等
 几拍才应用；片段被持续改写（滚动发布）则一直推到稳定为止。
 
 ## 为什么 reload 不能由 setline 做
@@ -166,7 +166,7 @@ haproxy 那条 `-c -q` 排在 `kill` 之前，systemd 按顺序执行、前一�
 
 **socket 从哪来**（全部自动发现，不引入任何配置项），按顺序试：
 
-1. `HAPROXY_CONFIGS` 里各配置文件的 `stats socket <path>`（worker 的 runtime API）；
+1. `[apply] configs` 里各配置文件的 `stats socket <path>`（worker 的 runtime API）；
 2. 单元 `ExecStart` 里的 `-S <path>`（master CLI，命令集较小，所以排后面）；
 3. 常见默认位置，如 `/run/haproxy/admin.sock`、`/run/haproxy.sock`、`/run/haproxy/master.sock`。
 
@@ -286,28 +286,26 @@ OnUnitInactiveSec=20s
 （为什么不是 `StartLimitIntervalSec=`，见 [deployment.md](deployment.md) 的
 「systemd 版本兼容」）。
 
-## 处理哪个代理：由 agent.type 决定
+## 处理哪个代理：由 `[agent] type` 决定
 
 timer 只有一个，跑 `setline-apply auto`，代理由配置决定，不需要人工挑实例：
 
 ```bash
-setline -f /etc/setline/setline.json --agent-type   # 打印 haproxy / nginx / 空
+setline --conf /etc/setline/setline.conf --agent-type   # 打印 haproxy / nginx / 空
 ```
 
-- `--agent-type` 让 setline 自己解析 JSON（复用同一套配置校验），shell 侧只做字符串
-  比较，避免在 bash 里手写 JSON 解析；
-- `auto` 遍历 `SETLINE_CONFIGS`（默认 `/etc/setline/setline.json`，可在
-  `/etc/setline/apply.conf` 里加多份），把选中的代理解重去重后逐个交给
-  `setline-apply <proxy>` 执行，每个代理各自持锁、各自记录状态；
-- 配置里没有 `agent`（普通代理机器）→ 什么都不做，直接退出 0；
-- 配置的 `agent.type` 指向本机没装的代理 → 打警告跳过，不算失败；
-- 退出码取更严重的那个：片段不合法（1）优先于接线错误（3）。
+- `--agent-type` 让 setline 自己解析 `setline.conf`（复用同一套配置校验），shell 侧只做
+  字符串比较，避免在 bash 里手写 INI 解析；
+- `auto` 只读一个控制面配置文件，把 `[agent] type` 选中的代理交给同一套校验/reload 流程；
+- `[agent] type` 为空（普通代理机器）→ 什么都不做，直接退出 0；
+- 配置的类型不是 `haproxy`/`nginx` 时在配置校验阶段就失败，不会静默跳过；
+- 退出码：片段不合法或 reload 失败为 1，接线错误为 3。
 
 ## 幂等与防抖
 
 - **幂等**：`setline-apply` 先算片段目录的内容哈希，与 `applied.sha256` 相同就
   `exit 0`。重复触发是免费的，不需要精确防抖。
-- **静默窗口**：片段最后一次修改距今不足 `SETLINE_APPLY_QUIET_SECONDS`（默认 15s）
+- **静默窗口**：片段最后一次修改距今不足 `[apply] quietSeconds`（默认 15s）
   就跳过，等下一拍。滚动发布时多台 peer 先后更新，窗口能避免按中间态反复 reload，
   对「摘除」尤其重要。
 - **不在脚本里 sleep 等稳定**：那会占住 oneshot，和 systemd 的记账、超时打架。
@@ -321,7 +319,8 @@ setline -f /etc/setline/setline.json --agent-type   # 打印 haproxy / nginx / �
 - per-file 的 `.prev` 有漏洞：新增的文件不会被删掉、被删的文件不会被补回，回滚后
   可能残留半新半旧，校验继续失败。
 
-实现上维护 `lastgood/` 目录快照（`/var/lib/setline/apply/<proxy>/lastgood`）：
+实现上维护 `lastgood/` 目录快照（`<agent.output>/apply/<proxy>/lastgood`，默认
+`/var/lib/setline/apply/<proxy>/lastgood`）：
 
 - 校验通过、reload 成功后，把当前片段目录快照为 lastgood；
 - 校验失败或 reload 失败时，整体还原 lastgood 再 reload 一次，退出非零。
@@ -353,7 +352,7 @@ setline -f /etc/setline/setline.json --agent-type   # 打印 haproxy / nginx / �
 ```
 /var/lib/setline/haproxy/   setline:beangle 0755   setline 写，root 读
 /var/lib/setline/nginx/     同上
-/var/lib/setline/apply/     状态与 lastgood 快照
+/var/lib/setline/apply/     <agent.output>/apply，状态与 lastgood 快照
 /etc/haproxy/haproxy.cfg    root，只被读
 /etc/nginx/nginx.conf       root，只被读（加 include 行）
 ```
@@ -365,14 +364,14 @@ rename，只要片段目录本身可写即可。
 片段目录的属主必须能写：`setline-apply` 以 root 跑，如果它在 setline 之前先建出了
 目录（`mkdir -p` 在「片段为空就退出」的判断之前），目录会是 `root:root`，`setline`
 之后就没法往里写片段。所以脚本在 `mkdir -p` 之后、以及每次回滚重建目录之后，都会检查
-一次：**属主是 root 就改成 `setline:beangle`（0755），不是 root 就不动**——不覆盖
-部署方刻意设置的其他属主。owner 可用 `SETLINE_APPLY_FRAGMENT_OWNER` 覆盖。
+一次：**属主是 root 就改成 `[apply] owner`（默认 `setline:beangle`，0755），不是 root
+就不动**——不覆盖部署方刻意设置的其他属主。
 
 ## 已知边界
 
-- 重载命令目前写死为 `systemctl reload <service>`，服务名可用 `HAPROXY_SERVICE` /
-  `NGINX_SERVICE` 覆盖；如果部署不用 systemd，需要自行替换。
+- 重载命令目前写死为 `systemctl reload <service>`，服务名可用 `[apply] service` 覆盖；
+  如果部署不用 systemd，需要自行替换。
 - SELinux 开启时，nginx 读 `/var/lib/setline/nginx` 需要合适的标签
   （本机 SELinux 为 Disabled，未验证）。
 - `setline-apply` 依赖 `flock`、`sha256sum`、`find -printf`（GNU），仅面向 Linux。
-- 这是「片段生成」之后的半段；重新生成片段仍由 `setline -f` 完成。
+- 这是「片段生成」之后的半段；重新生成片段仍由 `setline` / `setline --conf ...` 完成。

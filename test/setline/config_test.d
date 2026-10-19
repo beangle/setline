@@ -23,7 +23,16 @@ import std.exception : assertThrown;
 import std.json : JSONValue, parseJSON;
 
 import setline.config;
+import setline.control : ControlConfig;
 import setline.model;
+
+private ControlConfig agentControl(string type, string output, PeerConfig[] peers = null) {
+  ControlConfig control;
+  control.agent.type = type;
+  control.agent.output = output;
+  control.agent.peers = peers;
+  return control;
+}
 
 @("config parses listen shorthand") unittest {
   auto byNumber = parseListen(JSONValue(8080));
@@ -107,15 +116,15 @@ import setline.model;
 
 @("config parses agent settings") unittest {
   auto path = "/tmp/setline-config-agent-test.json";
-  write(path,
-    `{"agent":{"type":"nginx","output":"/var/lib/setline",` ~
-    `"peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
+  write(path, `{"routes":{}}`);
   scope (exit) remove(path);
 
-  auto config = loadConfig(path);
+  auto config = loadConfig(path, agentControl("nginx", "/var/lib/setline",
+    [PeerConfig("app1", "http://10.0.1.10:8080")]));
   assert(config.agent.type == "nginx");
   assert(config.agent.output == "/var/lib/setline");
   assert(config.agent.peers.length == 1);
+  assert(config.agent.peers[0].name == "app1");
   assert(usesLocalRoutes(config.agent) == false);
 }
 
@@ -211,21 +220,21 @@ import setline.model;
   assertThrown!Exception(normalizeRouteHost("local1.example.com:8080"));
 }
 
-@("config parses agent peers") unittest {
+@("config takes agent peers from setline.conf") unittest {
   auto path = "/tmp/setline-config-agent-peers-test.json";
-  write(path,
-    `{"agent":{"type":"haproxy","output":"/etc/haproxy",` ~
-    `"peers":[{"name":"app1","url":"http://10.0.1.10:8080"},` ~
-    `{"url":"http://10.0.1.11:8080"}]},"routes":{}}`);
+  write(path, `{"routes":{}}`);
   scope (exit) remove(path);
 
-  auto config = loadConfig(path);
+  auto config = loadConfig(path, agentControl("haproxy", "/etc/haproxy", [
+    PeerConfig("app1", "http://10.0.1.10:8080"),
+    PeerConfig("app2", "http://10.0.1.11:8080"),
+  ]));
   assert(config.agent.type == "haproxy");
   assert(config.agent.output == "/etc/haproxy");
   assert(config.agent.peers.length == 2);
   assert(config.agent.peers[0].name == "app1");
   assert(config.agent.peers[0].url == "http://10.0.1.10:8080");
-  assert(config.agent.peers[1].url == "http://10.0.1.11:8080");
+  assert(config.agent.peers[1].name == "app2");
 }
 
 @("config parses the peer readers allowed to read the route table") unittest {
@@ -269,55 +278,40 @@ import setline.model;
 
   // 没有监听就没有读方，名单是死配置。
   write(path, `{"listen":false,"peerReaders":["10.0.1.7"],` ~
-    `"agent":{"type":"haproxy","output":"/tmp/setline"},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
+    `"routes":{}}`);
+  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "/tmp/setline")));
 }
 
 @("config rejects peer url without derivable address") unittest {
   auto path = "/tmp/setline-config-agent-noaddress-test.json";
-  write(path, `{"agent":{"type":"nginx","peers":[{"url":"file:///tmp/peer"}]},"routes":{}}`);
+  write(path, `{"routes":{}}`);
   scope (exit) remove(path);
-  assertThrown!Exception(loadConfig(path));
-
-  write(path, `{"agent":{"type":"nginx","peers":[{"url":"/tmp/peer"}]},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-}
-
-@("config rejects unknown peer fields") unittest {
-  auto path = "/tmp/setline-config-agent-badpeer-test.json";
-  // 曾经的 address 字段已经取消：回源主机只从 url 推导，写了必须报错而不是被忽略。
-  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080","address":"10.0.1.10"}]},` ~
-    `"routes":{}}`);
-  scope (exit) remove(path);
-  assertThrown!Exception(loadConfig(path));
-
-  write(path, `{"agent":{"type":"nginx","peers":[{"url":"http://10.0.1.10:8080","port":80}]},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
+  assertThrown!Exception(loadConfig(path, agentControl("nginx", "/var/lib/setline",
+    [PeerConfig("app1", "file:///tmp/peer")])));
+  assertThrown!Exception(loadConfig(path, agentControl("nginx", "/var/lib/setline",
+    [PeerConfig("app1", "/tmp/peer")])));
 }
 
 @("config allows single-host agent without peers") unittest {
   auto path = "/tmp/setline-config-agent-local-test.json";
-  write(path, `{"listen":"127.0.0.1:8080","agent":{"type":"haproxy",` ~
-    `"output":"/var/lib/setline"},"routes":{}}`);
+  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
   scope (exit) remove(path);
 
-  auto config = loadConfig(path);
+  auto config = loadConfig(path, agentControl("haproxy", "/var/lib/setline"));
   assert(config.agent.type == "haproxy");
   assert(config.agent.output == "/var/lib/setline");
   assert(config.agent.peers.length == 0);
   assert(usesLocalRoutes(config.agent));
 }
 
-@("config rejects single-host agent without output or type") unittest {
+@("config rejects agent parameters in the topology file") unittest {
   auto path = "/tmp/setline-config-agent-local-bad-test.json";
   scope (exit) remove(path);
 
-  // 单机模式必须有 output：否则每次改路由都会把片段重新打到标准输出。
-  write(path, `{"agent":{"type":"nginx"},"routes":{}}`);
+  // agent 只存在于 setline.conf；setline.json 里出现任何 agent 都必须报错。
+  write(path, `{"agent":{"peers":[]},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
-
-  // 有 output 也不能省 type：由它决定渲染 haproxy 还是 nginx。
-  write(path, `{"agent":{"output":"/tmp/setline"},"routes":{}}`);
+  write(path, `{"agent":{},"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
 
@@ -326,28 +320,27 @@ import setline.model;
   scope (exit) remove(path);
 
   // output 是片段根目录（内部再拼 <type>/），相对路径会随 CWD 漂移，直接拦掉。
-  write(path, `{"listen":"127.0.0.1:8080","agent":{"type":"haproxy","output":"setline"},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
+  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
+  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "setline")));
 
   // 空字符串等同于没配：单机模式仍然要求一个根目录。
-  write(path, `{"listen":"127.0.0.1:8080","agent":{"type":"haproxy","output":""},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
+  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "")));
 }
 
 @("config rejects misspelled agent type") unittest {
   auto path = "/tmp/setline-config-agent-badtype-test.json";
-  write(path, `{"agent":{"type":"nginux","peers":[{"url":"http://10.0.1.10:8080"}]},"routes":{}}`);
+  write(path, `{"routes":{}}`);
   scope (exit) remove(path);
-  assertThrown!Exception(loadConfig(path));
+  assertThrown!Exception(loadConfig(path, agentControl("nginux", "/var/lib/setline",
+    [PeerConfig("app1", "http://10.0.1.10:8080")])));
 }
 
 @("config accepts listen false for a render-only deployment") unittest {
   auto path = "/tmp/setline-config-listen-false-test.json";
-  write(path, `{"listen":false,"agent":{"type":"haproxy",` ~
-    `"output":"/var/lib/setline"},"routes":{"app.example.com":{"/":9001}}}`);
+  write(path, `{"listen":false,"routes":{"app.example.com":{"/":9001}}}`);
   scope (exit) remove(path);
 
-  auto config = loadConfig(path);
+  auto config = loadConfig(path, agentControl("haproxy", "/var/lib/setline"));
   assert(config.listenDisabled);
   assert(config.routes.length == 1);
 }
@@ -361,7 +354,7 @@ import setline.model;
   assertThrown!Exception(loadConfig(path));
 
   // `true` 不是合法值：能监听就必须写地址。
-  write(path, `{"listen":true,"agent":{"type":"haproxy","output":"/tmp/setline"}}`);
+  write(path, `{"listen":true,"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
 
@@ -409,8 +402,8 @@ import setline.model;
 
   // listen:false 是渲染完就退出，没有进程来服务这个管理监听。
   write(path, `{"listen":false,"adminListen":"127.0.0.1:8081",` ~
-    `"agent":{"type":"haproxy","output":"/tmp/setline"},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
+    `"routes":{}}`);
+  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "/tmp/setline")));
 }
 
 @("config reads the websocket idle timeout") unittest {
@@ -435,13 +428,9 @@ import setline.model;
   auto path = "/tmp/setline-config-unknown-keys-test.json";
   scope (exit) remove(path);
 
-  // 没有发布过，所以不为「曾经打算加」的键留兼容分支：配置里多出来的键既不报错也不生效，
-  // 与其它未知键一个待遇（这条钉住的是行为，不是某个具体键）。
+  // 顶层未知键既不报错也不生效；agent 已经从 setline.json 移除并在解析时明确拒绝。
   write(path, `{"listen":"127.0.0.1:8080","adminToken":"secret","peerReaders":["10.0.1.7"],` ~
-    `"agent":{"type":"nginx","output":"/var/lib/setline","bind":"*:8080",` ~
-    `"sync":{"mode":"interval"},"token":"shared"},` ~
-    `"peers":[{"url":"http://10.0.1.10:8080"}],"routes":{}}`);
+    `"routes":{}}`);
   auto config = loadConfig(path);
-  assert(config.agent.type == "nginx");
   assert(config.peerReaders == ["10.0.1.7"]);
 }

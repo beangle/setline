@@ -124,7 +124,7 @@ rm -rf %{buildroot}
 install -D -m 0755 target/setline %{buildroot}/usr/bin/setline
 strip --strip-unneeded %{buildroot}/usr/bin/setline
 install -D -m 0644 scripts/package/setline.json %{buildroot}/usr/share/setline/setline.json.default
-install -D -m 0644 scripts/package/apply.conf.example %{buildroot}/usr/share/setline/apply.conf.example
+install -D -m 0644 scripts/package/setline.conf.default %{buildroot}/usr/share/setline/setline.conf.default
 install -D -m 0644 scripts/package/haproxy-setline-cfgdir.conf.example %{buildroot}/usr/share/setline/haproxy-setline-cfgdir.conf.example
 # 用户文档整目录安装：与 build_rpm.sh 同一份清单，docs 全篇加上 CHANGELOG。
 install -d -m 0755 %{buildroot}/usr/share/doc/setline

@@ -295,11 +295,16 @@ wait_for_port "$SETLINE_PORT" 50 || fail "setline did not listen"
 check_render_only() {
   local dir="$WORK/render-only"
   mkdir -p "$dir"
+  cat >"$WORK/render-only.conf" <<CONF
+[agent]
+type = haproxy
+output = $dir
+CONF
   cat >"$WORK/render-only.json" <<JSON
-{"listen":false,"agent":{"type":"haproxy","output":"$dir"},
- "routes":{"local.test":{"/":$BACKEND_PORT}}}
+{"listen":false,"routes":{"local.test":{"/":$BACKEND_PORT}}}
 JSON
-  if ! "$ROOT/target/setline" -f "$WORK/render-only.json" >"$WORK/render-only.log" 2>&1; then
+  if ! "$ROOT/target/setline" --conf "$WORK/render-only.conf" -f "$WORK/render-only.json" \
+      >"$WORK/render-only.log" 2>&1; then
     fail "listen:false renderer exited non-zero: $(cat "$WORK/render-only.log")"
   fi
   # output 是根目录：程序按 type 自己建 haproxy/ 子目录并写固定文件名。
@@ -357,11 +362,17 @@ check_admin_write_gate
 check_peer_render_once() {
   local dir="$WORK/peer-render"
   mkdir -p "$dir"
+  cat >"$WORK/peer-render.conf" <<CONF
+[agent]
+type = haproxy
+output = $dir
+peers = peer=http://127.0.0.1:$SETLINE_ADMIN_PORT
+CONF
   cat >"$WORK/peer-render.json" <<JSON
-{"agent":{"type":"haproxy","output":"$dir",
- "peers":[{"name":"peer","url":"http://127.0.0.1:$SETLINE_ADMIN_PORT"}]}}
+{"routes":{}}
 JSON
-  if ! timeout 20 "$ROOT/target/setline" -f "$WORK/peer-render.json" \
+  if ! timeout 20 "$ROOT/target/setline" --conf "$WORK/peer-render.conf" \
+      -f "$WORK/peer-render.json" \
       >"$WORK/peer-render.log" 2>&1; then
     fail "peer renderer did not exit 0: $(cat "$WORK/peer-render.log")"
   fi

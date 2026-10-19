@@ -25,6 +25,7 @@ import std.json;
 import std.stdio : stderr;
 import std.string : indexOf, stripRight;
 
+import setline.control : ControlConfig;
 import setline.model;
 import setline.peer : peerAddress;
 import setline.router : sortRoutes, validateRoute;
@@ -35,13 +36,17 @@ import setline.util : isAddressLiteral, isLoopbackAddress, normalizeAddressText,
     配置文件不存在时返回空路由表，便于本地开发先启动代理再通过管理接口动态增加路由。
     加载到的路由会立即按前缀长度排序，运行期查找时可以直接从最长前缀开始匹配。
 */
-Config loadConfig(string path) {
+Config loadConfig(string path, const ControlConfig control = ControlConfig.init) {
   if (!exists(path)) {
     stderr.writefln("Config %s not found, using empty route table", path);
-    return Config.init;
+    auto config = Config.init;
+    config.agent.type = control.agent.type;
+    config.agent.output = control.agent.output;
+    config.agent.peers = control.agent.peers.dup;
+    return config;
   }
 
-  return parseConfigFile(path);
+  return parseConfigFile(path, control);
 }
 
 /** 检查 JSON 配置文件并返回解析后的配置。
@@ -49,9 +54,9 @@ Config loadConfig(string path) {
     该入口用于命令行 `-c` / `--check`。和运行时加载不同，检查模式要求配置文件必须存在；
     缺失、JSON 格式错误、字段类型错误或路由非法都会通过异常报告给命令行入口。
 */
-Config checkConfig(string path) {
+Config checkConfig(string path, const ControlConfig control = ControlConfig.init) {
   enforce(exists(path), "config file not found: " ~ path);
-  return parseConfigFile(path);
+  return parseConfigFile(path, control);
 }
 
 /** 将运行时路由写回配置文件的顶层 `routes` 字段。 */
@@ -165,7 +170,7 @@ JSONValue routePortsConfigJson(Route route) {
 }
 
 /** 解析已经存在的 JSON 配置文件。 */
-Config parseConfigFile(string path) {
+Config parseConfigFile(string path, const ControlConfig control = ControlConfig.init) {
   Config config;
   auto root = parseJSON(readText(path));
   if ("listen" in root.object) {
@@ -220,15 +225,29 @@ Config parseConfigFile(string path) {
   if ("healthCheck" in root.object) {
     config.healthCheck = parseHealthConfig(root["healthCheck"]);
   }
-  if ("agent" in root.object) {
-    config.agent = parseAgentConfig(root["agent"]);
-  }
+  enforce(!("agent" in root.object),
+    "setline.json must not contain agent; put [agent] type/output/peers in setline.conf");
+  config.agent.type = control.agent.type;
+  config.agent.output = control.agent.output;
+  config.agent.peers = control.agent.peers.dup;
   if ("routes" in root.object) {
     config.routes = parseHostRoutes(root["routes"]);
   }
+  if (config.agent.type.length > 0) {
+    config.agent.type = normalizeAgentType(config.agent.type);
+    enforce(config.agent.output.length > 0,
+      "[agent] output is required when [agent] type is set");
+    enforce(config.agent.output[0] == '/',
+      "[agent] output must be an absolute directory path");
+  }
+  // peers 是远端拓扑，渲染它们所需的本地参数只存在于 setline.conf。
+  enforce(config.agent.peers.length == 0 || config.agent.type.length > 0,
+    "[agent] peers requires [agent] type in setline.conf");
+  foreach (peer; config.agent.peers)
+    peerAddress(peer);
   // 不监听就没有管理接口，运行时路由无从下发，必须自带数据来源（本机配置文件或 agent）。
   enforce(!config.listenDisabled || config.agent.type.length > 0,
-    "listen:false requires agent.type");
+    "listen:false requires [agent] type in setline.conf");
   // 管理监听总是存在，所以只要绑监听就必须和 `listen` 分开：同端口同地址必然 EADDRINUSE。
   if (!config.listenDisabled && listenAddressesOverlap(config.listen, config.adminListen)) {
     // 没写 adminListen 时那句「must differ from listen」看不出冲突来自缺省值，单独说明。
@@ -399,33 +418,6 @@ HealthConfig parseHealthConfig(JSONValue value) {
   return config;
 }
 
-/** 解析边缘代理渲染配置。 */
-AgentConfig parseAgentConfig(JSONValue value) {
-  enforce(value.type == JSONType.object, "agent must be object");
-  auto obj = value.object;
-  AgentConfig config;
-  if ("type" in obj) {
-    enforce(obj["type"].type == JSONType.string, "agent.type must be string");
-    config.type = normalizeAgentType(obj["type"].str);
-  }
-  if ("output" in obj) {
-    enforce(obj["output"].type == JSONType.string, "agent.output must be string");
-    config.output = obj["output"].str;
-    enforce(config.output.length > 0, "agent.output must not be empty");
-    // 片段总是落到 <output>/<type>/ 下；相对路径会跟着 CWD 漂移，让固定布局失效。
-    enforce(config.output[0] == '/', "agent.output must be an absolute directory path");
-  }
-  if ("peers" in obj) {
-    config.peers = parsePeerConfigs(obj["peers"]);
-  }
-  enforce(config.type.length > 0, "agent.type is required: haproxy or nginx");
-  // 不配 peers = 单机部署（渲染本机路由表），此时必须有 output 根目录：路由一变就重渲染，
-  // 没有 output 只会把片段反复打到标准输出。
-  enforce(!usesLocalRoutes(config) || config.output.length > 0,
-    "agent.output is required when agent.peers is not set");
-  return config;
-}
-
 /** agent 是否渲染**本机**路由表，也就是没配 `peers` 的单机部署形态。
 
     `peers` 要求边缘代理和管理入口能互相访问，haproxy/nginx 与 setline、basctl 同机时
@@ -458,37 +450,6 @@ string[] parsePeerReaders(JSONValue value) {
     readers ~= address;
   }
   return readers;
-}
-
-/** 解析被聚合的远端 setline 实例列表。 */
-PeerConfig[] parsePeerConfigs(JSONValue value) {
-  enforce(value.type == JSONType.array, "agent.peers must be array");
-  enforce(value.array.length > 0, "agent.peers must not be empty");
-  PeerConfig[] peers;
-  foreach (item; value.array) {
-    enforce(item.type == JSONType.object, "agent.peers item must be object");
-    PeerConfig peer;
-    peer.url = optionalPeerString(item, "url");
-    enforce(peer.url.length > 0, "agent.peers[].url is required");
-    peer.name = optionalPeerString(item, "name");
-    // 回源主机完全由 url 推导；推导不出来（例如 file:// 没有主机）要在这里就报错，
-    // 而不是等 agent 跑起来才失败，那时 `setline -c` 已经宣布配置合法了。
-    peerAddress(peer);
-    // peers 只认 url/name 两个字段：写错字段名要立刻报错，不能默默忽略。
-    foreach (key, _; item.object) {
-      enforce(key == "url" || key == "name",
-        "agent.peers[] has unknown field: " ~ key);
-    }
-    peers ~= peer;
-  }
-  return peers;
-}
-
-/** 读取 peer 对象的可选字符串字段。 */
-string optionalPeerString(JSONValue item, string key) {
-  if (!(key in item.object)) return "";
-  enforce(item[key].type == JSONType.string, "agent.peers[]." ~ key ~ " must be string");
-  return item[key].str;
 }
 
 /** 解析字符串端口并校验范围。 */

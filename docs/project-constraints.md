@@ -181,7 +181,7 @@ the local check, because a route change redirects traffic, and they are served b
 the bind, not the check. Reads are gated by source address (localhost, or an
 address listed in `peerReaders`) and are split across the two listeners: `GET
 /_setline/routes` rides both `listen` and `adminListen`, because it is the
-endpoint consumed from other hosts, by the agent that renders `agent.peers` into
+endpoint consumed from other hosts, by the agent that renders `[agent] peers` into
 a proxy config; the status page and `status.json` stay on `adminListen` alone.
 
 "Local" requires two things: a loopback TCP peer address (`127.0.0.1` / `::1` /
@@ -238,12 +238,12 @@ route are removed from the health table.
 
 ## Remote Proxy Rendering
 
-`agent.peers` is the discovery form of the same agent-side helper. Each peer is
+`[agent] peers` is the discovery form of the same agent-side helper. Each peer is
 a remote setline instance read through `GET /_setline/routes`; its local ports
 are rewritten to `<peer url host>:<port>`, and routes sharing a host and path prefix
 are merged into one backend group so several machines serving the same prefix
 become multiple servers of one upstream. The result is rendered as a HAProxy or
-Nginx fragment, written atomically under the `agent.output` root directory
+Nginx fragment, written atomically under the `[agent] output` root directory
 (`<root>/{haproxy,nginx}/setline.{cfg,conf}`), and never merged into the
 proxy's own main config file: the fragment is included (Nginx) or concatenated
 (HAProxy, which has no `include`) by deployment tooling. The process renders
@@ -262,7 +262,7 @@ decisions. Wiring recipes: `docs/haproxy-integration.md`,
 A registry-bundle source (`agent.remote`, plus its `agent.workDir` scratch
 directory) existed for a while and was dropped: it fed the same renderer from a
 manifest and versioned `.tar.gz` that an external registry system had to build,
-doubling the surface while `agent.peers` already produced the same fragments
+doubling the surface while `[agent] peers` already produced the same fragments
 from running instances. Only `peers` and the local route table remain.
 
 This rendering mode may describe remote machine IPs and ports because it is

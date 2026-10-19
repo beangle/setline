@@ -41,7 +41,7 @@ import setline.util : adminPrefix, escapeHtml, isListedAddress, isLoopbackAddres
       它只挂在管理监听上（见 `docs/configuration.md`）。
     - **读**（`GET` 路由表、状态页、`status.json`）：**本机**来源，或来源地址写在
       `peerReaders` 里的远端读方。准入只看地址，全程没有凭据：路由表的跨机读方是另一个
-      setline（`agent.peers[].url`），给它配一份要在两台机器上同步的秘密，换不来比源地址
+      setline（`[agent] peers`），给它配一份要在两台机器上同步的秘密，换不来比源地址
       更实在的东西，却让「谁能读」变成两处配置。读也不看 Host——本机调用方可能就是按公开
       主机名访问的；代价是「前置代理没 deny `/_setline`」的泄露路径只对读成立，而那条路径
       本来就要靠代理侧的 deny 关掉（见 docs/haproxy-integration.md）。

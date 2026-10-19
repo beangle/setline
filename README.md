@@ -42,15 +42,58 @@ Packaging, the end-to-end harness and the benchmark live under `scripts/`; see
 ## Run
 
 ```bash
-dub run -- -f config.example.json       # start (defaults to ./setline.json)
-dub run -- -c -f config.example.json    # validate the config and exit
-dub run -- --help                       # every flag
+dub run -- init ./setline.conf                 # write a local control config
+dub run -- --conf ./setline.conf -f config.example.json
+dub run -- --conf ./setline.conf -c -f config.example.json
+dub run -- --help                              # every flag
 ```
 
-The config file is optional at startup: a missing file means an empty route
-table, so a runtime update can create the routes.
+Local deployment parameters live in `setline.conf` (INI). The topology file
+(`setline.json`) contains only the listener and routes. The topology file is
+optional at startup: a missing file means an empty route table, so a runtime
+update can create the routes. Peers are local control-plane data and live in
+`setline.conf`; `setline.json` rejects an `agent` field.
 
-## Config
+## setline.conf
+
+```ini
+[remote]
+url = http://127.0.0.1:8082
+profile = openurp.prod
+token = <Profile.key>
+
+[topology]
+file = /etc/setline/setline.json
+
+[proxy]
+# Optional. haproxy -> /etc/haproxy/haproxy.cfg,
+# nginx -> /etc/nginx/nginx.conf.
+#file = /etc/haproxy/haproxy.cfg
+
+[agent]
+type = haproxy
+output = /var/lib/setline
+# Filled by `setline pull`; name=url pairs separated by commas.
+peers =
+
+[apply]
+quietSeconds = 15
+runtimeDir = /run
+owner = setline:beangle
+```
+
+`[apply]` may also set `type`, `configs`, `fragmentDir` and `service`; they are
+derived from `[agent] type` and `[agent] output` when omitted. The package installs
+`/etc/setline/setline.conf` once and never overwrites it on upgrade.
+
+Apply state (`applied.sha256` and `lastgood/`) is always placed at
+`<agent.output>/apply`; it is not configurable separately.
+
+`[proxy] file` is optional too: it defaults to `/etc/haproxy/haproxy.cfg` for
+`haproxy` and `/etc/nginx/nginx.conf` for `nginx`. Set it only for a non-standard
+location.
+
+## setline.json
 
 ```json
 {
@@ -68,8 +111,9 @@ table, so a runtime update can create the routes.
 Routes are chosen by the request `Host` header (port stripped, lowercased), then
 by longest path prefix within that host, with `*` as the fallback namespace.
 Each port maps to `127.0.0.1:<port>`: setline proxies only to local backends.
-`config.example.json` shows every key, and `scripts/package/setline.json` is
-what the packages install.
+`config.example.json` shows the topology keys, and `scripts/package/setline.json`
+is what the packages install. Any `agent` field is rejected here; `[agent] type`,
+`output` and `peers` belong to `setline.conf`.
 
 The admin API is `/_setline/*`. It always has its own listener, `adminListen`,
 defaulting to `127.0.0.1:8081`, the neighbour of the data plane port and off the
@@ -92,8 +136,8 @@ examples - is `docs/configuration.md`.
 
 ## Agent mode
 
-With an `agent` block, `setline` renders a HAProxy or Nginx **fragment** from a
-route table: its own, or a set of live `setline` peers (`agent.peers`). It
+With `[agent] type` in `setline.conf`, `setline` renders a HAProxy or Nginx **fragment** from a
+route table: its own, or a set of live `setline` peers (`[agent] peers`). It
 never rewrites the proxy's own
 config, and a render-only machine has no listener at all: it renders one round
 and exits, re-rendering on a systemd timer (`setline-render.timer`). The unprivileged
@@ -103,6 +147,30 @@ HAProxy admin socket is available.
 
 Fields and examples: `docs/configuration.md`. Wiring: `docs/haproxy-integration.md`
 and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
+
+## Download generated configs
+
+`setline` can authenticate to bashub and download all machine-generated
+configuration directly. URL, Profile, token and destinations all come from
+`setline.conf`, so the commands need no arguments:
+
+```bash
+setline pull
+```
+
+`[remote] url` is the bashub root (do not append `/api`). The downloader sends
+`Authorization: Bearer <profile>:<key>` and accepts the key already written in
+that form. Writes are atomic and left untouched when the content is unchanged.
+`setline pull` fetches the peer list, the proxy config selected by the Profile's
+`proxyEngine`, and the Profile's HTTPS certificate pair. It rewrites only
+`[agent] peers` in `setline.conf`, so the token, local agent settings,
+`setline.json`, `listen` and `routes` all survive.
+Certificates are written as `/etc/setline/certs/cert.pem` and
+`/etc/setline/certs/key.pem` (nginx), and `/etc/setline/certs/bundle.pem`
+(haproxy). The directory is fixed because the generated proxy config references
+those paths. The private-key files are mode `0600`.
+When the Profile has no certificate pair, a pull removes the three managed
+files instead of leaving an old key behind.
 
 ## Documentation
 

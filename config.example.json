@@ -13,10 +13,6 @@
     "unhealthyThreshold": 2,
     "healthyThreshold": 1
   },
-  "agent": {
-    "type": "haproxy",
-    "output": "/var/lib/setline"
-  },
   "routes": {
     "*": {
       "/api/edu": [9002, 9003],
