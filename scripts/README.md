@@ -2,7 +2,7 @@
 
 | Path | Purpose |
 |------|---------|
-| `build_deb.sh` / `build_rpm.sh` / `build_srpm.sh` | Build a `.deb`, a binary `.rpm`, or a source `.src.rpm` rebuildable on the target host. |
+| `build_deb.sh` / `build_rpm.sh` / `build_srpm.sh` | Build a `.deb`, a binary `.rpm` (requires `rpmbuild >= 4.14`), or a source `.src.rpm` rebuildable on the target host. |
 | `package/` | Default config, systemd units and the spec fragment shared by the packages (`setline.spec.common`). |
 | `bench.sh` | Reproducible benchmarks: RPS, P99, 1MB throughput, upstream connections, TIME_WAIT. `BENCH_HAPROXY=1` adds the real `ab -> haproxy -> setline` shape. |
 | `bench_backend.d` | Static backend for `bench.sh` (one connection per thread, no GIL). |
