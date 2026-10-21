@@ -1,18 +1,25 @@
 [Unit]
-Description=Render and apply setline agent fragments
+Description=Refresh remote setline configuration, render and apply fragments
 Documentation=file:///usr/share/doc/setline/agent-reload.md
 Documentation=file:///usr/share/doc/setline/haproxy-integration.md
 Documentation=file:///usr/share/doc/setline/nginx-integration.md
+Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
-# 由 setline-agent.timer 周期驱动。动作幂等：片段没变时 apply 按哈希跳过。
-# 连续几轮 peer 不可达不应把 unit 挡成 failed，所以关掉启动限流。
+# 启动和 reload 各做一次远程 manifest 检查，然后 render/apply。
+# 周期合并 peers 由 setline-agent-interval.service 负责，它不访问 [remote]。
+# 动作幂等；远端不可达时保留上次成功安装的配置并继续本地 render/apply。
 # 拼写用旧式的 [Service] StartLimitInterval=，理由见 setline.service 与 docs/deployment.md。
+RemainAfterExit=yes
+ExecStart=/usr/lib/setline/setline-agent --remote
+ExecReload=/usr/lib/setline/setline-agent --remote
 StartLimitInterval=0
 # 本服务以 root 运行，但只做编排：渲染通过 runuser 降权到 setline 用户，
 # 校验/reload 由 root 的 setline-apply 完成。绝不在 root 进程里解析 peer 响应。
 UMask=0002
-ExecStart=/usr/lib/setline/setline-agent
-TimeoutStartSec=120s
+TimeoutStartSec=180s
+
+[Install]
+WantedBy=multi-user.target

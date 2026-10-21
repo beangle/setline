@@ -75,6 +75,7 @@ cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-appl
 cp -f "$SETLINE_HOME/scripts/package/setline-agent" usr/lib/setline/setline-agent
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
 cp -f "$SETLINE_HOME/scripts/package/setline-agent.service" usr/lib/systemd/system/setline-agent.service
+cp -f "$SETLINE_HOME/scripts/package/setline-agent-interval.service" usr/lib/systemd/system/setline-agent-interval.service
 cp -f "$SETLINE_HOME/scripts/package/setline-agent.timer" usr/lib/systemd/system/setline-agent.timer
 
 # Debian Policy 12.5 要求 /usr/share/doc/<pkg>/copyright，缺失是 lintian 的
@@ -103,7 +104,7 @@ DEBCOPYRIGHT
 
 chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/setline usr/lib/systemd usr/lib/systemd/system
 chmod 0755 usr/bin/setline usr/lib/setline/setline-apply usr/lib/setline/setline-agent
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent.timer
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent-interval.service usr/lib/systemd/system/setline-agent.timer
 
 mkdir -p DEBIAN
 

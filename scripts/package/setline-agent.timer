@@ -3,11 +3,15 @@ Description=Periodically render and apply setline agent fragments
 Documentation=file:///usr/share/doc/setline/agent-reload.md
 Documentation=file:///usr/share/doc/setline/haproxy-integration.md
 Documentation=file:///usr/share/doc/setline/nginx-integration.md
+# 启用 timer 时先启动一次远程刷新；之后各轮只合并 peers/本地路由。
+Wants=setline-agent.service
 
 [Timer]
-# 一轮同时完成渲染和 apply：先以 setline 用户执行 setline render，再以 root 应用。
+# 定时轮次只做 peers/本地路由的渲染和 apply；不包含 bashub 的 pull/check。
+# 实际执行的是不带 --remote 的 setline-agent-interval.service。
 # 常驻 setline.service 仍可同时监听/代理。节奏交给 systemd，
 # 进程内不维护调度循环，systemctl list-timers / journalctl 直接可见。
+Unit=setline-agent-interval.service
 OnBootSec=30s
 OnUnitInactiveSec=30s
 AccuracySec=1s

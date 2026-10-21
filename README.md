@@ -140,11 +140,18 @@ With `[agent] type` in `setline.conf`, `setline` renders a HAProxy or Nginx **fr
 route table: its own, or a set of live `setline` peers (`[agent] peers`). It
 never rewrites the proxy's own config. `setline.service` stays the resident
 listener whenever `listen` is enabled, even when peers are configured.
-`setline-agent.timer` drives one round: `setline render` runs as the unprivileged
-`setline` user and `setline-apply --now` validates and reloads as root,
-hot-syncing a routes-only map change without a reload when a HAProxy admin
+`setline-agent.timer` drives the interval service: `setline render` runs as the
+unprivileged `setline` user and `setline-apply --now` validates and reloads as
+root, hot-syncing a routes-only map change without a reload when a HAProxy admin
 socket is available. With no peers the service also re-renders local route
-changes immediately; with peers the agent is the only renderer.
+changes immediately; with peers the agent is the only renderer. Timer interval
+rounds do not contact bashub. A manifest check runs when
+`setline-agent.service` is started or reloaded (and with the explicit
+`setline pull` commands documented below); when the proxy main config or
+certificate pair changed, the agent follows with
+`setline-apply --now --force auto`. The download runs as the `setline` user;
+root only verifies the staged hashes and installs the managed files. A remote
+outage keeps the last successfully installed files.
 
 Fields and examples: `docs/configuration.md`. Wiring: `docs/haproxy-integration.md`
 and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
@@ -156,7 +163,9 @@ configuration directly. URL, Profile, token and destinations all come from
 `setline.conf`, so the commands need no arguments:
 
 ```bash
-setline pull
+setline pull            # force a full download
+setline pull --check --stage  # unprivileged download into <agent.output>/remote-stage
+setline pull --install        # root: verify and install the staging directory
 ```
 
 `[remote] url` is the bashub root (do not append `/api`). The downloader sends
@@ -166,6 +175,20 @@ that form. Writes are atomic and left untouched when the content is unchanged.
 `proxyEngine`, and the Profile's HTTPS certificate pair. It rewrites only
 `[agent] peers` in `setline.conf`, so the token, local agent settings,
 `setline.json`, `listen` and `routes` all survive.
+`--check --stage` first reads `GET /api/{profile}/config/setline-manifest`,
+compares the four SHA-256 values with `<agent.output>/remote.manifest.json`,
+and downloads only changed resources into `<agent.output>/remote-stage`.
+Run the stage command as the unprivileged `setline` user, then run
+`pull --install` as root. The install phase does not access the network: it
+re-verifies every staged body against the local manifest before replacing any
+managed file. Downloaded bodies are therefore never parsed by the root agent.
+The timer interval service does not call either command. `setline-agent.service`
+calls them once on start/reload, and `systemctl reload setline-agent.service`
+requests another check.
+The command exits `10` when the proxy main config or certificate pair changed,
+so an operator can force one validation/reload with
+`setline-apply --now --force auto` even when the rendered fragments stayed
+identical. A peers-only change stays on the normal fragment-hash/hot-sync path.
 Certificates are written as `/etc/setline/certs/cert.pem` and
 `/etc/setline/certs/key.pem` (nginx), and `/etc/setline/certs/bundle.pem`
 (haproxy). The directory is fixed because the generated proxy config references

@@ -137,12 +137,13 @@ peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 | `peers[].url` | `http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
 渲染入口 `setline render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
-`setline-agent.timer`（每 30s）拉起 `setline-agent.service` 完成一轮。只要 `listen`
+`setline-agent.timer`（每 30s）拉起 `setline-agent-interval.service` 完成一轮；
+启动/reload `setline-agent.service` 时会先做一次 bashub manifest 检查。只要 `listen`
 不是 `false`，`setline.service` 仍作为常驻监听/代理进程一起运行：
 
 ```bash
 sudo systemctl enable --now setline.service      # 监听/代理
-sudo systemctl enable --now setline-agent.timer  # 渲染 + 校验/reload
+sudo systemctl enable --now setline-agent.timer  # 远程检查 + 周期渲染/校验/reload
 ```
 
 某一台 peer 暂时读不到只会在这一轮打一行 `setline agent render failed: ...` 并以非 0
@@ -181,8 +182,9 @@ output = /var/lib/setline
 | 回源地址 | 各 peer 的 `url` 主机 | `127.0.0.1` |
 | 重渲染时机 | `setline-agent` 周期聚合 peers | 启动一次 + 每次管理接口改路由，另有 agent 周期兜底 |
 
-`setline-agent.timer` 两种模式都照用；它调用 `setline render` 后执行 apply，
-片段变了才 reload（见「校验与热加载」）。
+`setline-agent.timer` 两种模式都照用；interval 轮次调用 `setline render` 后执行 apply，
+片段变了才 reload（见「校验与热加载」）。远程配置只在 `setline-agent.service` 启动或
+reload 时检查。
 
 写完先校验，这一步不需要 peer 在线：
 
@@ -254,7 +256,8 @@ location 的路径**不会**落到 `*`，而是走这个 server 自己的 `root`
 
 ## 校验与热加载
 
-片段落盘后由 root 的 `setline-apply` 负责（`setline-agent.timer` 周期驱动，自动按
+片段落盘后由 root 的 `setline-apply` 负责（`setline-agent.timer` 周期驱动 interval，
+自动按
 `[agent] type` 选中 nginx；手工排查时可显式跑 `/usr/lib/setline/setline-apply nginx`）：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；

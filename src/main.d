@@ -17,8 +17,10 @@
 module main;
 
 import core.sys.posix.sys.resource : RLIMIT_NOFILE, getrlimit, rlimit;
-import std.file : exists, readText;
+import std.conv : octal;
+import std.file : exists, mkdirRecurse, readText, setAttributes;
 import std.getopt : defaultGetoptPrinter, getopt;
+import std.path : buildPath;
 import std.stdio : stderr, stdout;
 
 import core.sys.posix.unistd : geteuid;
@@ -27,8 +29,13 @@ import setline.config;
 import setline.control :
   ControlConfig, defaultCertificateDir, defaultControlPath, loadControlConfig, renderApplyShell,
   validateRemoteConfig, writeControlConfigTemplate;
-import setline.download : DownloadKind, downloadConfig, parseDownloadedPeers, rewriteAgentPeers,
-  writeCertificatePair, writeDownloaded;
+import setline.download : DownloadKind, RemoteManifest, clearRemoteStage, downloadConfig,
+  manifestResourceCertificate, manifestResourceCertificateKey, manifestResourcePeers,
+  manifestResourceProxy, parseDownloadedPeers, parseRemoteManifest, readRemoteManifest,
+  installRemoteStage, RemoteInstallTargets, remoteStagePath, remoteStatePath, resourceChanged,
+  rewriteAgentPeers, sha256Hex, stagedCertificateEmptyName, stagedCertificateKeyName,
+  stagedCertificateName, stagedControlName, stagedManifestName, stagedPeersName, stagedProxyName,
+  writeCertificatePair, writeDownloaded, writeRemoteManifest;
 import setline.mapsync : syncMap;
 import setline.model : AgentConfig, HostRoutes;
 import setline.peer : renderAgentSnippets, writeSnippets;
@@ -75,7 +82,7 @@ int main(string[] args) {
     defaultGetoptPrinter("Usage: setline [--conf setline.conf] [-f setline.json] " ~
       "[--agent-type] [--agent-peers] [--apply-config] [-c] " ~
       "[--sync-map <socket> <mapfile>]\n" ~
-      "       setline pull [--conf setline.conf]\n" ~
+      "       setline pull [--check [--stage] | --install] [--conf setline.conf]\n" ~
       "       setline render [--conf setline.conf] [-f setline.json]\n" ~
       "       setline init [path]", helpInfo.options);
     return 0;
@@ -220,49 +227,190 @@ private ControlConfig commandControl(string confPath) {
   return loadControlConfig(confPath);
 }
 
+/** 下载一份资源并核对清单里的 SHA-256；空 Body 的哈希不产生网络请求。 */
+private string fetchVerified(const ControlConfig control, const RemoteManifest manifest,
+    DownloadKind kind) {
+  string name;
+  final switch (kind) {
+  case DownloadKind.manifest:
+    throw new Exception("setline manifest cannot be fetched as a resource");
+  case DownloadKind.peers:
+    name = manifestResourcePeers;
+    break;
+  case DownloadKind.proxy:
+    name = manifestResourceProxy;
+    break;
+  case DownloadKind.certificate:
+    name = manifestResourceCertificate;
+    break;
+  case DownloadKind.certificateKey:
+    name = manifestResourceCertificateKey;
+    break;
+  }
+  auto expected = manifest.resources.get(name, "");
+  if (expected == sha256Hex(""))
+    return "";
+  auto text = downloadConfig(control.remote.url, control.remote.profile, control.remote.token, kind);
+  auto actual = sha256Hex(text);
+  if (actual != expected)
+    throw new Exception("downloaded " ~ name ~ " hash mismatch: expected " ~ expected ~
+        ", got " ~ actual);
+  return text;
+}
+
+/** 按清单同步远程资源。`changedOnly` 时只下载 SHA-256 与上次成功状态不同的资源。
+ *  `stageOnly` 时写入 `remote-stage/`，最终安装由 root 的 `pull --install` 完成。
+ *  返回 proxy 主配置或证书是否变化；peers 变化会由正常 render/apply 发现。 */
+private bool pullRemote(ControlConfig control, string confPath, bool changedOnly, bool stageOnly) {
+  if (stageOnly)
+    clearRemoteStage(control.agent.output);
+  auto manifest = parseRemoteManifest(downloadConfig(control.remote.url, control.remote.profile,
+      control.remote.token, DownloadKind.manifest));
+  auto statePath = remoteStatePath(control.agent.output);
+  auto previous = changedOnly ? readRemoteManifest(statePath) : RemoteManifest.init;
+
+  auto peersChanged = !changedOnly
+      || resourceChanged(previous, manifest, manifestResourcePeers);
+  auto proxyManaged = control.proxyPath.length > 0;
+  auto proxyChanged = proxyManaged
+      && (!changedOnly || resourceChanged(previous, manifest, manifestResourceProxy));
+  auto certificateChanged = !changedOnly
+      || resourceChanged(previous, manifest, manifestResourceCertificate);
+  auto keyChanged = !changedOnly
+      || resourceChanged(previous, manifest, manifestResourceCertificateKey);
+  auto pairChanged = certificateChanged || keyChanged;
+
+  if (changedOnly && !peersChanged && !proxyChanged && !pairChanged) {
+    if (previous.schemaVersion != manifest.schemaVersion)
+      writeRemoteManifest(statePath, manifest);
+    return false;
+  }
+
+  auto certificateExpected = manifest.resources.get(manifestResourceCertificate, "");
+  auto keyExpected = manifest.resources.get(manifestResourceCertificateKey, "");
+  auto certificateEmpty = certificateExpected == sha256Hex("");
+  auto keyEmpty = keyExpected == sha256Hex("");
+  if (certificateEmpty != keyEmpty)
+    throw new Exception("setline manifest certificate and certificate-key must be both present or both empty");
+
+  string peersText;
+  string proxy;
+  string cert;
+  string key;
+  // 先把变化的资源全部取回并验哈希，再触碰磁盘。
+  if (peersChanged)
+    peersText = fetchVerified(control, manifest, DownloadKind.peers);
+  if (proxyChanged) {
+    proxy = fetchVerified(control, manifest, DownloadKind.proxy);
+    if (proxy.length == 0)
+      throw new Exception("downloaded proxy config is empty");
+  }
+  if (pairChanged) {
+    if (!certificateEmpty) {
+      cert = fetchVerified(control, manifest, DownloadKind.certificate);
+      key = fetchVerified(control, manifest, DownloadKind.certificateKey);
+    }
+  }
+
+  if (stageOnly) {
+    auto stageDir = remoteStagePath(control.agent.output);
+    mkdirRecurse(stageDir);
+    setAttributes(stageDir, octal!700);
+    if (peersChanged) {
+      writeDownloaded(buildPath(stageDir, stagedPeersName), peersText);
+      auto peers = parseDownloadedPeers(peersText);
+      auto updatedControl = rewriteAgentPeers(readText(confPath), peers);
+      writeDownloaded(buildPath(stageDir, stagedControlName), updatedControl);
+    }
+    if (proxyChanged)
+      writeDownloaded(buildPath(stageDir, stagedProxyName), proxy);
+    if (pairChanged) {
+      if (certificateEmpty) {
+        writeDownloaded(buildPath(stageDir, stagedCertificateEmptyName), "");
+      } else {
+        writeDownloaded(buildPath(stageDir, stagedCertificateName), cert);
+        writeDownloaded(buildPath(stageDir, stagedCertificateKeyName), key);
+      }
+    }
+    writeRemoteManifest(buildPath(stageDir, stagedManifestName), manifest);
+    stdout.writefln("setline staged remote configuration in %s", stageDir);
+    return proxyChanged || pairChanged;
+  }
+
+  if (peersChanged) {
+    auto peers = parseDownloadedPeers(peersText);
+    auto updatedControl = rewriteAgentPeers(readText(confPath), peers);
+    auto changed = writeDownloaded(confPath, updatedControl);
+    stdout.writefln("setline updated peers in %s (%s)", confPath,
+      changed ? "updated" : "unchanged");
+  }
+  if (proxyChanged) {
+    auto changed = writeDownloaded(control.proxyPath, proxy);
+    stdout.writefln("setline downloaded proxy config %s (%s)", control.proxyPath,
+      changed ? "updated" : "unchanged");
+  }
+  if (pairChanged) {
+    auto changed = writeCertificatePair(defaultCertificateDir, cert, key);
+    stdout.writefln("setline downloaded certificate pair %s (%s)", defaultCertificateDir,
+      changed ? "updated" : "unchanged");
+  }
+  writeRemoteManifest(statePath, manifest);
+  return proxyChanged || pairChanged;
+}
+
 /** `setline pull`：按 `[remote]` 下载 peers、代理主配置和证书。 */
 private int runPull(string[] args) {
   string confPath = defaultControlPath;
+  bool check;
+  bool stage;
+  bool install;
   bool help;
   auto helpInfo = getopt(args,
     "conf", "Path to setline.conf", &confPath,
+    "check", "Only download resources whose manifest hash changed", &check,
+    "stage", "Write changed resources to the unprivileged staging directory", &stage,
+    "install", "Install a staged download as root", &install,
     "help|h", "Show this help", &help);
-  auto usage = "Usage: setline pull [--conf setline.conf]";
+  auto usage = "Usage: setline pull [--check [--stage] | --install] [--conf setline.conf]";
   if (help) {
     defaultGetoptPrinter(usage, helpInfo.options);
     return 0;
   }
+  if ((stage && !check) || (install && (check || stage))) {
+    stderr.writefln("%s", usage);
+    return 2;
+  }
+  if (stage && geteuid() == 0) {
+    stderr.writefln("setline pull --stage must run as the unprivileged setline user");
+    return 2;
+  }
+  if (install && geteuid() != 0) {
+    stderr.writefln("setline pull --install must run as root");
+    return 2;
+  }
 
   try {
     auto control = commandControl(confPath);
+    if (install) {
+      auto staged = installRemoteStage(remoteStagePath(control.agent.output),
+        RemoteInstallTargets(confPath, control.proxyPath, defaultCertificateDir,
+          remoteStatePath(control.agent.output)));
+      if (staged)
+        stdout.writefln("setline installed staged remote configuration");
+      return 0;
+    }
+    // --check 只由显式命令调用；没有完整 remote 配置时安静跳过，
+    // 不把「本地单机部署」变成一条错误日志。
+    if (check && !control.remote.complete()) {
+      if (stage)
+        clearRemoteStage(control.agent.output);
+      return 0;
+    }
     validateRemoteConfig(control.remote, confPath);
-    auto peersText = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
-      DownloadKind.peers);
-    auto peers = parseDownloadedPeers(peersText);
-    string proxy;
-    if (control.proxyPath.length > 0) {
-      proxy = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
-        DownloadKind.proxy);
-    }
-    auto cert = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
-      DownloadKind.certificate);
-    auto key = downloadConfig(control.remote.url, control.remote.profile, control.remote.token,
-      DownloadKind.certificateKey);
-
-    // 四份内容都拿到且证书对通过校验后才触碰磁盘，网络或 PEM 错误不会留下半套更新。
-    auto updatedControl = rewriteAgentPeers(readText(confPath), peers);
-    auto certChanged = writeCertificatePair(defaultCertificateDir, cert, key);
-    if (control.proxyPath.length > 0) {
-      auto proxyChanged = writeDownloaded(control.proxyPath, proxy);
-      stdout.writefln("setline downloaded proxy config %s (%s)", control.proxyPath,
-        proxyChanged ? "updated" : "unchanged");
-    }
-    stdout.writefln("setline downloaded certificate pair %s (%s)", defaultCertificateDir,
-      certChanged ? "updated" : "unchanged");
-    auto changed = writeDownloaded(confPath, updatedControl);
-    stdout.writefln("setline updated peers in %s (%s)", confPath,
-      changed ? "updated" : "unchanged");
-    return 0;
+    auto changed = pullRemote(control, confPath, check, stage);
+    // 10 只给 setline-agent：proxy 主配置/证书变化不一定改变片段哈希，
+    // 需要它给 setline-apply 加 --force，确保验证并 reload 一次。
+    return check && changed ? 10 : 0;
   } catch (Exception e) {
     stderr.writefln("setline pull failed: %s", e.msg);
     return 1;

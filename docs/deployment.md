@@ -36,7 +36,8 @@ The binary package installs:
 - `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
 - `/usr/lib/setline/setline-agent` (one-round render/apply orchestrator)
 - `/usr/lib/systemd/system/setline.service`
-- `/usr/lib/systemd/system/setline-agent.service` + `setline-agent.timer`
+- `/usr/lib/systemd/system/setline-agent.service` (start/reload manifest check)
+- `/usr/lib/systemd/system/setline-agent-interval.service` + `setline-agent.timer`
 - `/etc/setline/setline.conf` and `/etc/setline/setline.json` (created on first install)
 
 `scripts/build_srpm.sh` produces the same package from source on the target
@@ -51,18 +52,21 @@ has an `[agent] type` needs
 
 ```bash
 sudo systemctl enable --now setline.service       # listen and proxy (unless listen:false)
-sudo systemctl enable --now setline-agent.timer   # render + validate/reload
+sudo systemctl enable --now setline-agent.timer   # remote check + periodic render/apply
 ```
 
 otherwise the generated fragment is never rendered, validated or reloaded. How
 to run it by hand, its exit codes and the `[apply]` settings in `setline.conf`
 are in `docs/agent-reload.md`. `setline.service` always remains the resident
 listener when `listen` is enabled, including when `[agent] peers` is configured.
-Every 30s `setline-agent.timer` runs `setline-agent.service`, which executes
-`setline render` as the unprivileged `setline` user and then applies the result
-as root. With no peers, `setline.service` additionally re-renders local route
-changes immediately; with peers, the agent is the renderer so the service never
-overwrites peer-derived fragments.
+At startup (and whenever the operator runs
+`systemctl reload setline-agent.service`), `setline-agent.service` performs one
+remote manifest check, then renders and applies. Every 30s
+`setline-agent.timer` instead runs `setline-agent-interval.service`, which
+executes `setline render` as the unprivileged `setline` user and then applies
+the result as root without contacting bashub. With no peers, `setline.service`
+additionally re-renders local route changes immediately; with peers, the agent
+is the renderer so the service never overwrites peer-derived fragments.
 
 The systemd service runs:
 
@@ -70,8 +74,10 @@ The systemd service runs:
 /usr/bin/setline --conf /etc/setline/setline.conf
 ```
 
-`setline-agent.service` runs as root, but only orchestrates: it drops to the
-`setline` user for `setline render`, then calls `setline-apply --now` as root.
+Both agent units run as root, but only orchestrate: they drop to the `setline`
+user for remote downloads and `setline render`, then call `setline-apply --now`
+as root. The remote download is staged by the unprivileged user; root only
+installs the verified staging.
 Drop a `/etc/systemd/system/setline-agent.service.d/*.conf` with an `ExecStart=`
 override if `setline.conf` lives elsewhere.
 

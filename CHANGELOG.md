@@ -25,6 +25,27 @@ Per-release notes with the upgrade steps spelled out live in
   into `cert.pem`/`key.pem` for nginx and concatenated into `bundle.pem` for
   haproxy under the fixed `/etc/setline/certs` directory; private-key files are
   mode `0600`, and clearing the Profile certificate removes the managed files.
+- `setline-agent --remote` (start and reload) fetches
+  `GET /api/{profile}/config/setline-manifest`, compares per-resource SHA-256
+  values with `<agent.output>/remote.manifest.json`, and download only changed
+  resources. A remote failure keeps the last successfully pulled configuration
+  and does not block rendering or applying local routes.
+- Agent remote sync is split across the privilege boundary:
+  `setline pull --check --stage` runs as the `setline` user and writes changed
+  resources to `<agent.output>/remote-stage`; root then runs
+  `setline pull --install`, which re-verifies the local staging hashes and
+  installs the managed files without accessing the network. Installed files
+  inherit the owner and mode of the file they replace, so `setline.conf` keeps
+  its `0640` protection.
+- `setline-agent.timer` drives `setline-agent-interval.service`, which only
+  renders peers/local routes and applies fragments. It does not contact
+  bashub; remote configuration is checked by `setline-agent.service` on
+  start/reload, or manually with `setline pull`.
+- `setline pull --check --stage` exits `10` after staging a changed proxy main config or
+  certificate pair. The agent
+  then runs `setline-apply --now --force`, which bypasses both the unchanged
+  fragment hash and HAProxy map hot-sync so a changed main proxy config or
+  certificate triggers a real validation and reload.
 - `setline init` writes a commented `setline.conf` template only when the
   target does not exist.
 - `setline --apply-config` exports the resolved `[apply]` settings for
@@ -35,7 +56,8 @@ Per-release notes with the upgrade steps spelled out live in
   aggregates `[agent] peers` when configured and otherwise renders the local
   topology; the root-owned agent helper invokes it through `runuser`.
 - `setline-agent` and `setline-agent.timer` replace the separate render and
-  apply timers. One oneshot runs `setline render` as the `setline` user with
+  apply timers. The start/reload unit performs one remote manifest check; the
+  timer-driven interval unit runs `setline render` as the `setline` user with
   `runuser`, then runs `setline-apply --now` as root.
 
 ### Changed

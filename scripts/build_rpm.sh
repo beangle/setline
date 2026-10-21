@@ -96,10 +96,11 @@ cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-appl
 cp -f "$SETLINE_HOME/scripts/package/setline-agent" usr/lib/setline/setline-agent
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
 cp -f "$SETLINE_HOME/scripts/package/setline-agent.service" usr/lib/systemd/system/setline-agent.service
+cp -f "$SETLINE_HOME/scripts/package/setline-agent-interval.service" usr/lib/systemd/system/setline-agent-interval.service
 cp -f "$SETLINE_HOME/scripts/package/setline-agent.timer" usr/lib/systemd/system/setline-agent.timer
 
 chmod -R 0755 .
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent.timer
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent-interval.service usr/lib/systemd/system/setline-agent.timer
 chmod 0755 usr/bin/setline usr/lib/setline/setline-apply usr/lib/setline/setline-agent
 
 cd ..

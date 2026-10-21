@@ -1,12 +1,13 @@
 #!/bin/bash
-# setline-agent: one periodic agent round.
+# setline-agent: render one round, optionally refreshing remote configuration first.
 #
 # The service unit runs as root only to orchestrate the privilege boundary:
+#   - refresh the bashub-managed files on start/reload (the timer does not);
 #   - render one round as the setline user through `setline render`;
 #   - validate and reload the fragments as root through `setline-apply`.
 #
-# Rendering must never happen in this process: setline parses HTTP responses
-# from peers, and the project requires that parser to stay unprivileged.
+# Remote downloads always run as the setline user. Root only installs the
+# verified staging directory and never parses a remote response.
 set -euo pipefail
 
 SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline}"
@@ -14,6 +15,19 @@ SETLINE_CONF="${SETLINE_CONF:-/etc/setline/setline.conf}"
 SETLINE_APPLY="${SETLINE_APPLY:-/usr/lib/setline/setline-apply}"
 RUN_USER="${SETLINE_AGENT_USER:-setline}"
 RUN_GROUP="${SETLINE_AGENT_GROUP:-beangle}"
+
+REMOTE=1
+for arg in "$@"; do
+  case "$arg" in
+    --remote) REMOTE=1 ;;
+    --interval) REMOTE=0 ;;
+    --help|-h)
+      echo "usage: setline-agent [--remote|--interval]"
+      exit 0
+      ;;
+    *) echo "usage: setline-agent [--remote|--interval]" >&2; exit 2 ;;
+  esac
+done
 
 log() { echo "setline-agent: $*"; }
 die() { echo "setline-agent: $*" >&2; exit 1; }
@@ -31,9 +45,43 @@ if [ -z "$agent_type" ]; then
   exit 0
 fi
 
+# Start/reload performs one manifest check. The interval service deliberately
+# skips this block, so its timer only merges peers and local routes.
+force_apply=0
+if [ "$REMOTE" = 1 ]; then
+  set +e
+  runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \
+    "$SETLINE_BIN" pull --check --stage --conf "$SETLINE_CONF"
+  pull_status=$?
+  set -e
+  case "$pull_status" in
+    0)
+      ;;
+    10)
+      force_apply=1
+      ;;
+    1)
+      log "remote configuration check failed; keeping the last installed configuration"
+      ;;
+    *)
+      die "remote configuration check returned exit code $pull_status"
+      ;;
+  esac
+  if [ "$pull_status" = 0 ] || [ "$pull_status" = 10 ]; then
+    if ! "$SETLINE_BIN" pull --install --conf "$SETLINE_CONF"; then
+      log "remote staging install failed; keeping the last installed configuration"
+      force_apply=0
+    fi
+  fi
+fi
+
 # The renderer reads remote route tables when peers are configured, so drop to
 # setline. Rendering is complete when this process returns; no quiet window is
 # needed before validation and reload.
 runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \
   "$SETLINE_BIN" render --conf "$SETLINE_CONF"
-"$SETLINE_APPLY" --now auto
+if [ "$force_apply" = 1 ]; then
+  "$SETLINE_APPLY" --now --force auto
+else
+  "$SETLINE_APPLY" --now auto
+fi

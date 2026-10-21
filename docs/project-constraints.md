@@ -91,12 +91,20 @@ These are intentionally out of scope unless the project goal changes:
   is not gated, and neither are the exits it invokes as root
   (`setline --agent-type`, `setline --agent-peers`, `setline --sync-map`) or
   `-c` and `--help`.
-- Privileged work belongs to one short-lived root unit,
-  `setline-agent.service`, and its root helper `setline-apply`. The agent only
-  orchestrates: it drops to the `setline` user with `runuser` for
-  `setline render`, then invokes `setline-apply`. `setline-apply` validates fragments,
-  runs `systemctl reload`, rolls the fragment directory back, and talks to a
-  proxy admin socket.
+- Privileged work belongs to short-lived root units,
+  `setline-agent.service` / `setline-agent-interval.service`, and the root helper
+  `setline-apply`. They only orchestrate: on start/reload the remote agent drops
+  to the `setline` user with `runuser`
+  for the remote manifest check and staging download, installs that local
+  staging as root, executes `setline render` unprivileged, and invokes
+  `setline-apply`. The timer-driven interval service only renders peers/local
+  routes and applies fragments; it does not contact bashub.
+  `setline-apply` validates fragments, runs `systemctl reload`, rolls the
+  fragment directory back, and talks to a proxy admin socket.
+- Remote responses are parsed only by the unprivileged `setline` user. The root
+  `setline pull --install` reads `<agent.output>/remote-stage`, re-verifies its
+  SHA-256 values against the local manifest, and installs the files; it must not
+  open a remote URL or parse peer route data.
 - The shipped `setline.service` enforces the split with `User=setline` and
   `Group=beangle`. Do not remove those lines, and do not add a replacement unit
   or a manual command that starts `setline` as root.
@@ -253,8 +261,10 @@ proxy's own main config file: the fragment is included (Nginx) or concatenated
 (HAProxy, which has no `include`) by deployment tooling. The process renders
 exactly one round and exits; the cadence is external
 (`setline-agent.timer` in the package), so there is no in-process scheduler and no
-`sync` config. The timer first runs `setline render` as the `setline` user, then
-applies the result as root through `setline-apply`. The resident
+`sync` config. Each interval round runs `setline render` as the `setline` user,
+then applies the result as root through `setline-apply`. The timer does not
+contact bashub; the separate start/reload path performs one manifest check
+before that render. The resident
 `setline.service` keeps listening and proxying at the same time.
 
 With no `peers`, the same renderer reads the local route table instead

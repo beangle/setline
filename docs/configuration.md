@@ -54,7 +54,7 @@ owner = setline:beangle
 
 | 段 | 键 | 默认值 | 说明 |
 |---|---|---|---|
-| `[remote]` | `url` | 无 | bashub 根地址，不要带 `/api` 或 Profile |
+| `[remote]` | `url` | 无 | bashub 根地址，不要带 `/api` 或 Profile；setline-agent 启动/reload 和显式 `setline pull` 使用，timer 的 interval 轮次不访问 |
 | | `profile` | 无 | `org.name` |
 | | `token` | 无 | `Profile.key` |
 | `[topology]` | `file` | `/etc/setline/setline.json` | 本机拓扑文件路径；`setline pull` 只更新 `[agent] peers`，不改这里 |
@@ -82,6 +82,20 @@ owner = setline:beangle
 `setline pull` 的证书目录固定为 `/etc/setline/certs`：bashub 生成的 nginx 配置引用
 `cert.pem` / `key.pem`，haproxy 配置引用 `bundle.pem`，因此不提供可改目录，避免下载端和
 代理配置指向不同位置。
+
+`setline-agent` 在**启动或 reload** 时做一次远程 manifest 检查：先以 setline 用户执行
+`setline pull --check --stage`，读取 `GET /api/{profile}/config/setline-manifest`，把四个
+资源的 SHA-256 与 `<agent.output>/remote.manifest.json` 比较，只把变化项下载到
+`<agent.output>/remote-stage`；随后 root 执行 `setline pull --install`，再次核对 staging
+中的哈希并安装。若 pull 返回 `10`，agent 会用 `setline-apply --now --force auto` 强制
+校验并 reload。远程不可达或安装失败时保留上次成功安装的文件，agent 打一条告警后继续用
+本地配置 render/apply。
+
+timer 驱动的 interval 轮次（`setline-agent-interval.service`）**不会**访问 `[remote]`，
+只做 peers/本地路由的 render/apply；它也没有 pull/check 入口。需要在不重启
+`setline-agent.service` 的情况下刷新远程配置，可显式执行 `systemctl reload
+setline-agent.service`，或手工执行 `setline pull --check --stage` / `setline pull
+--install` 后再 apply。手工执行 `setline pull` 仍会强制下载全部资源。
 
 ## setline.json 顶层字段
 
@@ -404,9 +418,12 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 `"listen": false`：setline 不绑监听，启动时渲染一次片段后退出。
 
 渲染本身没有调度循环：周期刷新由 systemd timer 驱动（包里的
-`setline-agent.timer`，每 30s 拉起一次 `setline-agent.service`）。它降权执行
-`setline render`，再以 root 调用 `setline-apply --now auto`。`peers` 只改变 render 的
-数据源，不再让 `setline.service` 退出。`listen:false` 才是纯渲染部署，此时只启用 timer。
+`setline-agent.timer`，每 30s 拉起一次 `setline-agent-interval.service`）。interval 轮次
+降权执行 `setline render`，再以 root 调用 `setline-apply --now auto`；它不访问
+`[remote]`。远程 manifest 检查只在 `setline-agent.service` 启动或 reload 时做
+（`setline-agent --remote`），并复用同一套 setline 用户下载、root 安装的权限边界。
+`peers` 只改变 render 的数据源，不再让 `setline.service` 退出。`listen:false` 才是纯
+渲染部署，此时只启用 timer。
 
 | 数据来源 | `listen` | 进程行为 |
 |---|---|---|

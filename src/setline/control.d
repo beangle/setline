@@ -274,6 +274,7 @@ string renderApplyShell(const ControlConfig config) {
 enum controlConfigTemplate =
   "# setline local control plane. setline.json holds local listeners and routes.\n" ~
   "[remote]\n" ~
+  "# Used only by explicit `setline pull`; the agent timer never contacts it.\n" ~
   "url = http://127.0.0.1:8082\n" ~
   "profile = org.name\n" ~
   "token = change-me\n" ~

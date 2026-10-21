@@ -134,6 +134,7 @@ install -D -m 0755 scripts/package/setline-apply %{buildroot}/usr/lib/setline/se
 install -D -m 0755 scripts/package/setline-agent %{buildroot}/usr/lib/setline/setline-agent
 install -D -m 0644 scripts/package/setline.service %{buildroot}/usr/lib/systemd/system/setline.service
 install -D -m 0644 scripts/package/setline-agent.service %{buildroot}/usr/lib/systemd/system/setline-agent.service
+install -D -m 0644 scripts/package/setline-agent-interval.service %{buildroot}/usr/lib/systemd/system/setline-agent-interval.service
 install -D -m 0644 scripts/package/setline-agent.timer %{buildroot}/usr/lib/systemd/system/setline-agent.timer
 EOF
 

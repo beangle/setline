@@ -13,7 +13,8 @@ systemd 单元的设计考虑。常驻的 `setline.service` 负责监听和代�
 |---|---|---|
 | `setline`（service，`User=setline`） | 监听、代理；无 peers 时也即时渲染本机路由变化 | 不读 peer、不发信号、不 reload |
 | `setline render`（`User=setline`） | 读 peers 或本机拓扑，合并并原子写出片段，然后退出 | 不监听端口、不发信号、不 reload |
-| `setline-agent`（root，oneshot） | 编排一轮：降权执行 `setline render`，然后调用 apply | 不解析 peer 响应、不直接 reload |
+| `setline-agent`（root，oneshot） | 启动/reload 时做一次远端 manifest 检查；降权执行 `setline render`，然后调用 apply | 不在 root 进程解析远端响应、不直接 reload |
+| `setline-agent-interval`（root，oneshot） | timer 每轮只编排 peers/本地路由渲染和 apply | 不访问 bashub、没有 pull/check 入口 |
 | `setline-apply`（root，helper） | 校验、map 热同步、reload、回滚 | 不生成片段、不做服务发现 |
 | `haproxy` / `nginx` | 按各自方式加载片段 | 不感知 setline |
 
@@ -22,17 +23,22 @@ systemd 单元的设计考虑。常驻的 `setline.service` 负责监听和代�
 直接变成 root 失陷。渲染 peer 路由表同样要解析远端 HTTP/JSON，所以也不能放进
 `setline-agent` 这个 root 进程。
 
-`setline-agent` 以 root 运行只是为了调用 `setline-apply`；真正的渲染用
-`runuser -u setline -g beangle` 降权。需要特权的功能（校验、reload、回滚、连代理的
-admin socket）都在 `setline-apply` 里。代码里以 root 启动代理或渲染 agent 会打印一行
-拒绝并退出（退出码 `2`，对上 unit 的 `RestartPreventExitStatus=2`）。`setline-apply`
-以 root 调用的几个只读出口 `--agent-type`、`--agent-peers`、`--sync-map`，以及 `-c`、
-`--help` 不受这条判据约束。完整条目见 `docs/project-constraints.md` 的 Privilege
-Model。
+`setline-agent.service` 在启动或 reload 时做一次远端 manifest 检查；下载仍由
+`setline` 用户执行，root 的 `pull --install` 只读本机 `<agent.output>/remote-stage`、
+核对本地哈希并写最终文件，不打开远端 URL。真正的远程下载、manifest/peers 解析和渲染都用
+`runuser -u setline -g beangle` 降权到 `setline` 用户。timer 驱动的
+`setline-agent-interval.service` 不访问 `[remote]`，只做 peers/本地路由的 render/apply。
+`pull --check --stage` 和 `pull --install` 分别拒绝 root 与非 root 调用，避免把下载
+误跑到 root 或把安装误跑到服务账号。
+代码里以 root 启动代理或渲染 agent 会打印一行拒绝并退出（退出码 `2`，对上 unit 的
+`RestartPreventExitStatus=2`）。`setline-apply` 以 root 调用的几个只读出口
+`--agent-type`、`--agent-peers`、`--sync-map`，以及 `-c`、`--help` 不受这条判据约束。
+完整条目见 `docs/project-constraints.md` 的 Privilege Model。
 
 ## 启用与使用
 
-包只**安装** `setline.service`、`setline-agent.{service,timer}` 和
+包只**安装** `setline.service`、`setline-agent.service`、
+`setline-agent-interval.service`、`setline-agent.timer` 和
 `/usr/lib/setline/{setline-agent,setline-apply}`，**不会**替你 enable。写了
 `[agent] type` 的机器装完后要自己把 timer 拉起来；`listen` 不是 `false` 时还要启动
 常驻代理：
@@ -45,11 +51,16 @@ sudo systemctl enable --now setline-agent.timer
 # 2. 确认它在转：下次触发时间、上一次的结果
 systemctl list-timers setline-agent.timer
 systemctl status setline-agent.service --no-pager -l
+systemctl status setline-agent-interval.service --no-pager -l
 
 # 3. 看日志：渲染和 apply 的输出都进同一个 journal
-journalctl -u setline-agent -n 30 -o cat     # 最近一轮
-journalctl -u setline-agent -f               # 盯下一轮
+journalctl -u setline-agent -u setline-agent-interval -n 30 -o cat
+journalctl -u setline-agent -u setline-agent-interval -f
 ```
+
+`setline-agent.timer` 的 `[Unit] Wants=setline-agent.service` 会让第一次启用 timer 时
+也执行一次远程检查；之后 timer 只触发 interval 轮次。需要再次检查远端配置时执行
+`sudo systemctl reload setline-agent.service`。
 
 普通代理机器（`setline.conf` 没有 `[agent] type`）不需要启用 timer；就算开着也只是一轮
 打一行 `no [agent] type in ..., nothing to do` 后退出 0，没有别的副作用。`listen`
@@ -58,13 +69,20 @@ service 变成一次性进程。`listen:false` 才是不启动 service 的纯渲
 
 ### 手工执行
 
-timer 跑的就是 `setline-agent`；排查时可以分别跑渲染和 apply：
+timer 跑的是 `setline-agent --interval`（不访问 bashub）；排查时可以分别跑：
 
 ```bash
-sudo /usr/lib/setline/setline-agent                 # 跑完整一轮（先降权渲染，再 apply）
+sudo /usr/lib/setline/setline-agent --interval      # 本地一轮（render + apply，不访问远端）
+sudo /usr/lib/setline/setline-agent --remote        # 远端检查 + render + apply
+sudo systemctl start setline-agent.service          # 启动时执行 --remote
+sudo systemctl reload setline-agent.service         # 重新执行 --remote
 sudo -u setline -g beangle -- /usr/bin/setline render --conf /etc/setline/setline.conf
+# 以下是手工分步刷新
+sudo -u setline -g beangle -- /usr/bin/setline pull --check --stage --conf /etc/setline/setline.conf
+sudo /usr/bin/setline pull --install --conf /etc/setline/setline.conf
 sudo /usr/lib/setline/setline-apply auto            # 按 [agent] type 做校验 + reload
 sudo /usr/lib/setline/setline-apply --now auto      # 刚渲染完，跳过静默窗口立即 apply
+sudo /usr/lib/setline/setline-apply --now --force auto  # 远程主配置/证书已更新，强制 apply
 sudo /usr/lib/setline/setline-apply haproxy         # 只处理 haproxy，跳过探测
 sudo /usr/lib/setline/setline-apply nginx           # 只处理 nginx
 ```
@@ -84,11 +102,22 @@ sudo /usr/lib/setline/setline-apply nginx           # 只处理 nginx
 `setline-apply` 退出码：`0` 无事可做或成功；`1` 片段不合法、reload 失败（已回滚）或
 片段目录取值本身有问题；`2` 用法错误（参数不是 `haproxy`/`nginx`/`auto`）；`3` 接线错误。
 
+`setline pull --check --stage` 的退出码：`0` 无变化或远程配置不完整（命令静默跳过）；
+`1` 下载、校验或写 staging 失败；`10` proxy 主配置或证书对已更新。`10` 是 agent 与 apply
+之间的操作约定：`setline-agent --remote` 看到 `10` 并成功安装 staging 后，会执行
+`setline-apply --now --force`，确保代理真正验证并 reload 一次；`--force` 同时跳过 map
+热同步，避免把主配置变化误判成纯路由变化。`setline pull --install` 成功返回 `0`，本地
+staging 损坏或无法写入最终路径时返回 `1`；缺少清单表示本轮没有变化，只清理残留 staging。
+
 ### 频率与 reload 参数
 
-timer 的节奏：开机 30s 后第一轮，之后每轮**结束后** 30s 再跑
+timer 的节奏：开机 30s 后第一轮 interval，之后每轮**结束后** 30s 再跑
 （`OnBootSec=30s` + `OnUnitInactiveSec=30s` + `AccuracySec=1s`）。改周期别直接改包里的
-unit（升级会被覆盖），用 drop-in：
+unit（升级会被覆盖），用 drop-in。interval 轮次不会请求 bashub，也没有 pull/check 入口；
+这个间隔只决定 peers/本地路由的合并频率，不触发远端检查。
+远端检查发生在 `setline-agent.service` 的启动/reload。需要立即同步时执行
+`sudo systemctl reload setline-agent.service`。这条路径只发一次 manifest GET，资源哈希都
+没变时不下载 peers、proxy 或证书。
 
 ```bash
 sudo systemctl edit setline-agent.timer      # 写 [Timer] 段覆盖 OnUnitInactiveSec 等
@@ -296,14 +325,15 @@ OnBootSec=30s
 OnUnitInactiveSec=30s
 ```
 
-代价是最多一个周期的延迟；配置同步不差这几秒。同时 `setline-agent.service`
-设 `StartLimitInterval=0`，因为这个 unit 就是被周期触发的，幂等动作不怕重复
+代价是最多一个周期的延迟；配置同步不差这几秒。同时
+`setline-agent-interval.service` 设 `StartLimitInterval=0`，因为这个 unit 就是被周期
+触发的，幂等动作不怕重复
 （为什么不是 `StartLimitIntervalSec=`，见 [deployment.md](deployment.md) 的
 「systemd 版本兼容」）。
 
 ## 处理哪个代理：由 `[agent] type` 决定
 
-timer 只有一个，跑 `setline-agent`，代理由配置决定，不需要人工挑实例：
+timer 只有一个，跑 `setline-agent --interval`，代理由配置决定，不需要人工挑实例：
 
 ```bash
 setline --conf /etc/setline/setline.conf --agent-type   # 打印 haproxy / nginx / 空
@@ -372,6 +402,7 @@ setline --conf /etc/setline/setline.conf --agent-type   # 打印 haproxy / nginx
 /var/lib/setline/haproxy/   setline:beangle 0755   setline 写，root 读
 /var/lib/setline/nginx/     同上
 /var/lib/setline/apply/     <agent.output>/apply，状态与 lastgood 快照
+/var/lib/setline/remote-stage/  setline 写，root 安装后删除
 /etc/haproxy/haproxy.cfg    root，只被读
 /etc/nginx/nginx.conf       root，只被读（加 include 行）
 ```
@@ -379,6 +410,11 @@ setline --conf /etc/setline/setline.conf --agent-type   # 打印 haproxy / nginx
 片段目录归 setline 自己，因此不需要给 `/etc/haproxy` 或 `/etc/nginx` 放权，发行版
 升级也不会重置。跨文件系统 rename 不会出问题：`writeSnippet` 在目标同目录写 tmp 再
 rename，只要片段目录本身可写即可。
+
+远程配置同样遵守这条边界：manifest、peers、proxy 和证书只由 setline 用户下载并解析到
+`remote-stage/`。root 的 `pull --install` 读取本地 staging，按清单复核 SHA-256 后写入
+`setline.conf`、主代理配置和证书目录；安装会继承已有文件的属主和权限，避免把
+`setline.conf` 的 `0640` 变成可被其他用户读取的临时文件权限。
 
 片段目录的属主必须能写：`setline-apply` 以 root 跑，如果它在 setline 之前先建出了
 目录（`mkdir -p` 在「片段为空就退出」的判断之前），目录会是 `root:root`，`setline`

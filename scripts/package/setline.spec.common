@@ -87,4 +87,5 @@ systemctl daemon-reload 2>/dev/null || :
 %attr(0755,root,root) /usr/lib/setline/setline-agent
 %attr(0644,root,root) /usr/lib/systemd/system/setline.service
 %attr(0644,root,root) /usr/lib/systemd/system/setline-agent.service
+%attr(0644,root,root) /usr/lib/systemd/system/setline-agent-interval.service
 %attr(0644,root,root) /usr/lib/systemd/system/setline-agent.timer

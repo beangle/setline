@@ -7,6 +7,7 @@
 #   - 幂等：内容哈希没变就直接退出，重复触发是免费的；
 #   - 防抖用 mtime 静默窗口，不在脚本里 sleep 占住 oneshot；
 #   - `--now` 供 setline-agent 在“本轮渲染已经完成”后跳过静默窗口；
+#   - `--force` 供 setline-agent 在远程主配置/证书更新后强制再校验一次；
 #   - 校验/重载一律走 systemctl reload，不自己碰进程和信号；
 #   - 失败整体还原 last-known-good 目录，不留半新半旧状态；
 #   - 代理由配置决定：`auto` 从 setline.conf 的 `[agent] type` 里读，不必手工挑 timer 实例。
@@ -14,17 +15,19 @@ set -euo pipefail
 
 MODE=""
 NOW=0
+FORCE=0
 for arg in "$@"; do
   case "$arg" in
     --now) NOW=1 ;;
+    --force) FORCE=1 ;;
     haproxy|nginx|auto)
-      [ -z "$MODE" ] || { echo "usage: setline-apply [--now] <haproxy|nginx|auto>" >&2; exit 2; }
+      [ -z "$MODE" ] || { echo "usage: setline-apply [--now] [--force] <haproxy|nginx|auto>" >&2; exit 2; }
       MODE="$arg"
       ;;
-    *) echo "usage: setline-apply [--now] <haproxy|nginx|auto>" >&2; exit 2 ;;
+    *) echo "usage: setline-apply [--now] [--force] <haproxy|nginx|auto>" >&2; exit 2 ;;
   esac
 done
-[ -n "$MODE" ] || { echo "usage: setline-apply [--now] <haproxy|nginx|auto>" >&2; exit 2; }
+[ -n "$MODE" ] || { echo "usage: setline-apply [--now] [--force] <haproxy|nginx|auto>" >&2; exit 2; }
 
 # 所有 reload 参数都在 /etc/setline/setline.conf 的 [apply] 段。SETLINE_BIN / SETLINE_CONF
 # 只用于测试或非标准安装位置。
@@ -288,7 +291,7 @@ if [ "$age" -lt "$QUIET_SECONDS" ]; then
 fi
 
 current_hash=$(dir_hash "$FRAG_DIR")
-if [ -f "$HASHFILE" ] && [ "$(cat "$HASHFILE")" = "$current_hash" ]; then
+if [ "$FORCE" = 0 ] && [ -f "$HASHFILE" ] && [ "$(cat "$HASHFILE")" = "$current_hash" ]; then
   exit 0
 fi
 # backend 片段（非 *.map）与上次应用内容的哈希：只改路由表时可以不 reload 就地热同步。
@@ -320,7 +323,7 @@ fi
 # 只有 backend 片段与上次应用过的完全一致时才尝试热同步：新增/删除 backend 必须 reload
 # 才能让 haproxy 认识，而纯粹的路由表变化可以靠 runtime socket 就地更新，不用打断连接。
 # 探测不到可用 socket（或某个 map 同步失败）就落到下面的 reload，行为与以前一致。
-if [ -n "$prev_cfg_hash" ] && [ "$new_cfg_hash" = "$prev_cfg_hash" ] && hot_sync_maps; then
+if [ "$FORCE" = 0 ] && [ -n "$prev_cfg_hash" ] && [ "$new_cfg_hash" = "$prev_cfg_hash" ] && hot_sync_maps; then
   snapshot_lastgood
   echo "$current_hash" >"$HASHFILE"
   echo "$new_cfg_hash" >"$CFGHASHFILE"

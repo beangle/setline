@@ -16,17 +16,22 @@
 
 module setline.download;
 
-import std.algorithm : canFind, startsWith;
+import std.algorithm : canFind, sort, startsWith;
 import std.array : appender;
 import std.exception : enforce;
-import std.file : exists, getAttributes, mkdirRecurse, readText, remove, rename, setAttributes, write;
+import std.file : exists, getAttributes, mkdirRecurse, readText, remove, rename, rmdirRecurse, setAttributes, write;
 import std.functional : toDelegate;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath, dirName;
-import std.string : indexOf, splitLines, strip, stripRight;
-import std.conv : octal;
+import std.string : indexOf, splitLines, strip, stripRight, toStringz;
+import std.conv : octal, to;
+import std.digest : LetterCase, toHexString;
+import std.digest.sha : sha256Of;
 
-import setline.control : renderAgentPeers;
+import core.sys.posix.sys.stat : stat, stat_t;
+import core.sys.posix.unistd : chown, getegid, geteuid;
+
+import setline.control : defaultFragmentRoot, renderAgentPeers;
 import setline.edge : fetchText;
 import setline.model : PeerConfig;
 import setline.peer : peerAddress;
@@ -34,10 +39,32 @@ import setline.util : toLowerAscii;
 
 /** bashub 为 setline 提供的两份机器配置。 */
 enum DownloadKind {
+  manifest,
   peers,
   proxy,
   certificate,
   certificateKey,
+}
+
+enum manifestResourcePeers = "peers";
+enum manifestResourceProxy = "proxy";
+enum manifestResourceCertificate = "certificate";
+enum manifestResourceCertificateKey = "certificate-key";
+
+/// agent 以非特权用户写入、由 root 原子安装的暂存目录和固定文件名。
+enum remoteStageName = "remote-stage";
+enum stagedControlName = "setline.conf";
+enum stagedPeersName = "peers.json";
+enum stagedProxyName = "proxy.cfg";
+enum stagedCertificateName = "certificate.pem";
+enum stagedCertificateKeyName = "certificate-key.pem";
+enum stagedCertificateEmptyName = "certificate.empty";
+enum stagedManifestName = "remote.manifest.json";
+
+/// bashub 返回的远程资源清单：资源名 → 响应 Body 的 SHA-256。
+struct RemoteManifest {
+  int schemaVersion = 1;
+  string[string] resources;
 }
 
 /** 由 bashub 根地址、Profile 名和配置类型组成下载 URL。
@@ -59,6 +86,9 @@ string downloadUrl(string remoteUrl, string profile, DownloadKind kind) {
     "[remote] profile must not contain '/', ':', '?' or '#'");
   string endpoint;
   final switch (kind) {
+  case DownloadKind.manifest:
+    endpoint = "config/setline-manifest";
+    break;
   case DownloadKind.peers:
     endpoint = "config/setline-peers";
     break;
@@ -109,9 +139,195 @@ string downloadConfig(string remoteUrl, string profile, string token, DownloadKi
   auto text = get(url, headers);
   if (kind == DownloadKind.proxy)
     enforce(text.strip.length > 0, "downloaded config is empty: " ~ url);
+  if (kind == DownloadKind.manifest)
+    parseRemoteManifest(text);
   if (kind == DownloadKind.peers)
     parseDownloadedPeers(text);
   return text;
+}
+
+/** 解析并校验远程清单。四个资源必须齐全，未知资源忽略，便于将来加字段。 */
+RemoteManifest parseRemoteManifest(string text) {
+  enforce(text.strip.length > 0, "downloaded setline manifest is empty");
+  auto root = parseJSON(text);
+  enforce(root.type == JSONType.object, "downloaded setline manifest must be a JSON object");
+  enforce("version" in root.object, "downloaded setline manifest must contain version");
+  enforce(root["version"].type == JSONType.integer,
+    "downloaded setline manifest version must be an integer");
+  auto schemaVersion = root["version"].integer.to!int;
+  enforce(schemaVersion == 1, "unsupported setline manifest version: " ~ schemaVersion.to!string);
+  enforce("resources" in root.object, "downloaded setline manifest must contain resources");
+  auto res = root["resources"];
+  enforce(res.type == JSONType.object, "downloaded setline manifest resources must be an object");
+
+  RemoteManifest manifest;
+  manifest.schemaVersion = schemaVersion;
+  foreach (name, value; res.object) {
+    enforce(name == manifestResourcePeers || name == manifestResourceProxy
+        || name == manifestResourceCertificate || name == manifestResourceCertificateKey,
+      "downloaded setline manifest has unknown resource: " ~ name);
+    enforce(value.type == JSONType.string,
+      "downloaded setline manifest resource must be a string: " ~ name);
+    auto hash = toLowerAscii(value.str.strip);
+    enforce(isSha256(hash),
+      "downloaded setline manifest resource is not a SHA-256: " ~ name);
+    manifest.resources[name] = hash;
+  }
+  foreach (name; [manifestResourcePeers, manifestResourceProxy, manifestResourceCertificate,
+      manifestResourceCertificateKey]) {
+    enforce(name in manifest.resources, "downloaded setline manifest is missing " ~ name);
+  }
+  return manifest;
+}
+
+/// 资源对应的响应 Body SHA-256（小写十六进制）。
+string sha256Hex(string text) {
+  return toHexString!(LetterCase.lower)(sha256Of(text)).idup;
+}
+
+/// 远程同步状态固定放在片段根目录；不另加配置项。
+string remoteStatePath(string outputRoot) {
+  auto root = outputRoot.length > 0 ? outputRoot : defaultFragmentRoot;
+  return buildPath(root, "remote.manifest.json");
+}
+
+/// 远程同步的暂存目录。agent 用户在这里落盘，root 校验后安装到最终位置。
+string remoteStagePath(string outputRoot) {
+  auto root = outputRoot.length > 0 ? outputRoot : defaultFragmentRoot;
+  return buildPath(root, remoteStageName);
+}
+
+/// 清掉上一轮未安装或失败的暂存内容。
+void clearRemoteStage(string outputRoot) {
+  auto path = remoteStagePath(outputRoot);
+  if (exists(path))
+    rmdirRecurse(path);
+}
+
+/// 读取上次成功应用的远程清单；文件不存在或损坏都当作首次同步。
+RemoteManifest readRemoteManifest(string path) {
+  if (!exists(path))
+    return RemoteManifest.init;
+  try {
+    return parseRemoteManifest(readText(path));
+  } catch (Exception) {
+    return RemoteManifest.init;
+  }
+}
+
+/// 以稳定顺序写回清单状态。
+bool writeRemoteManifest(string path, const RemoteManifest manifest) {
+  auto out_ = appender!string;
+  out_.put("{\n  \"version\": ");
+  out_.put(manifest.schemaVersion.to!string);
+  out_.put(",\n  \"resources\": {\n");
+  auto names = manifest.resources.keys;
+  names.sort;
+  foreach (i, name; names) {
+    out_.put("    \"");
+    out_.put(name);
+    out_.put("\": \"");
+    out_.put(manifest.resources[name]);
+    out_.put(i + 1 < names.length ? "\",\n" : "\"\n");
+  }
+  out_.put("  }\n}\n");
+  return writeDownloaded(path, out_.data);
+}
+
+/// root 安装 staging 时使用的最终路径。
+struct RemoteInstallTargets {
+  string controlPath;
+  string proxyPath;
+  string certificateDir;
+  string statePath;
+}
+
+/** 安装 `setline pull --check --stage` 写出的文件。
+
+    网络响应已经由非特权进程下载并写入 staging；这里只读本地 staging，按清单再次
+    校验哈希后安装。缺少清单表示本轮无变化，清理残留 staging 后返回 false。
+*/
+bool installRemoteStage(string stageDir, RemoteInstallTargets targets) {
+  auto manifestPath = buildPath(stageDir, stagedManifestName);
+  if (!exists(manifestPath)) {
+    if (exists(stageDir))
+      rmdirRecurse(stageDir);
+    return false;
+  }
+
+  auto manifest = parseRemoteManifest(readText(manifestPath));
+  auto stagedPeersPath = buildPath(stageDir, stagedPeersName);
+  auto stagedControlPath = buildPath(stageDir, stagedControlName);
+  auto stagedProxyPath = buildPath(stageDir, stagedProxyName);
+  auto stagedCertPath = buildPath(stageDir, stagedCertificateName);
+  auto stagedKeyPath = buildPath(stageDir, stagedCertificateKeyName);
+  auto stagedEmptyPath = buildPath(stageDir, stagedCertificateEmptyName);
+
+  auto peersChanged = exists(stagedPeersPath);
+  enforce(peersChanged == exists(stagedControlPath),
+    "staged peers and setline.conf must be installed together");
+  string stagedControl;
+  if (peersChanged) {
+    verifyStagedHash(stagedPeersPath, manifest, manifestResourcePeers);
+    stagedControl = readText(stagedControlPath);
+  }
+
+  auto proxyChanged = exists(stagedProxyPath);
+  string proxy;
+  if (proxyChanged) {
+    verifyStagedHash(stagedProxyPath, manifest, manifestResourceProxy);
+    proxy = readText(stagedProxyPath);
+  }
+
+  auto certificateChanged = exists(stagedCertPath) || exists(stagedKeyPath)
+      || exists(stagedEmptyPath);
+  enforce(exists(stagedCertPath) == exists(stagedKeyPath),
+    "staged certificate and certificate-key must be installed together");
+  auto certificateEmpty = manifest.resources.get(manifestResourceCertificate, "") == sha256Hex("")
+      && manifest.resources.get(manifestResourceCertificateKey, "") == sha256Hex("");
+  if (certificateChanged && certificateEmpty) {
+    enforce(!exists(stagedCertPath) && !exists(stagedKeyPath),
+      "empty certificate resource must not have staged PEM files");
+  } else if (certificateChanged) {
+    verifyStagedHash(stagedCertPath, manifest, manifestResourceCertificate);
+    verifyStagedHash(stagedKeyPath, manifest, manifestResourceCertificateKey);
+  }
+
+  if (peersChanged)
+    writeDownloaded(targets.controlPath, stagedControl);
+  if (proxyChanged)
+    writeDownloaded(targets.proxyPath, proxy);
+  if (certificateChanged)
+    writeCertificatePair(targets.certificateDir,
+      certificateEmpty ? "" : readText(stagedCertPath),
+      certificateEmpty ? "" : readText(stagedKeyPath));
+  writeRemoteManifest(targets.statePath, manifest);
+  rmdirRecurse(stageDir);
+  return true;
+}
+
+private void verifyStagedHash(string path, const RemoteManifest manifest, string resource) {
+  auto expected = manifest.resources.get(resource, "");
+  auto actual = sha256Hex(readText(path));
+  enforce(actual == expected,
+    "staged " ~ resource ~ " hash mismatch: expected " ~ expected ~ ", got " ~ actual);
+}
+
+/// 某一资源相对上次清单是否变化。缺失状态会让所有资源都视为变化。
+bool resourceChanged(const RemoteManifest previous, const RemoteManifest current, string name) {
+  auto before = previous.resources.get(name, "");
+  auto after = current.resources.get(name, "");
+  return before != after;
+}
+
+private bool isSha256(string text) {
+  if (text.length != 64)
+    return false;
+  foreach (ch; text) {
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+      return false;
+  }
+  return true;
 }
 
 /** 解析 bashub 的 peers 响应：`{"peers":[{"name":"host01","url":"http://..."}]}`。 */
@@ -296,6 +512,7 @@ bool writeDownloaded(string path, string text) {
     mkdirRecurse(parent);
   auto tmpPath = path ~ ".tmp";
   write(tmpPath, text);
+  inheritMetadata(path, tmpPath);
   rename(tmpPath, path);
   return true;
 }
@@ -313,7 +530,33 @@ private bool writeDownloadedMode(string path, string text, uint mode) {
     mkdirRecurse(parent);
   auto tmpPath = path ~ ".tmp";
   write(tmpPath, text);
+  inheritOwner(path, tmpPath);
   setAttributes(tmpPath, mode);
   rename(tmpPath, path);
   return true;
+}
+
+/** rename 会带上临时文件的属主/权限，替换前把已有目标文件的元数据继承过来。
+
+    `setline.conf` 安装前是 `root:beangle 0640`；如果直接 rename root 的临时文件，
+    会变成 `root:root 0664`，既可能泄露 token，也会让 setline 用户读不到配置。
+*/
+private void inheritMetadata(string target, string replacement) {
+  inheritOwner(target, replacement);
+  stat_t info;
+  if (stat(target.toStringz, &info) == 0)
+    setAttributes(replacement, cast(uint)(info.st_mode & octal!7777));
+}
+
+/// 非 root 进程只在 root 安装阶段替换系统文件；普通用户写自己的文件不需要 chown。
+private void inheritOwner(string target, string replacement) {
+  if (geteuid() != 0)
+    return;
+  stat_t info;
+  if (stat(target.toStringz, &info) != 0)
+    return;
+  if (info.st_uid == geteuid() && info.st_gid == getegid())
+    return;
+  enforce(chown(replacement.toStringz, info.st_uid, info.st_gid) == 0,
+    "cannot preserve owner for " ~ replacement);
 }
