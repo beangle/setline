@@ -90,12 +90,13 @@ struct PeerConfig {
 
 /** 边缘代理渲染配置。
 
-    数据来源两种：`peers` 聚合远端 setline 的路由表；不配 `peers` 时渲染本进程的路由表，
-    也就是 haproxy/nginx 与 setline、basctl 同机的单机部署，此时必须有 `output`。
+    数据来源：`[routes]` 预定义本地路由总是参与；`peers` 再聚合远端 setline 的路由表。
+    两者都没有时写出空片段；交给 setline-agent 渲染，此时必须有 `output`。
 
-    `peers` 只影响 setline-agent 的 render 数据源。常驻的 setline.service 仍然可以
-    同时监听和代理；周期渲染由包里的 `setline-agent.timer` 驱动，进程里不带自己的调度
-    循环——节奏统一由 systemd 管，`systemctl status`/`journalctl` 里看得见。
+    `[routes]` 和 `peers` 都只影响 setline-agent 的 render 数据源。常驻的 setline.service
+    只读 setline.json，与 agent 互不依赖；周期渲染由包里的 `setline-agent.timer` 驱动，
+    进程里不带自己的调度循环——节奏统一由 systemd 管，`systemctl status`/`journalctl`
+    里看得见。
 
     曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）
     与配套的 `agent.workDir`：集中打包发布听起来好用，实际与 `peers` 提供的「从运行中的
@@ -103,14 +104,14 @@ struct PeerConfig {
     docs/project-constraints.md 的 External Proxy Integration Decision）。
 
     片段固定只出规则和后端定义，**从不写监听段**：`bind` / `listen` 归代理主配置，
-    setline 不去碰别人持有的监听（曾经有个 `agent.bind` 开关，已取消，见
+    setline-agent 不去碰别人持有的监听（曾经有个 `agent.bind` 开关，已取消，见
     docs/configuration.md 的 agent 一节）。
 */
 struct AgentConfig {
   string type;
   /** 生成片段的落盘**根目录**；为空时写到标准输出。
 
-      目录名与文件名都由 setline 决定（见 `layoutSnippets`）：按 `type` 落到
+      目录名与文件名都由 setline-agent 决定（见 `layoutSnippets`）：按 `type` 落到
       `<output>/haproxy/` 或 `<output>/nginx/`，文件名固定为 `setline.cfg`
       （haproxy）/ `setline.conf`（nginx），规则模式再派生 `.map` 或按 host 分文件。
       运维只负责给一个可写目录，不开放文件粒度配置。
@@ -118,6 +119,14 @@ struct AgentConfig {
   string output;
   /** 被聚合的远端 setline 实例。 */
   PeerConfig[] peers;
+  /** `setline.conf` 的 `[routes]` 预定义路由。
+
+      这些路由和 `setline.json` 的顶层 `routes` 同构（host -> path prefix ->
+      port(s)），但后端固定为 `127.0.0.1`：它们描述这台 agent 所在机器上的
+      本地服务，而不是远端实例。无论是否配置 `peers` 都会参与渲染；同
+      host + prefix 与 peer 路由命中时，两边实例合并。
+  */
+  HostRoutes[] routes;
 }
 
 /** 完整运行配置。
@@ -130,8 +139,6 @@ struct AgentConfig {
 */
 struct Config {
   ListenAddress listen;
-  /** `"listen": false` 时不绑定任何监听：纯渲染部署，路由只来自配置文件。 */
-  bool listenDisabled;
   /** 管理接口的独立监听，缺省 `127.0.0.1:8081`（见 {@link defaultAdminPort}）。
 
       两个监听按方法分工：
@@ -150,7 +157,7 @@ struct Config {
   /** 允许跨机读取路由表与状态页的来源地址（读写都只看地址，没有凭据）。
 
       本机来源本来就免凭据（见 `isLocalAdminRequest`），这里写的是**远端读方**的地址，
-      典型场景就是边缘机上的 `setline`：它按 `[agent] peers` 的 url 读各实例的
+      典型场景就是边缘机上的 `setline-agent`：它按 `[agent] peers` 的 url 读各实例的
       `GET /_setline/routes`，而 peer url 只是地址，不带任何凭据。
 
       写数值地址（`10.0.1.7`、`fe80::1`），不支持主机名和 CIDR；列出回环地址会报错——
@@ -176,6 +183,5 @@ struct Config {
   */
   int webSocketIdleTimeoutMillis = 0;
   HealthConfig healthCheck;
-  AgentConfig agent;
   HostRoutes[] routes;
 }

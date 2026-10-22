@@ -31,7 +31,7 @@ done
 
 # 所有 reload 参数都在 /etc/setline/setline.conf 的 [apply] 段。SETLINE_BIN / SETLINE_CONF
 # 只用于测试或非标准安装位置。
-SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline}"
+SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline-agent}"
 SETLINE_CONF="${SETLINE_CONF:-/etc/setline/setline.conf}"
 
 log() { echo "setline-apply[${PROXY:-$MODE}]: $*"; }
@@ -45,7 +45,7 @@ if ! command -v "$SETLINE_BIN" >/dev/null 2>&1; then
   warn "$SETLINE_BIN not found, nothing to apply"
   exit 0
 fi
-if ! apply_env=$("$SETLINE_BIN" --apply-config --conf "$SETLINE_CONF"); then
+if ! apply_env=$("$SETLINE_BIN" --apply-config --config "$SETLINE_CONF"); then
   die "cannot read setline.conf: $SETLINE_CONF"
 fi
 eval "$apply_env"

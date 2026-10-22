@@ -111,8 +111,8 @@ grep -n '^  server ' /var/lib/setline/nginx/setline.conf
 ## setline 配置示例
 
 先选数据来源：**边缘机聚合多台 setline** 用 `peers`（下面第一个例子）；nginx 与
-setline、basctl **同机**时不配 `peers`，setline 边收 basctl 推的路由边渲染片段
-（见「单机部署」）。
+setline **同机**时不配 `peers`，把本地后端写进 `setline.conf [routes]` 由 agent
+渲染片段；需要数据面接收 basctl 推路由时再单独维护 `setline.json`（见「单机部署」）。
 
 ### 聚合多台 setline（peers）
 
@@ -133,33 +133,36 @@ peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 | 字段 | 值 | 说明 |
 |---|---|---|
 | `[agent] type` | `nginx` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
-| `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `nginx/` 并写固定文件名 `setline.conf`（upstream）与 `setline.<host>.conf` / `setline.default.conf` |
+| `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），`setline-agent` 在其下建 `nginx/` 并写固定文件名 `setline.conf`（upstream）与 `setline.<host>.conf` / `setline.default.conf` |
 | `peers[].url` | `http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
-渲染入口 `setline render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
+渲染入口 `setline-agent render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
 `setline-agent.timer`（每 30s）拉起 `setline-agent-interval.service` 完成一轮；
-启动/reload `setline-agent.service` 时会先做一次 bashub manifest 检查。只要 `listen`
-不是 `false`，`setline.service` 仍作为常驻监听/代理进程一起运行：
+启动/reload `setline-agent.service` 时会先做一次 bashub manifest 检查。常驻
+`setline.service` 只读 `setline.json`，是否启动与 agent 无关：
 
 ```bash
 sudo systemctl enable --now setline.service      # 监听/代理
 sudo systemctl enable --now setline-agent.timer  # 远程检查 + 周期渲染/校验/reload
 ```
 
-某一台 peer 暂时读不到只会在这一轮打一行 `setline agent render failed: ...` 并以非 0
-退出，下一轮照常再试，片段保持上一轮的内容（写文件是按内容哈希幂等的）。
+某一台 peer 暂时读不到时，这一轮 render 以非 0 退出；下一轮照常再试，片段保持上一轮的
+内容（写文件是按内容哈希幂等的）。
 
 ### 单机部署（nginx 与 setline 同机）
 
-nginx、setline、basctl 装在同一台机器上时，upstream 就是 setline 调度的同机后端，
-不配 `peers` 即可：setline 监听 `listen` 接收 basctl 推的路由
-（控制面，业务流量不经过它），同时把本机路由表渲染成片段（upstream 服务器固定
-`127.0.0.1`）。
+nginx、setline 装在同一台机器上时，upstream 就是同机后端，不配 `peers` 即可：把本地
+后端写进 `setline.conf [routes]`，agent 渲染的 upstream 服务器固定 `127.0.0.1`。
+常驻 `setline.service` 不参与片段生成；需要数据面接收 basctl 推路由时再单独维护
+`setline.json`。
 
 ```ini
 [agent]
 type = nginx
 output = /var/lib/setline
+
+[routes]
+app.example.com = {"/api/edu": [9002, 9003]}
 ```
 
 ```json
@@ -177,19 +180,21 @@ output = /var/lib/setline
 
 | 项 | peers 模式 | 单机模式 |
 |---|---|---|
-| `listen` / `routes` | 配（setline.service 监听/代理） | 配（控制面入口，basctl 推到这里） |
-| upstream 名前缀 | peer 的 `name` | `local` |
+| 数据源 | peers | `setline.conf [routes]` |
 | 回源地址 | 各 peer 的 `url` 主机 | `127.0.0.1` |
-| 重渲染时机 | `setline-agent` 周期聚合 peers | 启动一次 + 每次管理接口改路由，另有 agent 周期兜底 |
+| 重渲染时机 | timer 周期聚合 peers | timer 周期读取 `[routes]` |
 
-`setline-agent.timer` 两种模式都照用；interval 轮次调用 `setline render` 后执行 apply，
+upstream 标识只由 host 分组名和路径前缀决定（例如 `app_example_com_api_edu`），与数据
+来自 `[routes]` 还是某个 peer 无关；同一 host + 前缀的实例会合并到同一个 upstream。
+
+`setline-agent.timer` 两种模式都照用；interval 轮次调用 `setline-agent render` 后执行 apply，
 片段变了才 reload（见「校验与热加载」）。远程配置只在 `setline-agent.service` 启动或
 reload 时检查。
 
 写完先校验，这一步不需要 peer 在线：
 
 ```bash
-setline -c
+setline-agent -c
 ```
 
 片段的 include 接线见下一节。
@@ -277,7 +282,8 @@ reload 有没有发生（master PID 不变、worker PID 换掉、日志里的 `r
 
 ## 权限
 
-- `setline` 以 `setline` 用户运行，只写 `/var/lib/setline/nginx/`，不碰 `/etc/nginx`；
+- `setline-agent render` 以 `setline` 用户运行，只写 `/var/lib/setline/nginx/`，不碰
+  `/etc/nginx`；常驻 `setline` 只负责数据面；
 - `setline-apply` 以 root 运行；nginx 的 reload 与 `nginx -t` 都需要 root；
 - 片段目录保持 `0755`、文件 `0644`，nginx worker（非 root）能读即可。
 

@@ -32,7 +32,6 @@ __gshared private ListenAddress gAdminListenAddress;
 __gshared private int gConnectTimeoutMillis = 3000;
 __gshared private int gReadTimeoutMillis = 15000;
 __gshared private bool gReusePort;
-__gshared private bool gListenDisabled;
 __gshared private int gUpstreamIdleTimeoutMillis = 30_000;
 __gshared private int gWebSocketIdleTimeoutMillis;
 // 观测计数器：事件循环单线程更新，status.json 只读快照，不做同步。
@@ -48,7 +47,6 @@ shared private size_t gMaxConnections = 65535;
 shared private size_t gActiveConnections;
 shared private size_t gActiveRequests;
 shared private size_t gActiveWebSockets;
-__gshared private void delegate(HostRoutes[]) gRoutesChangedHook;
 
 /** 初始化运行时状态。
 
@@ -66,7 +64,6 @@ void initialize(Config config, string configPath = "") {
   gConnectTimeoutMillis = config.connectTimeoutMillis;
   gReadTimeoutMillis = config.readTimeoutMillis;
   gReusePort = config.reusePort;
-  gListenDisabled = config.listenDisabled;
   gUpstreamIdleTimeoutMillis = config.upstreamIdleTimeoutMillis;
   gWebSocketIdleTimeoutMillis = config.webSocketIdleTimeoutMillis;
   gPoolHits = 0;
@@ -82,7 +79,6 @@ void initialize(Config config, string configPath = "") {
   atomicStore(gActiveConnections, 0);
   atomicStore(gActiveRequests, 0);
   atomicStore(gActiveWebSockets, 0);
-  gRoutesChangedHook = null;
 }
 
 /** 返回允许跨机读取路由表与状态页的来源地址。 */
@@ -103,11 +99,6 @@ int readTimeoutMillis() {
 /** 返回同端口多实例是否启用 SO_REUSEPORT。 */
 bool reusePort() {
   return gReusePort;
-}
-
-/** 返回是否禁用监听（`"listen": false` 的纯渲染形态）。 */
-bool listenDisabled() {
-  return gListenDisabled;
 }
 
 /** 返回空闲上游连接被回收前的等待时间。 */
@@ -220,7 +211,7 @@ ListenAddress listenAddress() {
   return gListenAddress;
 }
 
-/** 返回管理监听地址；`listen:false` 下没人绑它，状态接口也不会走到这里。 */
+/** 返回管理监听地址。 */
 ListenAddress adminListenAddress() {
   return gAdminListenAddress;
 }
@@ -399,22 +390,11 @@ HostRoutes[] routesSnapshot() {
   return cloneHostRoutes(gRoutes);
 }
 
-/** 注册路由表变更回调，传 null 取消。
-
-    单机部署（边缘代理与 setline 同机）用它把最新路由表渲染成片段：管理接口每次写入都会
-    触发一次。回调拿到的是**新**表，而且调用发生在内存状态更新之前，所以回调里不要读
-    {@link routesSnapshot}，直接用参数；参数就是随后生效的运行时状态，只读，不要改它。
-*/
-void setRoutesChangedHook(void delegate(HostRoutes[]) hook) {
-  gRoutesChangedHook = hook;
-}
-
 private void persistRoutes(HostRoutes[] routes) {
   auto path = configPath();
   if (path.length > 0) {
     saveRoutes(path, routes);
   }
-  if (gRoutesChangedHook !is null) gRoutesChangedHook(routes);
 }
 
 private RouteTree[string] buildRouteTrees(HostRoutes[] groups) {

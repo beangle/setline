@@ -1,16 +1,16 @@
 #!/bin/bash
-# setline-agent: render one round, optionally refreshing remote configuration first.
+# setline-agent-run: render one round, optionally refreshing remote configuration first.
 #
 # The service unit runs as root only to orchestrate the privilege boundary:
 #   - refresh the bashub-managed files on start/reload (the timer does not);
-#   - render one round as the setline user through `setline render`;
+#   - render one round as the setline user through `setline-agent render`;
 #   - validate and reload the fragments as root through `setline-apply`.
 #
 # Remote downloads always run as the setline user. Root only installs the
 # verified staging directory and never parses a remote response.
 set -euo pipefail
 
-SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline}"
+SETLINE_BIN="${SETLINE_BIN:-/usr/bin/setline-agent}"
 SETLINE_CONF="${SETLINE_CONF:-/etc/setline/setline.conf}"
 SETLINE_APPLY="${SETLINE_APPLY:-/usr/lib/setline/setline-apply}"
 RUN_USER="${SETLINE_AGENT_USER:-setline}"
@@ -22,15 +22,15 @@ for arg in "$@"; do
     --remote) REMOTE=1 ;;
     --interval) REMOTE=0 ;;
     --help|-h)
-      echo "usage: setline-agent [--remote|--interval]"
+      echo "usage: setline-agent-run [--remote|--interval]"
       exit 0
       ;;
-    *) echo "usage: setline-agent [--remote|--interval]" >&2; exit 2 ;;
+    *) echo "usage: setline-agent-run [--remote|--interval]" >&2; exit 2 ;;
   esac
 done
 
-log() { echo "setline-agent: $*"; }
-die() { echo "setline-agent: $*" >&2; exit 1; }
+log() { echo "setline-agent-run: $*"; }
+die() { echo "setline-agent-run: $*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root (setline-apply needs to reload the proxy)"
 [ -x "$SETLINE_BIN" ] || die "$SETLINE_BIN not found"
@@ -38,7 +38,7 @@ die() { echo "setline-agent: $*" >&2; exit 1; }
 [ -f "$SETLINE_CONF" ] || die "control config not found: $SETLINE_CONF"
 command -v runuser >/dev/null 2>&1 || die "runuser not found (install util-linux)"
 
-agent_type="$("$SETLINE_BIN" --agent-type --conf "$SETLINE_CONF")" ||
+agent_type="$("$SETLINE_BIN" --agent-type --config "$SETLINE_CONF")" ||
   die "cannot read [agent] type from $SETLINE_CONF"
 if [ -z "$agent_type" ]; then
   log "no [agent] type in $SETLINE_CONF, nothing to do"
@@ -51,7 +51,7 @@ force_apply=0
 if [ "$REMOTE" = 1 ]; then
   set +e
   runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \
-    "$SETLINE_BIN" pull --check --stage --conf "$SETLINE_CONF"
+    "$SETLINE_BIN" pull --check --stage --config "$SETLINE_CONF"
   pull_status=$?
   set -e
   case "$pull_status" in
@@ -68,7 +68,7 @@ if [ "$REMOTE" = 1 ]; then
       ;;
   esac
   if [ "$pull_status" = 0 ] || [ "$pull_status" = 10 ]; then
-    if ! "$SETLINE_BIN" pull --install --conf "$SETLINE_CONF"; then
+    if ! "$SETLINE_BIN" pull --install --config "$SETLINE_CONF"; then
       log "remote staging install failed; keeping the last installed configuration"
       force_apply=0
     fi
@@ -79,7 +79,7 @@ fi
 # setline. Rendering is complete when this process returns; no quiet window is
 # needed before validation and reload.
 runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \
-  "$SETLINE_BIN" render --conf "$SETLINE_CONF"
+  "$SETLINE_BIN" render --config "$SETLINE_CONF"
 if [ "$force_apply" = 1 ]; then
   "$SETLINE_APPLY" --now --force auto
 else

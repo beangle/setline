@@ -1,13 +1,13 @@
-# setline local control plane.
+# setline-agent local control plane.
 #
-# setline.json is the local machine topology: listen addresses and routes. All
-# deployment-specific parameters live here, so the service and setline-apply
-# never need command-line overrides. `setline init` writes this template only
-# when the target does not exist; package upgrades keep the existing file.
+# The resident setline service reads setline.json only. This file configures
+# setline-agent: remote downloads, fragment rendering and proxy reloads.
+# `setline-agent init` writes this template only when the target does not exist;
+# package upgrades keep the existing file.
 
 [remote]
 # bashub root URL. Do not append /api or the Profile name.
-# Checked on setline-agent start/reload and by explicit `setline pull`; the
+# Checked on setline-agent start/reload and by explicit `setline-agent pull`; the
 # timer-driven interval service never contacts this URL.
 # The download runs unprivileged, and root installs the verified staging.
 url = http://127.0.0.1:8082
@@ -15,10 +15,6 @@ url = http://127.0.0.1:8082
 profile = org.name
 # Profile.key. Sent as `Authorization: Bearer <profile>:<key>`.
 token = change-me
-
-[topology]
-# Local topology file. `setline pull` leaves this file alone.
-file = /etc/setline/setline.json
 
 [proxy]
 # Optional. Defaults from [agent] type:
@@ -31,8 +27,16 @@ file = /etc/setline/setline.json
 type = haproxy
 # Fragment root. Defaults to /var/lib/setline when type is set.
 output = /var/lib/setline
-# Filled by `setline pull`; name=url pairs separated by commas.
+# Filled by `setline-agent pull`; name=url pairs separated by commas.
 peers =
+
+[routes]
+# Predefined local routes for rendered fragments. The value shape is identical
+# to setline.json's `routes`: host -> path prefix -> port or port list.
+# Backends always map to 127.0.0.1:<port>. These routes are merged with peer
+# routes; a host + prefix present in both becomes one backend group.
+#local.example.com = {"/api": 9001, "/api/edu": [9002, 9003]}
+#* = {"/": 9090}
 
 [apply]
 # The proxy is selected by [agent] type. The following values are derived from

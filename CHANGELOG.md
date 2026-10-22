@@ -11,57 +11,66 @@ Per-release notes with the upgrade steps spelled out live in
 
 ### Added
 
-- `setline.conf` is now the local control plane, matching `basctl.conf`: it
-  holds `[remote]` URL/Profile/key, the topology and proxy download targets,
-  `[agent] type/output/peers`, and every `[apply]` reload parameter.
+- `setline.conf` is now the local control plane for `setline-agent`, matching
+  `basctl.conf`: it holds `[remote]` URL/Profile/key, proxy download targets,
+  `[agent] type/output/peers`, `[routes]`, and every `[apply]` reload parameter.
 - `[proxy] file` is optional: it defaults to `/etc/haproxy/haproxy.cfg` for
   haproxy and `/etc/nginx/nginx.conf` for nginx.
 - Apply state is fixed at `<agent.output>/apply`; there is no separate
   `[apply] stateDir` setting.
-- `setline pull` downloads the peer list, proxy config and HTTPS certificate
+- `setline-agent pull` downloads the peer list, proxy config and HTTPS certificate
   pair from bashub using the Profile key from `setline.conf`, then rewrites
   only `[agent] peers` in `setline.conf` with atomic no-op updates when content
   is unchanged. Certificates are split
   into `cert.pem`/`key.pem` for nginx and concatenated into `bundle.pem` for
   haproxy under the fixed `/etc/setline/certs` directory; private-key files are
   mode `0600`, and clearing the Profile certificate removes the managed files.
-- `setline-agent --remote` (start and reload) fetches
+- `setline-agent-run --remote` (start and reload) fetches
   `GET /api/{profile}/config/setline-manifest`, compares per-resource SHA-256
   values with `<agent.output>/remote.manifest.json`, and download only changed
   resources. A remote failure keeps the last successfully pulled configuration
   and does not block rendering or applying local routes.
 - Agent remote sync is split across the privilege boundary:
-  `setline pull --check --stage` runs as the `setline` user and writes changed
+  `setline-agent pull --check --stage` runs as the `setline` user and writes changed
   resources to `<agent.output>/remote-stage`; root then runs
-  `setline pull --install`, which re-verifies the local staging hashes and
+  `setline-agent pull --install`, which re-verifies the local staging hashes and
   installs the managed files without accessing the network. Installed files
   inherit the owner and mode of the file they replace, so `setline.conf` keeps
   its `0640` protection.
 - `setline-agent.timer` drives `setline-agent-interval.service`, which only
   renders peers/local routes and applies fragments. It does not contact
   bashub; remote configuration is checked by `setline-agent.service` on
-  start/reload, or manually with `setline pull`.
-- `setline pull --check --stage` exits `10` after staging a changed proxy main config or
+  start/reload, or manually with `setline-agent pull`.
+- `setline-agent pull --check --stage` exits `10` after staging a changed proxy main config or
   certificate pair. The agent
   then runs `setline-apply --now --force`, which bypasses both the unchanged
   fragment hash and HAProxy map hot-sync so a changed main proxy config or
   certificate triggers a real validation and reload.
-- `setline init` writes a commented `setline.conf` template only when the
+- `setline-agent init` writes a commented `setline.conf` template only when the
   target does not exist.
-- `setline --apply-config` exports the resolved `[apply]` settings for
+- `setline-agent --apply-config` exports the resolved `[apply]` settings for
   `setline-apply`; `--agent-type` reads the proxy type from the same file.
-- `setline --agent-peers` reports the number of configured `[agent] peers`,
+- `setline-agent --agent-peers` reports the number of configured `[agent] peers`,
   for diagnostics without parsing INI in shell.
-- `setline render` performs one render round without binding a listener. It
-  aggregates `[agent] peers` when configured and otherwise renders the local
-  topology; the root-owned agent helper invokes it through `runuser`.
+- `setline-agent render` performs one render round without binding a listener. It
+  always renders `[routes]` and merges `[agent] peers` when configured; the
+  root-owned `setline-agent-run` helper invokes it through `runuser`.
 - `setline-agent` and `setline-agent.timer` replace the separate render and
   apply timers. The start/reload unit performs one remote manifest check; the
-  timer-driven interval unit runs `setline render` as the `setline` user with
+  timer-driven interval unit runs `setline-agent render` as the `setline` user with
   `runuser`, then runs `setline-apply --now` as root.
 
 ### Changed
 
+- The executable is split in two: `setline` is the resident data plane and reads
+  only `setline.json`; `setline-agent` is the renderer/control-plane entry and
+  reads only `setline.conf`. `setline` uses `-f`; `setline-agent` uses
+  `--config`; the old combined `--conf` flag is gone.
+- `setline.conf [routes]` accepts predefined local routes in the same shape as
+  `setline.json` `routes` (`host -> prefix -> port(s)`). These routes always
+  participate in agent rendering and are merged with peer routes.
+- `setline.conf [topology]` is removed: `setline-agent` no longer needs to know
+  the service's `setline.json` path.
 - `setline.json` is now topology-only: `listen`, `adminListen`, timeouts and
   `routes`. Any `agent` field in JSON is rejected; `[agent] type/output/peers`
   belong to `setline.conf`.
@@ -70,10 +79,9 @@ Per-release notes with the upgrade steps spelled out live in
   list now follow a custom `[agent] output` root.
 - `setline-apply` accepts `--now` to skip the quiet window when the caller has
   just completed a render round.
-- `setline.service` always listens and proxies when `listen` is enabled,
-  including with `[agent] peers`. Peers now select the renderer's data source
-  instead of turning the resident process into a one-shot renderer. With no
-  peers it still re-renders local route changes immediately.
+- `setline.service` always listens and proxies; agent routes and peers no longer
+  affect the resident process. Runtime route changes are not rendered by the
+  service; periodic rendering belongs to `setline-agent`.
 - Package install creates `/etc/setline/setline.conf` (`root:beangle 0640`) on
   first install and preserves it on upgrades.
 
@@ -82,6 +90,10 @@ Per-release notes with the upgrade steps spelled out live in
 - `download-setline`, `download-haproxy`, `download-proxy`,
   `/etc/setline/apply.conf` and the separate reload environment-variable
   configuration. No compatibility fallback is provided.
+- `"listen": false` and the combined service/renderer CLI (`setline render`,
+  `setline pull`, `setline --conf`, `setline --agent-*`, `setline --apply-config`,
+  `setline --sync-map`). Use `setline-agent` for all control-plane commands and
+  do not start `setline.service` on a render-only machine.
 - `setline-render.{service,timer}` and `setline-apply.{service,timer}`. Package
   upgrades remove their enable links and migrate an enabled timer to
   `setline-agent.timer`, starting it if the old timer was running.

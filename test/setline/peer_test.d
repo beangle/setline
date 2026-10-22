@@ -21,8 +21,6 @@ import std.exception : assertThrown;
 import std.file : exists, mkdirRecurse, readText, remove, rmdirRecurse, write;
 import std.path : buildPath;
 
-import setline.config : parseConfigFile;
-import setline.control : ControlConfig;
 import setline.edge;
 import setline.model;
 import setline.peer;
@@ -106,7 +104,7 @@ PeerConfig peerWithUrl(string url) {
     PeerConfig("peerB", "http://10.0.1.11:8080"),
   ];
   // 本地读取路由表，避免单测依赖网络。
-  auto fetcher = (PeerConfig peer) {
+  HostRoutes[] delegate(PeerConfig) fetcher = (PeerConfig peer) {
     return parsePeerRoutes(readText(buildPath(root, peer.name, "_setline", "routes")));
   };
 
@@ -138,6 +136,25 @@ PeerConfig peerWithUrl(string url) {
   assert(locations.canFind("proxy_pass http://app_example_com_api;"));
 }
 
+@("agent merges predefined local routes with peer routes") unittest {
+  AgentConfig agent;
+  agent.type = "haproxy";
+  agent.routes = parsePeerRoutes(
+    `{"app.example.com":[{"prefix":"/api","port":9001}]}`);
+  agent.peers = [PeerConfig("peerA", "http://10.0.1.10:8080")];
+
+  HostRoutes[] delegate(PeerConfig) fetcher = (PeerConfig peer) {
+    return parsePeerRoutes(`{"app.example.com":[{"prefix":"/api","port":9002}]}`);
+  };
+  auto services = collectAgentServices(agent, fetcher);
+  assert(services.length == 1);
+  assert(services[0].instances.length == 2);
+
+  auto rendered = renderHaproxyBackends(services);
+  assert(rendered.canFind("127.0.0.1:9001 check"));
+  assert(rendered.canFind("10.0.1.10:9002 check"));
+}
+
 @("peer writes snippet only when changed") unittest {
   auto path = "/tmp/setline-peer-snippet-test/out.conf";
   if (exists("/tmp/setline-peer-snippet-test")) rmdirRecurse("/tmp/setline-peer-snippet-test");
@@ -165,7 +182,8 @@ PeerConfig peerWithUrl(string url) {
   AgentConfig agent;
   agent.type = "haproxy";
   agent.output = "/tmp/setline-conf/local";
-  auto snippets = renderAgentSnippets(agent, routes);
+  agent.routes = routes;
+  auto snippets = renderAgentSnippets(agent);
   assert(snippets.length == 2);
   assert(snippets[0].path == "/tmp/setline-conf/local/haproxy/setline.cfg");
   assert(snippets[0].text.canFind("backend b_localhost_tools"));
@@ -175,25 +193,21 @@ PeerConfig peerWithUrl(string url) {
 }
 
 @("single-host agent renders business ports, never the setline listen port") unittest {
-  auto path = "/tmp/setline-peer-local-listen-test.json";
-  write(path, `{"listen":"*:18090",` ~
-    `"routes":{"app.example.com":{"/api/edu":[9002,9003]}}}`);
-  scope (exit) if (exists(path)) remove(path);
+  auto routes = parsePeerRoutes(
+    `{"app.example.com":[{"prefix":"/api/edu","ports":[9002,9003]}]}`);
 
-  // 数据面片段只认业务端口：haproxy 直接回源，setline 的 listen 只是控制面。
-  ControlConfig control;
-  control.agent.type = "haproxy";
-  control.agent.output = "/tmp/setline-conf/local-listen";
-  auto config = parseConfigFile(path, control);
-  auto snippets = renderAgentSnippets(config.agent, config.routes);
+  // 预定义路由只描述业务端口：haproxy 直接回源，setline 的 listen 与 agent 无关。
+  AgentConfig agent;
+  agent.type = "haproxy";
+  agent.output = "/tmp/setline-conf/local-listen";
+  agent.routes = routes;
+  auto snippets = renderAgentSnippets(agent);
   assert(snippets[0].text.canFind("server app_example_com_api_edu_0 127.0.0.1:9002 check"));
   assert(snippets[0].text.canFind("server app_example_com_api_edu_1 127.0.0.1:9003 check"));
-  foreach (snippet; snippets) assert(!snippet.text.canFind("18090"));
 
-  auto nginx = layoutSnippets(collectLocalServices(config.routes), "nginx",
+  auto nginx = layoutSnippets(collectLocalServices(routes), "nginx",
     "/tmp/setline-conf/local-listen");
   assert(nginx.length == 2);
-  foreach (snippet; nginx) assert(!snippet.text.canFind("18090"));
 }
 
 @("peer renders rules-only snippets without a listener") unittest {

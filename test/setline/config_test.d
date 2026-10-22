@@ -23,16 +23,7 @@ import std.exception : assertThrown;
 import std.json : JSONValue, parseJSON;
 
 import setline.config;
-import setline.control : ControlConfig;
 import setline.model;
-
-private ControlConfig agentControl(string type, string output, PeerConfig[] peers = null) {
-  ControlConfig control;
-  control.agent.type = type;
-  control.agent.output = output;
-  control.agent.peers = peers;
-  return control;
-}
 
 @("config parses listen shorthand") unittest {
   auto byNumber = parseListen(JSONValue(8080));
@@ -112,20 +103,6 @@ private ControlConfig agentControl(string type, string output, PeerConfig[] peer
   assert(config.healthCheck.timeoutMillis == 300);
   assert(config.healthCheck.unhealthyThreshold == 3);
   assert(config.healthCheck.healthyThreshold == 2);
-}
-
-@("config parses agent settings") unittest {
-  auto path = "/tmp/setline-config-agent-test.json";
-  write(path, `{"routes":{}}`);
-  scope (exit) remove(path);
-
-  auto config = loadConfig(path, agentControl("nginx", "/var/lib/setline",
-    [PeerConfig("app1", "http://10.0.1.10:8080")]));
-  assert(config.agent.type == "nginx");
-  assert(config.agent.output == "/var/lib/setline");
-  assert(config.agent.peers.length == 1);
-  assert(config.agent.peers[0].name == "app1");
-  assert(usesLocalRoutes(config.agent) == false);
 }
 
 @("config parses route ports") unittest {
@@ -220,23 +197,6 @@ private ControlConfig agentControl(string type, string output, PeerConfig[] peer
   assertThrown!Exception(normalizeRouteHost("local1.example.com:8080"));
 }
 
-@("config takes agent peers from setline.conf") unittest {
-  auto path = "/tmp/setline-config-agent-peers-test.json";
-  write(path, `{"routes":{}}`);
-  scope (exit) remove(path);
-
-  auto config = loadConfig(path, agentControl("haproxy", "/etc/haproxy", [
-    PeerConfig("app1", "http://10.0.1.10:8080"),
-    PeerConfig("app2", "http://10.0.1.11:8080"),
-  ]));
-  assert(config.agent.type == "haproxy");
-  assert(config.agent.output == "/etc/haproxy");
-  assert(config.agent.peers.length == 2);
-  assert(config.agent.peers[0].name == "app1");
-  assert(config.agent.peers[0].url == "http://10.0.1.10:8080");
-  assert(config.agent.peers[1].name == "app2");
-}
-
 @("config parses the peer readers allowed to read the route table") unittest {
   auto path = "/tmp/setline-config-peerreaders-test.json";
   scope (exit) remove(path);
@@ -276,32 +236,8 @@ private ControlConfig agentControl(string type, string output, PeerConfig[] peer
   write(path, `{"listen":"*:8080","peerReaders":[7000],"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 
-  // 没有监听就没有读方，名单是死配置。
-  write(path, `{"listen":false,"peerReaders":["10.0.1.7"],` ~
-    `"routes":{}}`);
-  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "/tmp/setline")));
-}
-
-@("config rejects peer url without derivable address") unittest {
-  auto path = "/tmp/setline-config-agent-noaddress-test.json";
-  write(path, `{"routes":{}}`);
-  scope (exit) remove(path);
-  assertThrown!Exception(loadConfig(path, agentControl("nginx", "/var/lib/setline",
-    [PeerConfig("app1", "file:///tmp/peer")])));
-  assertThrown!Exception(loadConfig(path, agentControl("nginx", "/var/lib/setline",
-    [PeerConfig("app1", "/tmp/peer")])));
-}
-
-@("config allows single-host agent without peers") unittest {
-  auto path = "/tmp/setline-config-agent-local-test.json";
-  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
-  scope (exit) remove(path);
-
-  auto config = loadConfig(path, agentControl("haproxy", "/var/lib/setline"));
-  assert(config.agent.type == "haproxy");
-  assert(config.agent.output == "/var/lib/setline");
-  assert(config.agent.peers.length == 0);
-  assert(usesLocalRoutes(config.agent));
+  write(path, `{"listen":"*:8080","peerReaders":["app1.internal","10.0.1.7"],"routes":{}}`);
+  assertThrown!Exception(loadConfig(path));
 }
 
 @("config rejects agent parameters in the topology file") unittest {
@@ -315,45 +251,15 @@ private ControlConfig agentControl(string type, string output, PeerConfig[] peer
   assertThrown!Exception(loadConfig(path));
 }
 
-@("config requires an absolute agent output root") unittest {
-  auto path = "/tmp/setline-config-agent-relative-output-test.json";
-  scope (exit) remove(path);
-
-  // output 是片段根目录（内部再拼 <type>/），相对路径会随 CWD 漂移，直接拦掉。
-  write(path, `{"listen":"127.0.0.1:8080","routes":{}}`);
-  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "setline")));
-
-  // 空字符串等同于没配：单机模式仍然要求一个根目录。
-  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "")));
-}
-
-@("config rejects misspelled agent type") unittest {
-  auto path = "/tmp/setline-config-agent-badtype-test.json";
-  write(path, `{"routes":{}}`);
-  scope (exit) remove(path);
-  assertThrown!Exception(loadConfig(path, agentControl("nginux", "/var/lib/setline",
-    [PeerConfig("app1", "http://10.0.1.10:8080")])));
-}
-
-@("config accepts listen false for a render-only deployment") unittest {
+@("config rejects listen false in the service config") unittest {
   auto path = "/tmp/setline-config-listen-false-test.json";
-  write(path, `{"listen":false,"routes":{"app.example.com":{"/":9001}}}`);
   scope (exit) remove(path);
 
-  auto config = loadConfig(path, agentControl("haproxy", "/var/lib/setline"));
-  assert(config.listenDisabled);
-  assert(config.routes.length == 1);
-}
-
-@("config requires an agent when listen is false") unittest {
-  auto path = "/tmp/setline-config-listen-false-bad-test.json";
-  scope (exit) remove(path);
-
-  // 不监听又没有 agent：进程既没有监听入口，也没有片段要渲染，什么都不会做。
+  // 纯渲染入口已经属于 setline-agent，setline 服务始终需要监听地址。
   write(path, `{"listen":false,"routes":{"app.example.com":{"/":9001}}}`);
   assertThrown!Exception(loadConfig(path));
 
-  // `true` 不是合法值：能监听就必须写地址。
+  // `true` 同样不是合法值：能监听就必须写地址。
   write(path, `{"listen":true,"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 }
@@ -400,10 +306,10 @@ private ControlConfig agentControl(string type, string output, PeerConfig[] peer
   write(path, `{"listen":"127.0.0.1:8080","adminListen":false,"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 
-  // listen:false 是渲染完就退出，没有进程来服务这个管理监听。
+  // listen:false 已从服务拓扑移除：纯渲染由 setline-agent 负责。
   write(path, `{"listen":false,"adminListen":"127.0.0.1:8081",` ~
     `"routes":{}}`);
-  assertThrown!Exception(loadConfig(path, agentControl("haproxy", "/tmp/setline")));
+  assertThrown!Exception(loadConfig(path));
 }
 
 @("config reads the websocket idle timeout") unittest {

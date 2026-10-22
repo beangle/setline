@@ -279,6 +279,25 @@ CFG
 
 cd "$ROOT"
 dub build --build=release-nobounds --compiler=ldc2
+dub build --build=release-nobounds --compiler=ldc2 --config=agent
+
+check_cli_flags() {
+  local status
+  set +e
+  "$ROOT/target/setline" --config "$WORK/missing.json" >"$WORK/setline-wrong-flag.log" 2>&1
+  status=$?
+  set -e
+  [ "$status" = 2 ] ||
+    fail "setline accepted --config; expected the service to use -f only"
+  set +e
+  "$ROOT/target/setline-agent" -f "$WORK/missing.conf" >"$WORK/agent-wrong-flag.log" 2>&1
+  status=$?
+  set -e
+  [ "$status" = 2 ] ||
+    fail "setline-agent accepted -f; expected the agent to use --config only"
+  echo "PASS setline uses -f and setline-agent uses --config"
+}
+check_cli_flags
 
 python3 scripts/e2e_backend.py --port "$BACKEND_PORT" --ready-file "$WORK/backend.ready" \
   >"$WORK/backend.log" 2>&1 &
@@ -296,7 +315,7 @@ JSON
 SETLINE_PID=$!
 wait_for_port "$SETLINE_PORT" 50 || fail "setline did not listen"
 
-# listen:false：纯渲染部署。进程只按配置文件渲染片段，不绑任何监听，渲染完立即退出。
+# setline-agent：只读 setline.conf，按 [routes] 渲染片段，不绑任何监听，渲染完立即退出。
 check_render_only() {
   local dir="$WORK/render-only"
   mkdir -p "$dir"
@@ -304,20 +323,20 @@ check_render_only() {
 [agent]
 type = haproxy
 output = $dir
+
+[routes]
+local.test = {"/": $BACKEND_PORT}
 CONF
-  cat >"$WORK/render-only.json" <<JSON
-{"listen":false,"routes":{"local.test":{"/":$BACKEND_PORT}}}
-JSON
-  if ! "$ROOT/target/setline" --conf "$WORK/render-only.conf" -f "$WORK/render-only.json" \
+  if ! "$ROOT/target/setline-agent" render --config "$WORK/render-only.conf" \
       >"$WORK/render-only.log" 2>&1; then
-    fail "listen:false renderer exited non-zero: $(cat "$WORK/render-only.log")"
+    fail "setline-agent renderer exited non-zero: $(cat "$WORK/render-only.log")"
   fi
   # output 是根目录：程序按 type 自己建 haproxy/ 子目录并写固定文件名。
-  [ -s "$dir/haproxy/setline.cfg" ] || fail "listen:false did not write the backend fragment"
-  [ -s "$dir/haproxy/setline.map" ] || fail "listen:false did not write the routing map"
+  [ -s "$dir/haproxy/setline.cfg" ] || fail "setline-agent did not write the backend fragment"
+  [ -s "$dir/haproxy/setline.map" ] || fail "setline-agent did not write the routing map"
   grep -q 'local.test' "$dir/haproxy/setline.map" ||
-    fail "listen:false map is missing the configured route"
-  echo "PASS render-only listen:false writes fragments and exits"
+    fail "setline-agent map is missing the configured [routes] entry"
+  echo "PASS setline-agent renders predefined [routes] and exits"
 }
 check_render_only
 
@@ -362,8 +381,7 @@ check_admin_write_gate() {
 }
 check_admin_write_gate
 
-# peers：setline.service 仍然监听和代理；渲染由 setline-agent 调 `setline render`
-# 完成。两种角色共用同一份配置，但入口不同。
+# 服务入口只读 setline.json；即使同机存在带 peers 的 setline.conf，也不会自行渲染。
 check_peer_service_still_listens() {
   local dir="$WORK/peer-service"
   mkdir -p "$dir"
@@ -376,19 +394,18 @@ CONF
   cat >"$WORK/peer-service.json" <<JSON
 {"listen":"127.0.0.1:$PEER_SERVICE_PORT","adminListen":"127.0.0.1:$PEER_SERVICE_ADMIN_PORT","routes":{}}
 JSON
-  "$ROOT/target/setline" --conf "$WORK/peer-service.conf" \
-    -f "$WORK/peer-service.json" >"$WORK/peer-service.log" 2>&1 &
+  "$ROOT/target/setline" -f "$WORK/peer-service.json" >"$WORK/peer-service.log" 2>&1 &
   PEER_SERVICE_PID=$!
   wait_for_port "$PEER_SERVICE_PORT" 50 ||
-    fail "setline.service did not listen with peers configured: $(cat "$WORK/peer-service.log")"
+    fail "setline.service did not listen: $(cat "$WORK/peer-service.log")"
   curl -fsS "http://127.0.0.1:$PEER_SERVICE_ADMIN_PORT/_setline/status.json" >/dev/null ||
-    fail "setline.service admin listener did not start with peers configured"
+    fail "setline.service admin listener did not start"
   [ ! -e "$dir/haproxy/setline.cfg" ] ||
-    fail "setline.service rendered peer fragments itself instead of leaving that to the agent"
+    fail "setline.service read setline.conf and rendered agent fragments itself"
   kill "$PEER_SERVICE_PID" 2>/dev/null || true
   wait "$PEER_SERVICE_PID" 2>/dev/null || true
   PEER_SERVICE_PID=""
-  echo "PASS setline.service keeps listening while peers are configured"
+  echo "PASS setline.service ignores setline.conf and leaves rendering to setline-agent"
 }
 check_peer_service_still_listens
 
@@ -402,13 +419,9 @@ type = haproxy
 output = $dir
 peers = peer=http://127.0.0.1:$SETLINE_ADMIN_PORT
 CONF
-  cat >"$WORK/peer-render.json" <<JSON
-{"routes":{}}
-JSON
-  [ "$("$ROOT/target/setline" --agent-peers --conf "$WORK/peer-render.conf")" = "1" ] ||
-    fail "setline --agent-peers did not report the configured peer"
-  if ! timeout 20 "$ROOT/target/setline" render --conf "$WORK/peer-render.conf" \
-      -f "$WORK/peer-render.json" \
+  [ "$("$ROOT/target/setline-agent" --agent-peers --config "$WORK/peer-render.conf")" = "1" ] ||
+    fail "setline-agent --agent-peers did not report the configured peer"
+  if ! timeout 20 "$ROOT/target/setline-agent" render --config "$WORK/peer-render.conf" \
       >"$WORK/peer-render.log" 2>&1; then
     fail "peer renderer did not exit 0: $(cat "$WORK/peer-render.log")"
   fi

@@ -8,8 +8,8 @@ kernel-level transparent proxy techniques.
 
 **Positioning: setline is a proxy that sits behind a proxy.** It is deployed
 after HAProxy/Nginx and is never the first hop a client reaches. Either the
-front proxy connects straight to the applications and setline only renders the
-routing fragments, or setline serves as the subordinate proxy for that front
+front proxy connects straight to the applications and `setline-agent` only renders
+the routing fragments, or setline serves as the subordinate proxy for that front
 proxy - in both shapes it never faces untrusted clients, so TLS termination,
 header size limits, client timeouts, rate limiting and access logging stay the
 front proxy's job. The consequences of this boundary, the out-of-scope list and
@@ -30,9 +30,11 @@ the prerequisite for using setline as that proxy's subordinate live in
 ## Build
 
 ```bash
-dub build                                # debug binary at target/setline
-dub build --build=release-nobounds       # what the packages ship
-dub test                                 # unit tests
+dub build                                      # target/setline (service)
+dub build --config=agent                       # target/setline-agent (agent)
+dub build --build=release-nobounds             # release service binary
+dub build --build=release-nobounds --config=agent
+dub test                                       # unit tests
 ```
 
 Needs Linux, a D compiler (LDC) and `dub`; the only dependency is `vibe-core`.
@@ -42,17 +44,19 @@ Packaging, the end-to-end harness and the benchmark live under `scripts/`; see
 ## Run
 
 ```bash
-dub run -- init ./setline.conf                 # write a local control config
-dub run -- --conf ./setline.conf -f config.example.json
-dub run -- --conf ./setline.conf -c -f config.example.json
-dub run -- --help                              # every flag
+dub run -- -f config.example.json               # service: setline.json only
+dub run -- -c -f config.example.json            # validate the service config
+dub run --config=agent -- init --config ./setline.conf  # write a setline-agent config
+dub run --config=agent -- render --config ./setline.conf
+dub run --config=agent -- --help                # every agent flag
 ```
 
-Local deployment parameters live in `setline.conf` (INI). The topology file
-(`setline.json`) contains only the listener and routes. The topology file is
-optional at startup: a missing file means an empty route table, so a runtime
-update can create the routes. Peers are local control-plane data and live in
-`setline.conf`; `setline.json` rejects an `agent` field.
+`setline` is the resident data plane and reads only `setline.json`. The topology
+file contains the listener, timeouts and routes; it is optional at startup, a
+missing file means an empty route table so a runtime update can create routes.
+`setline-agent` reads only `setline.conf` (INI): remote downloads, fragment
+rendering, local backends and proxy reload settings. `setline.json` rejects an
+`agent` field.
 
 ## setline.conf
 
@@ -62,9 +66,6 @@ url = http://127.0.0.1:8082
 profile = openurp.prod
 token = <Profile.key>
 
-[topology]
-file = /etc/setline/setline.json
-
 [proxy]
 # Optional. haproxy -> /etc/haproxy/haproxy.cfg,
 # nginx -> /etc/nginx/nginx.conf.
@@ -73,8 +74,14 @@ file = /etc/setline/setline.json
 [agent]
 type = haproxy
 output = /var/lib/setline
-# Filled by `setline pull`; name=url pairs separated by commas.
+# Filled by `setline-agent pull`; name=url pairs separated by commas.
 peers =
+
+[routes]
+# Same shape as setline.json `routes`: host -> prefix -> port(s).
+# Backends are local: each port maps to 127.0.0.1:<port>.
+local.example.com = {"/api": 9001, "/api/edu": [9002, 9003]}
+* = {"/": 9090}
 
 [apply]
 quietSeconds = 15
@@ -136,18 +143,18 @@ examples - is `docs/configuration.md`.
 
 ## Agent mode
 
-With `[agent] type` in `setline.conf`, `setline` renders a HAProxy or Nginx **fragment** from a
-route table: its own, or a set of live `setline` peers (`[agent] peers`). It
-never rewrites the proxy's own config. `setline.service` stays the resident
-listener whenever `listen` is enabled, even when peers are configured.
-`setline-agent.timer` drives the interval service: `setline render` runs as the
-unprivileged `setline` user and `setline-apply --now` validates and reloads as
-root, hot-syncing a routes-only map change without a reload when a HAProxy admin
-socket is available. With no peers the service also re-renders local route
-changes immediately; with peers the agent is the only renderer. Timer interval
-rounds do not contact bashub. A manifest check runs when
+With `[agent] type` in `setline.conf`, `setline-agent` renders a HAProxy or
+Nginx **fragment** from `[routes]` plus a set of live `setline` peers
+(`[agent] peers`). It never rewrites the proxy's own config and never listens.
+The service and agent are independent: `setline.service` only sees
+`setline.json`; `setline-agent` only sees `setline.conf`.
+`setline-agent.timer` drives the interval service: `setline-agent render` runs
+as the unprivileged `setline` user and `setline-apply --now` validates and
+reloads as root, hot-syncing a routes-only map change without a reload when a
+HAProxy admin socket is available. Timer interval rounds do not contact bashub.
+A manifest check runs when
 `setline-agent.service` is started or reloaded (and with the explicit
-`setline pull` commands documented below); when the proxy main config or
+`setline-agent pull` commands documented below); when the proxy main config or
 certificate pair changed, the agent follows with
 `setline-apply --now --force auto`. The download runs as the `setline` user;
 root only verifies the staged hashes and installs the managed files. A remote
@@ -163,15 +170,15 @@ configuration directly. URL, Profile, token and destinations all come from
 `setline.conf`, so the commands need no arguments:
 
 ```bash
-setline pull            # force a full download
-setline pull --check --stage  # unprivileged download into <agent.output>/remote-stage
-setline pull --install        # root: verify and install the staging directory
+setline-agent pull            # force a full download
+setline-agent pull --check --stage  # unprivileged download into <agent.output>/remote-stage
+setline-agent pull --install        # root: verify and install the staging directory
 ```
 
 `[remote] url` is the bashub root (do not append `/api`). The downloader sends
 `Authorization: Bearer <profile>:<key>` and accepts the key already written in
 that form. Writes are atomic and left untouched when the content is unchanged.
-`setline pull` fetches the peer list, the proxy config selected by the Profile's
+`setline-agent pull` fetches the peer list, the proxy config selected by the Profile's
 `proxyEngine`, and the Profile's HTTPS certificate pair. It rewrites only
 `[agent] peers` in `setline.conf`, so the token, local agent settings,
 `setline.json`, `listen` and `routes` all survive.

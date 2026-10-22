@@ -242,7 +242,7 @@ struct RemoteInstallTargets {
   string statePath;
 }
 
-/** 安装 `setline pull --check --stage` 写出的文件。
+/** 安装 `setline-agent pull --check --stage` 写出的文件。
 
     网络响应已经由非特权进程下载并写入 staging；这里只读本地 staging，按清单再次
     校验哈希后安装。缺少清单表示本轮无变化，清理残留 staging 后返回 false。

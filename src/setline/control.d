@@ -21,25 +21,24 @@ import std.array : Appender, appender, split;
 import std.conv : to;
 import std.exception : enforce;
 import std.file : exists, mkdirRecurse, readText, write;
+import std.json : JSONValue, parseJSON;
 import std.path : dirName;
 import std.string : indexOf, splitLines, strip;
 
+import setline.config : parseHostRoutes;
 import setline.util : toLowerAscii;
-import setline.model : PeerConfig;
+import setline.model : AgentConfig, PeerConfig;
 
 /** 本机控制面配置的缺省位置。 */
 enum defaultControlPath = "/etc/setline/setline.conf";
 
-/** 远端拓扑（setline.json）的缺省位置。 */
-enum defaultTopologyPath = "/etc/setline/setline.json";
-
 /** 本机片段根目录。 */
 enum defaultFragmentRoot = "/var/lib/setline";
 
-/** setline pull 下载证书的固定目录；bashub 生成的 nginx/haproxy 配置也引用这里。 */
+/** setline-agent pull 下载证书的固定目录；bashub 生成的 nginx/haproxy 配置也引用这里。 */
 enum defaultCertificateDir = "/etc/setline/certs";
 
-/** setline pull 下载代理主配置的缺省落点。 */
+/** setline-agent pull 下载代理主配置的缺省落点。 */
 enum defaultHaproxyConfig = "/etc/haproxy/haproxy.cfg";
 enum defaultNginxConfig = "/etc/nginx/nginx.conf";
 
@@ -52,13 +51,6 @@ struct RemoteConfig {
   bool complete() const {
     return url.length > 0 && profile.length > 0 && token.length > 0;
   }
-}
-
-/** 本机 agent 的运行参数。 */
-struct AgentControl {
-  string type;
-  string output;
-  PeerConfig[] peers;
 }
 
 /** setline-apply 的 reload 参数。 */
@@ -75,9 +67,8 @@ struct ApplyControl {
 /** `setline.conf` 的完整内容。 */
 struct ControlConfig {
   RemoteConfig remote;
-  string topologyPath = defaultTopologyPath;
   string proxyPath;
-  AgentControl agent;
+  AgentConfig agent;
   ApplyControl apply;
 }
 
@@ -98,6 +89,7 @@ ControlConfig checkControlConfig(string path) {
 ControlConfig parseControlConfig(string text) {
   ControlConfig result;
   string section;
+  JSONValue[string] routeValues;
   foreach (raw; text.splitLines()) {
     auto line = strip(raw);
     if (line.length == 0 || line[0] == '#' || line[0] == ';')
@@ -117,14 +109,19 @@ ControlConfig parseControlConfig(string text) {
       if (key == "url") result.remote.url = value;
       else if (key == "profile") result.remote.profile = value;
       else if (key == "token") result.remote.token = value;
-    } else if (section == "topology") {
-      if (key == "file") result.topologyPath = value;
     } else if (section == "proxy") {
       if (key == "file") result.proxyPath = value;
     } else if (section == "agent") {
       if (key == "type") result.agent.type = toLowerAscii(value);
       else if (key == "output") result.agent.output = value;
       else if (key == "peers") result.agent.peers = parseAgentPeers(value);
+    } else if (section == "routes") {
+      enforce(!(key in routeValues), "duplicate [routes] entry for " ~ key);
+      try {
+        routeValues[key] = parseJSON(value);
+      } catch (Exception e) {
+        throw new Exception("invalid [routes] entry for " ~ key ~ ": " ~ e.msg);
+      }
     } else if (section == "apply") {
       if (key == "type") result.apply.type = toLowerAscii(value);
       else if (key == "configs") result.apply.configs = value;
@@ -133,6 +130,13 @@ ControlConfig parseControlConfig(string text) {
       else if (key == "quietseconds") result.apply.quietSeconds = value.to!int;
       else if (key == "runtimedir") result.apply.runtimeDir = value;
       else if (key == "owner") result.apply.owner = value;
+    }
+  }
+  if (routeValues.length > 0) {
+    try {
+      result.agent.routes = parseHostRoutes(JSONValue(routeValues));
+    } catch (Exception e) {
+      throw new Exception("[routes] " ~ e.msg);
     }
   }
   applyDefaults(result);
@@ -168,7 +172,7 @@ PeerConfig[] parseAgentPeers(string value) {
   return peers;
 }
 
-/** 把 peers 渲染回 `[agent] peers` 的值，供 `setline pull` 更新本地配置。 */
+/** 把 peers 渲染回 `[agent] peers` 的值，供 `setline-agent pull` 更新本地配置。 */
 string renderAgentPeers(const PeerConfig[] peers) {
   auto out_ = appender!string;
   foreach (i, peer; peers) {
@@ -185,8 +189,6 @@ string renderAgentPeers(const PeerConfig[] peers) {
 
 /** 补齐可推导的默认值，让部署方只需要写真正不同的字段。 */
 private void applyDefaults(ref ControlConfig config) {
-  if (config.topologyPath.length == 0)
-    config.topologyPath = defaultTopologyPath;
   if (config.agent.output.length == 0 && config.agent.type.length > 0)
     config.agent.output = defaultFragmentRoot;
   if (config.apply.type.length == 0)
@@ -233,8 +235,6 @@ void validateControlConfig(const ControlConfig config) {
   validateAgentType(config.apply.type, "apply.type");
   if (config.agent.output.length > 0)
     enforceAbsolute(config.agent.output, "agent.output");
-  if (config.topologyPath.length > 0)
-    enforceAbsolute(config.topologyPath, "topology.file");
   if (config.proxyPath.length > 0)
     enforceAbsolute(config.proxyPath, "proxy.file");
   if (config.apply.fragmentDir.length > 0)
@@ -270,17 +270,14 @@ string renderApplyShell(const ControlConfig config) {
   return out_.data;
 }
 
-/** `setline init` 写入的模板；不覆盖已有文件。 */
+/** `setline-agent init` 写入的模板；不覆盖已有文件。 */
 enum controlConfigTemplate =
-  "# setline local control plane. setline.json holds local listeners and routes.\n" ~
+  "# setline-agent control plane. setline.json belongs to the setline service.\n" ~
   "[remote]\n" ~
-  "# Used only by explicit `setline pull`; the agent timer never contacts it.\n" ~
+  "# Used only by explicit `setline-agent pull`; the interval timer never contacts it.\n" ~
   "url = http://127.0.0.1:8082\n" ~
   "profile = org.name\n" ~
   "token = change-me\n" ~
-  "\n" ~
-  "[topology]\n" ~
-  "file = /etc/setline/setline.json\n" ~
   "\n" ~
   "[proxy]\n" ~
   "# Optional. Defaults from [agent] type:\n" ~
@@ -291,8 +288,14 @@ enum controlConfigTemplate =
   "[agent]\n" ~
   "type = haproxy\n" ~
   "output = /var/lib/setline\n" ~
-  "# Filled by `setline pull`; name=url pairs separated by commas.\n" ~
+  "# Filled by `setline-agent pull`; name=url pairs separated by commas.\n" ~
   "peers =\n" ~
+  "\n" ~
+  "[routes]\n" ~
+  "# Predefined local routes, same shape as setline.json's host -> prefix -> port(s).\n" ~
+  "# Each value is one JSON object. Backends map to 127.0.0.1:<port>.\n" ~
+  "#local.example.com = {\"/api\": 9001, \"/api/edu\": [9002, 9003]}\n" ~
+  "#* = {\"/\": 9090}\n" ~
   "\n" ~
   "[apply]\n" ~
   "# type, configs, fragmentDir and service are derived from [agent] type when omitted.\n" ~

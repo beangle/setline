@@ -79,12 +79,13 @@ systemctl daemon-reload 2>/dev/null || :
 # and kept out of the file list, so package removal preserves local config.
 %files
 %attr(0755,root,root) /usr/bin/setline
+%attr(0755,root,root) /usr/bin/setline-agent
 %attr(0644,root,root) /usr/share/setline/setline.json.default
 %attr(0644,root,root) /usr/share/setline/setline.conf.default
 %attr(0644,root,root) /usr/share/setline/haproxy-setline-cfgdir.conf.example
 %attr(0644,root,root) /usr/share/doc/setline/*.md
 %attr(0755,root,root) /usr/lib/setline/setline-apply
-%attr(0755,root,root) /usr/lib/setline/setline-agent
+%attr(0755,root,root) /usr/lib/setline/setline-agent-run
 %attr(0644,root,root) /usr/lib/systemd/system/setline.service
 %attr(0644,root,root) /usr/lib/systemd/system/setline-agent.service
 %attr(0644,root,root) /usr/lib/systemd/system/setline-agent-interval.service

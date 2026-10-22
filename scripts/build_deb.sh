@@ -15,6 +15,7 @@ ferror() {
 }
 
 dub build --build=release-nobounds --compiler=ldc2
+dub build --build=release-nobounds --compiler=ldc2 --config=agent
 
 E=0
 LIST=""
@@ -63,6 +64,8 @@ pushd "$PKGDIR" >/dev/null
 mkdir -p usr/bin usr/share/setline usr/share/doc/setline usr/lib/setline usr/lib/systemd/system
 cp -f "$SETLINE_HOME/target/setline" usr/bin/setline
 strip --strip-unneeded usr/bin/setline
+cp -f "$SETLINE_HOME/target/setline-agent" usr/bin/setline-agent
+strip --strip-unneeded usr/bin/setline-agent
 cp -f "$SETLINE_HOME/scripts/package/setline.json" usr/share/setline/setline.json.default
 cp -f "$SETLINE_HOME/scripts/package/setline.conf.default" usr/share/setline/setline.conf.default
 cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/share/setline/haproxy-setline-cfgdir.conf.example
@@ -72,7 +75,7 @@ cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
 # 变更历史随包安装：升级前想知道「这一版动了什么」不该先去找仓库。
 cp -f "$SETLINE_HOME/CHANGELOG.md" usr/share/doc/setline/CHANGELOG.md
 cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
-cp -f "$SETLINE_HOME/scripts/package/setline-agent" usr/lib/setline/setline-agent
+cp -f "$SETLINE_HOME/scripts/package/setline-agent-run" usr/lib/setline/setline-agent-run
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
 cp -f "$SETLINE_HOME/scripts/package/setline-agent.service" usr/lib/systemd/system/setline-agent.service
 cp -f "$SETLINE_HOME/scripts/package/setline-agent-interval.service" usr/lib/systemd/system/setline-agent-interval.service
@@ -103,7 +106,7 @@ License: GPL-3.0-or-later
 DEBCOPYRIGHT
 
 chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/setline usr/lib/systemd usr/lib/systemd/system
-chmod 0755 usr/bin/setline usr/lib/setline/setline-apply usr/lib/setline/setline-agent
+chmod 0755 usr/bin/setline usr/bin/setline-agent usr/lib/setline/setline-apply usr/lib/setline/setline-agent-run
 chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent-interval.service usr/lib/systemd/system/setline-agent.timer
 
 mkdir -p DEBIAN

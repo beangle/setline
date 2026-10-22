@@ -31,9 +31,9 @@ import setline.util : rejectsRootUser, requiredFileDescriptorBudget, rootRunRefu
 }
 
 @("util refuses to run the proxy and the agent as root") unittest {
-  // 这两个入口（serve 与渲染一轮）都以非 root 运行；short-lived 的
-  // setline-agent/setline-apply 才需要 root，它们走的是 main 里更早返回的
-  // --agent-type / --agent-peers / --sync-map 出口，不受这条判据约束。
+  // 这两个入口（serve 与渲染一轮）都以非 root 运行；只有短命的
+  // `setline-agent pull --install` 和 `setline-apply` 需要 root。
+  // --agent-type / --agent-peers / --sync-map 等只读出口不受这条判据约束。
   assert(rejectsRootUser(0));
   assert(!rejectsRootUser(1));
   assert(!rejectsRootUser(1000));
@@ -111,31 +111,6 @@ import setline.util : rejectsRootUser, requiredFileDescriptorBudget, rootRunRefu
     auto snapshot = routesSnapshot();
     snapshot[0].routes[0].ports[0] = 1;
     assert(selectPort("missing.example.com", "/api/users") == 9090);
-  });
-}
-
-@("state notifies route changes to the hook") unittest {
-  withStateTestLock({
-    Config config;
-    config.routes = [HostRoutes("local.example.com", [Route("/old", [9000])])];
-    initialize(config);
-
-    HostRoutes[] last;
-    setRoutesChangedHook((HostRoutes[] routes) { last = routes; });
-    scope (exit) setRoutesChangedHook(null);
-
-    // 回调拿到的是写入后的新表，而不是旧状态。
-    replaceRoutes("local.example.com", [Route("/new", [9001])]);
-    assert(last.length == 1);
-    assert(last[0].routes.length == 1);
-    assert(last[0].routes[0].prefix == "/new");
-    assert(last[0].routes[0].ports == [9001]);
-
-    // 取消订阅后不再触发。
-    last = [];
-    setRoutesChangedHook(null);
-    replaceRoutes("local.example.com", [Route("/again", [9002])]);
-    assert(last.length == 0);
   });
 }
 

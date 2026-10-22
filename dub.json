@@ -13,6 +13,17 @@
       "targetName": "setline",
       "targetPath": "target",
       "sourcePaths": ["src"],
+      "excludedSourceFiles": ["src/agent_main.d"],
+      "dflags": ["-preview=dip1000"],
+      "lflags": ["-z", "now"]
+    },
+    {
+      "name": "agent",
+      "targetType": "executable",
+      "targetName": "setline-agent",
+      "targetPath": "target",
+      "sourcePaths": ["src"],
+      "excludedSourceFiles": ["src/main.d"],
       "dflags": ["-preview=dip1000"],
       "lflags": ["-z", "now"]
     },
@@ -21,7 +32,7 @@
       "targetPath": "target",
       "sourcePaths": ["src", "test"],
       "importPaths": ["src", "test"],
-      "excludedSourceFiles": ["src/main.d"],
+      "excludedSourceFiles": ["src/main.d", "src/agent_main.d"],
       "dependencies": {
         "silly": "~>1.1.1"
       }

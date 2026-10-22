@@ -13,8 +13,8 @@ Type=oneshot
 # 动作幂等；远端不可达时保留上次成功安装的配置并继续本地 render/apply。
 # 拼写用旧式的 [Service] StartLimitInterval=，理由见 setline.service 与 docs/deployment.md。
 RemainAfterExit=yes
-ExecStart=/usr/lib/setline/setline-agent --remote
-ExecReload=/usr/lib/setline/setline-agent --remote
+ExecStart=/usr/lib/setline/setline-agent-run --remote
+ExecReload=/usr/lib/setline/setline-agent-run --remote
 StartLimitInterval=0
 # 本服务以 root 运行，但只做编排：渲染通过 runuser 降权到 setline 用户，
 # 校验/reload 由 root 的 setline-apply 完成。绝不在 root 进程里解析 peer 响应。

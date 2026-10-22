@@ -89,27 +89,28 @@ These are intentionally out of scope unless the project goal changes:
   effective uid 0 prints a refusal and exits with code 2, which the shipped unit
   maps to `RestartPreventExitStatus=2` so systemd does not loop. `setline-apply`
   is not gated, and neither are the exits it invokes as root
-  (`setline --agent-type`, `setline --agent-peers`, `setline --sync-map`) or
+  (`setline-agent --agent-type`, `--agent-peers`, `--sync-map`) or
   `-c` and `--help`.
 - Privileged work belongs to short-lived root units,
   `setline-agent.service` / `setline-agent-interval.service`, and the root helper
   `setline-apply`. They only orchestrate: on start/reload the remote agent drops
   to the `setline` user with `runuser`
   for the remote manifest check and staging download, installs that local
-  staging as root, executes `setline render` unprivileged, and invokes
+  staging as root, executes `setline-agent render` unprivileged, and invokes
   `setline-apply`. The timer-driven interval service only renders peers/local
   routes and applies fragments; it does not contact bashub.
   `setline-apply` validates fragments, runs `systemctl reload`, rolls the
   fragment directory back, and talks to a proxy admin socket.
 - Remote responses are parsed only by the unprivileged `setline` user. The root
-  `setline pull --install` reads `<agent.output>/remote-stage`, re-verifies its
+  `setline-agent pull --install` reads `<agent.output>/remote-stage`, re-verifies its
   SHA-256 values against the local manifest, and installs the files; it must not
   open a remote URL or parse peer route data.
 - The shipped `setline.service` enforces the split with `User=setline` and
   `Group=beangle`. Do not remove those lines, and do not add a replacement unit
   or a manual command that starts `setline` as root.
-- `setline` needs write access only to its own fragment directory
-  (`/var/lib/setline/<proxy>/`), never to `/etc/haproxy` or `/etc/nginx`.
+- `setline-agent render` needs write access only to its fragment directory
+  (`/var/lib/setline/<proxy>/`), never to `/etc/haproxy` or `/etc/nginx`; the
+  resident `setline` writes only `setline.json` when its runtime API changes routes.
 - Needing a port below 1024 is not a reason to run as root. Use
   `AmbientCapabilities=CAP_NET_BIND_SERVICE` on the unit instead.
 - If a feature seems to need root, implement it in `setline-apply` (or in a
@@ -250,25 +251,28 @@ route are removed from the health table.
 
 ## Remote Proxy Rendering
 
-`[agent] peers` is the discovery form of the same agent-side helper. Each peer is
-a remote setline instance read through `GET /_setline/routes`; its local ports
-are rewritten to `<peer url host>:<port>`, and routes sharing a host and path prefix
-are merged into one backend group so several machines serving the same prefix
-become multiple servers of one upstream. The result is rendered as a HAProxy or
+`[agent] peers` is the discovery form of the agent-side renderer. Each peer is a
+remote setline instance read through `GET /_setline/routes`; its local ports are
+rewritten to `<peer url host>:<port>`. `setline.conf [routes]` contributes
+predefined local backends (`127.0.0.1:<port>`) whether or not peers are configured,
+and routes sharing a host and path prefix are merged into one backend group so
+several machines serving the same prefix become multiple servers of one upstream.
+The result is rendered as a HAProxy or
 Nginx fragment, written atomically under the `[agent] output` root directory
 (`<root>/{haproxy,nginx}/setline.{cfg,conf}`), and never merged into the
 proxy's own main config file: the fragment is included (Nginx) or concatenated
 (HAProxy, which has no `include`) by deployment tooling. The process renders
 exactly one round and exits; the cadence is external
 (`setline-agent.timer` in the package), so there is no in-process scheduler and no
-`sync` config. Each interval round runs `setline render` as the `setline` user,
+`sync` config. Each interval round runs `setline-agent render` as the `setline` user,
 then applies the result as root through `setline-apply`. The timer does not
 contact bashub; the separate start/reload path performs one manifest check
 before that render. The resident
 `setline.service` keeps listening and proxying at the same time.
 
-With no `peers`, the same renderer reads the local route table instead
-(single-host deployment, where the proxy and setline share a machine).
+With no `peers`, the same renderer reads `setline.conf [routes]`
+(single-host deployment). The resident `setline` reads only `setline.json`; duplicate
+the routes there only when the data plane also needs them.
 
 The fragment carries only rules and backends and never a listener, because the
 listen address, TLS and the rest of the proxy config are the deployment's own
@@ -279,7 +283,7 @@ A registry-bundle source (`agent.remote`, plus its `agent.workDir` scratch
 directory) existed for a while and was dropped: it fed the same renderer from a
 manifest and versioned `.tar.gz` that an external registry system had to build,
 doubling the surface while `[agent] peers` already produced the same fragments
-from running instances. Only `peers` and the local route table remain.
+from running instances. Only `peers` and `setline.conf [routes]` remain.
 
 This rendering mode may describe remote machine IPs and ports because it is
 generating HAProxy/Nginx configuration, not selecting setline backends. It must
@@ -325,6 +329,7 @@ The proxy must keep working for common development-server traffic:
 Before changing proxy behavior, validate at least:
 
 - `dub build`
+- `dub build --config=agent`
 - `dub test --config=unittest`
 - concurrent frontend resource requests
 - concurrent `304` conditional requests

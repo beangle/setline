@@ -60,9 +60,9 @@ setline **不在业务流量的路径上**。片段里的 `server` 写的就是�
 
 ```
 # 单机部署：回源主机固定 127.0.0.1
-server local_app_example_com_api_edu_0 127.0.0.1:9002 check
+server app_example_com_api_edu_0 127.0.0.1:9002 check
 # peers 模式：回源主机取自 peer.url，端口取自对端的路由表
-server app_app_example_com_api_edu_0 10.0.1.10:9002 check
+server app_example_com_api_edu_0 10.0.1.10:9002 check
 ```
 
 两个入口职责不同：
@@ -128,7 +128,7 @@ grep -n '^  server ' /var/lib/setline/haproxy/setline.cfg
 ## setline 配置示例
 
 先选数据来源：**边缘机聚合多台 setline** 用 `peers`（下面第一个例子）；haproxy 与
-setline、basctl **同机**时不配 `peers`，setline 边收 basctl 推的路由边渲染片段
+setline **同机**时不配 `peers`，把本地后端写进 `setline.conf [routes]`
 （见「单机部署」）。
 
 ### 聚合多台 setline（peers）
@@ -150,32 +150,36 @@ peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 | 字段 | 值 | 说明 |
 |---|---|---|
 | `[agent] type` | `haproxy` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
-| `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），setline 在其下建 `haproxy/` 并写固定文件名 `setline.cfg`（`-f <dir>` 只加载 `*.cfg`）与 `setline.map` |
+| `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），`setline-agent` 在其下建 `haproxy/` 并写固定文件名 `setline.cfg`（`-f <dir>` 只加载 `*.cfg`）与 `setline.map` |
 | `[agent] peers` | `app1=http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
-渲染入口 `setline render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
+渲染入口 `setline-agent render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
 `setline-agent.timer`（每 30s）拉起 `setline-agent-interval.service` 完成一轮；
-启动/reload `setline-agent.service` 时会先做一次 bashub manifest 检查。只要 `listen`
-不是 `false`，`setline.service` 仍作为常驻监听/代理进程一起运行：
+启动/reload `setline-agent.service` 时会先做一次 bashub manifest 检查。常驻
+`setline.service` 只读 `setline.json`，是否启动与 agent 无关：
 
 ```bash
 sudo systemctl enable --now setline.service      # 监听/代理
 sudo systemctl enable --now setline-agent.timer  # 远程检查 + 周期渲染/校验/reload
 ```
 
-某一台 peer 暂时读不到只会在这一轮打一行 `setline agent render failed: ...` 并以非 0
-退出，下一轮照常再试，片段保持上一轮的内容（写文件是按内容哈希幂等的）。
+某一台 peer 暂时读不到时，这一轮 render 以非 0 退出；下一轮照常再试，片段保持上一轮的
+内容（写文件是按内容哈希幂等的）。
 
 ### 单机部署（haproxy 与 setline 同机）
 
-haproxy、setline、basctl 装在同一台机器上时，回源目标和 setline 调度的后端是同一批
-进程，不配 `peers` 即可：setline 监听 `listen` 接收 basctl 推的路由
-（控制面，业务流量不经过它），同时把本机路由表渲染成片段（回源主机固定 `127.0.0.1`）。
+haproxy、setline 装在同一台机器上时，回源目标和 setline 调度的后端是同一批进程，
+不配 `peers` 即可：把本地后端写进 `setline.conf [routes]`，agent 渲染时固定回源
+`127.0.0.1:<port>`。常驻 `setline.service` 不参与片段生成；需要数据面接收 basctl
+推路由时再单独维护 `setline.json`。
 
 ```ini
 [agent]
 type = haproxy
 output = /var/lib/setline
+
+[routes]
+app.example.com = {"/api/edu": [9002, 9003]}
 ```
 
 ```json
@@ -193,19 +197,21 @@ output = /var/lib/setline
 
 | 项 | peers 模式 | 单机模式 |
 |---|---|---|
-| `listen` / `routes` | 配（setline.service 监听/代理） | 配（控制面入口，basctl 推到这里） |
-| 服务名前缀 | peer 的 `name` | `local` |
+| 数据源 | peers | `setline.conf [routes]` |
 | 回源主机 | 各 peer 的 `url` 主机 | `127.0.0.1` |
-| 重渲染时机 | `setline-agent` 周期聚合 peers | 启动一次 + 每次管理接口改路由，另有 agent 周期兜底 |
+| 重渲染时机 | timer 周期聚合 peers | timer 周期读取 `[routes]` |
 
-`setline-agent.timer` 两种模式都照用；interval 轮次调用 `setline render` 后执行 apply，
+后端标识只由 host 分组名和路径前缀决定（例如 `app_example_com_api_edu`），与数据来自
+`[routes]` 还是某个 peer 无关；同一 host + 前缀的实例会合并到同一个 backend。
+
+`setline-agent.timer` 两种模式都照用；interval 轮次调用 `setline-agent render` 后执行 apply，
 片段变了才 reload（见「校验与热加载」）。远程配置只在 `setline-agent.service` 启动或
 reload 时检查。
 
 写完先校验，这一步不需要 peer 在线：
 
 ```bash
-setline -c
+setline-agent -c
 ```
 
 片段落盘后的校验与热加载见「校验与热加载」一节。
@@ -325,7 +331,7 @@ frontend http_in
 `stats socket`、单元的 `-S`、以及几个默认位置），探不到就老老实实回退 reload，
 **不需要任何配置**。细节与怎么确认走了哪条路见 `docs/agent-reload.md`。
 
-setline 生成的 map 形如：
+setline-agent 生成的 map 形如：
 
 ```
 app.example.com~/api/edu b_app_example_com_api_edu
@@ -336,7 +342,7 @@ backend 名是 `b_` 加上标识，标识 = host 分组名 + 路径前缀（`*` 
 根路径 `/` 不单独占一段），例如 `b_app_example_com_api_edu`、`b_default`；名字里的
 非字母数字都变成下划线并折叠。它与后端来自哪台机器无关——同一 host + 前缀无论来自
 几个 peer 都合并成同一个 backend。不要手写 backend 段；map 文件与 backend 片段由
-setline 一起生成、一起原子替换。
+`setline-agent` 一起生成、一起原子替换。
 
 ## 校验与热加载
 
@@ -361,7 +367,8 @@ reload 到底有没有发生（master PID 不变、worker PID 换掉、`show pro
 
 ## 权限
 
-- `setline` 以 `setline` 用户运行，只写 `/var/lib/setline/haproxy/`，不碰 `/etc/haproxy`；
+- `setline-agent render` 以 `setline` 用户运行，只写 `/var/lib/setline/haproxy/`，不碰
+  `/etc/haproxy`；常驻 `setline` 只负责数据面；
 - `setline-apply` 以 root 运行（`nginx -t`、`haproxy` reload 都要 root）；
 - haproxy 以 root 启动后降权，读 `-f <dir>` 里的片段没有问题，目录保持 `0755` 即可。
 

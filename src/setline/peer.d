@@ -203,25 +203,28 @@ BackendService[] collectLocalServices(HostRoutes[] routes) {
   return sortServices(mergePeerTable([], routes, localBackendHost));
 }
 
-/** 按数据来源取得后端服务：`peers` 合并对端路由表，或本机路由表（单机部署，
-    见 {@link collectLocalServices}）。 */
-BackendService[] collectAgentServices(AgentConfig agent, HostRoutes[] localRoutes = []) {
-  if (agent.peers.length > 0) return collectPeerServices(agent);
-  return collectLocalServices(localRoutes);
+/** 按数据来源取得后端服务：`[routes]` 预定义路由总是参与，`peers` 再各自并入。 */
+BackendService[] collectAgentServices(AgentConfig agent,
+    HostRoutes[] delegate(PeerConfig) fetcher = toDelegate(&fetchPeerRoutes)) {
+  auto services = mergePeerTable([], agent.routes, localBackendHost);
+  foreach (peer; agent.peers) {
+    auto host = peerAddress(peer);
+    services = mergePeerTable(services, fetcher(peer), host);
+  }
+  return sortServices(services);
 }
 
 /** 渲染 agent 要写出的全部片段。
 
-    数据来源是对端 setline（`peers`）时 `localRoutes` 用不上；单机部署时由调用方把
-    本进程的路由表传进来。
+    数据来源是 `agent.routes` 里的预定义本地路由，加上每个 peer 的路由表。
 
     片段固定只出规则与后端定义，监听段归代理主配置（setline 不写 `bind` / `listen`），
     文件布局见 docs/haproxy-integration.md 与 docs/nginx-integration.md，落盘位置见
     {@link layoutSnippets}。
 */
-Snippet[] renderAgentSnippets(AgentConfig agent, HostRoutes[] localRoutes = []) {
+Snippet[] renderAgentSnippets(AgentConfig agent) {
   enforce(agent.type.length > 0, "agent.type is required");
-  return layoutSnippets(collectAgentServices(agent, localRoutes), agent.type, agent.output);
+  return layoutSnippets(collectAgentServices(agent), agent.type, agent.output);
 }
 
 /** 片段文件名的主干；与 `setline-apply`、代理主配置的接线约定绑定，不开放配置。 */
@@ -274,8 +277,8 @@ bool writeSnippet(string path, string text) {
 
 /** 写出一批片段；`outputRoot` 为空时打到标准输出（每个文件前加一行标题）。
 
-    setline.service 的即时渲染与 agent 的一轮渲染共用这里：每个文件按内容哈希幂等
-    写出，只有内容发生变化时才报告，无变化的一轮保持静默。目录不存在时由
+    `setline-agent render` 用这里写出片段：每个文件按内容哈希幂等写出，只有内容发生
+    变化时才报告，无变化的一轮保持静默。目录不存在时由
     {@link writeSnippet} 逐级创建。
 */
 void writeSnippets(Snippet[] snippets, string outputRoot) {

@@ -10,12 +10,14 @@ Use a release build for load testing or long-running deployment:
 
 ```bash
 dub build --compiler=ldc2 --build=release
+dub build --compiler=ldc2 --build=release --config=agent
 ```
 
 Optionally strip the binary after building:
 
 ```bash
 strip target/setline
+strip target/setline-agent
 ```
 
 ## Linux Packages
@@ -31,10 +33,11 @@ scripts/build_srpm.sh
 The binary package installs:
 
 - `/usr/bin/setline`
+- `/usr/bin/setline-agent`
 - `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`
 - `/usr/share/doc/setline/*.md` (all of `docs/`, plus `CHANGELOG.md`)
 - `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
-- `/usr/lib/setline/setline-agent` (one-round render/apply orchestrator)
+- `/usr/lib/setline/setline-agent-run` (root render/apply orchestrator)
 - `/usr/lib/systemd/system/setline.service`
 - `/usr/lib/systemd/system/setline-agent.service` (start/reload manifest check)
 - `/usr/lib/systemd/system/setline-agent-interval.service` + `setline-agent.timer`
@@ -51,42 +54,41 @@ The packages install the units but never enable them. A machine whose config
 has an `[agent] type` needs
 
 ```bash
-sudo systemctl enable --now setline.service       # listen and proxy (unless listen:false)
+sudo systemctl enable --now setline.service       # listen and proxy (setline.json)
 sudo systemctl enable --now setline-agent.timer   # remote check + periodic render/apply
 ```
 
 otherwise the generated fragment is never rendered, validated or reloaded. How
 to run it by hand, its exit codes and the `[apply]` settings in `setline.conf`
 are in `docs/agent-reload.md`. `setline.service` always remains the resident
-listener when `listen` is enabled, including when `[agent] peers` is configured.
+listener; it reads only `setline.json` and is independent of `[agent] peers`.
 At startup (and whenever the operator runs
 `systemctl reload setline-agent.service`), `setline-agent.service` performs one
 remote manifest check, then renders and applies. Every 30s
 `setline-agent.timer` instead runs `setline-agent-interval.service`, which
-executes `setline render` as the unprivileged `setline` user and then applies
-the result as root without contacting bashub. With no peers, `setline.service`
-additionally re-renders local route changes immediately; with peers, the agent
-is the renderer so the service never overwrites peer-derived fragments.
+executes `setline-agent render` as the unprivileged `setline` user and then applies
+the result as root without contacting bashub. `setline.conf [routes]` is always
+part of that render; the service never generates or overwrites fragments.
 
 The systemd service runs:
 
 ```text
-/usr/bin/setline --conf /etc/setline/setline.conf
+/usr/bin/setline -f /etc/setline/setline.json
 ```
 
 Both agent units run as root, but only orchestrate: they drop to the `setline`
-user for remote downloads and `setline render`, then call `setline-apply --now`
+user for remote downloads and `setline-agent render`, then call `setline-apply --now`
 as root. The remote download is staged by the unprivileged user; root only
 installs the verified staging.
 Drop a `/etc/systemd/system/setline-agent.service.d/*.conf` with an `ExecStart=`
 override if `setline.conf` lives elsewhere.
 
-Runtime route updates rewrite the topology file named by `[topology] file`, so
-package install scripts make `/etc/setline/setline.json` writable by the
-`setline` service user. `setline.conf` stays root-owned and readable by the
-`beangle` group, because it contains the Profile key. Both files are generated
-on first install and are not tracked as package files, so removing the package
-preserves them.
+Runtime route updates rewrite `/etc/setline/setline.json`, so package install
+scripts make it writable by the `setline` service user. `setline.conf` stays
+root-owned and readable by the `beangle` group, because it contains the Profile
+key and is read only by `setline-agent`. Both files are generated on first
+install and are not tracked as package files, so removing the package preserves
+them.
 
 ### systemd 版本兼容
 
@@ -140,13 +142,14 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
 
 3. `refusing to run as root: ...` —— 手工 `sudo setline ...` 起服务时最常见。代理和
    渲染 agent 都要求非 root；`setline-apply` 以 root 调用的
-   `--agent-type`/`--agent-peers`/`--sync-map` 出口、以及 `-c` 校验不受影响。这条以退出码 `2` 结束，unit 里的
+   `setline-agent --agent-type` / `--agent-peers` / `--sync-map` 出口、以及 `-c`
+   校验不受影响。这条以退出码 `2` 结束，unit 里的
    `RestartPreventExitStatus=2` 会直接停住，不会重启五次。
 
 前台手工复现最直接，注意用服务账号，才和 unit 里的权限一致：
 
 ```bash
-sudo -u setline /usr/bin/setline --conf /etc/setline/setline.conf
+sudo -u setline /usr/bin/setline -f /etc/setline/setline.json
 ```
 
 修好之后必须清掉限流计数，否则 systemd 还在「repeated too quickly」状态里拒绝启动：
@@ -315,14 +318,15 @@ route table (no credential - the peer's `peerReaders` lists the edge), rewrites
 the peer's local ports to
 `<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
 a HAProxy/Nginx fragment under the `[agent] output` root directory
-(`<root>/{haproxy,nginx}/setline.{cfg,conf}`). Leave `[agent] peers` empty and the
-same output is rendered from the local route table instead. By default the
-fragment carries only rules and backends, so the proxy's own config keeps
-the listener; how to wire each proxy is in `docs/haproxy-integration.md` and
-`docs/nginx-integration.md`.
+(`<root>/{haproxy,nginx}/setline.{cfg,conf}`). `setline.conf [routes]` supplies
+predefined local backends and always participates; peer routes are merged into
+the same host/prefix groups. The resident `setline.service` neither reads
+`setline.conf` nor renders fragments. By default the fragment carries only rules
+and backends, so the proxy's own config keeps the listener; how to wire each
+proxy is in `docs/haproxy-integration.md` and `docs/nginx-integration.md`.
 
-Reloading is separate and privileged. `setline render` runs as the unprivileged
-`setline` user and only writes the fragment; `setline-agent` (root, oneshot)
+Reloading is separate and privileged. `setline-agent render` runs as the unprivileged
+`setline` user and only writes the fragment; `setline-agent-run` (root, oneshot)
 orchestrates that render through `runuser`, then `setline-apply` (root helper)
 validates the result, runs `systemctl reload`, and rolls the fragment directory
 back if either step fails. Running the proxy daemon as root is a hard requirement

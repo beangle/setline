@@ -291,13 +291,14 @@ Keep the boundary simple:
 - Any external proxy configuration should be owned by deployment tooling that
   has the complete service topology, not by a single setline instance.
 
-When `[agent] type` is configured in `setline.conf`, `setline` can also act as
-an agent-style helper for that deployment tooling boundary. It renders proxy
-configuration text for an edge proxy machine, without touching the normal local
-transparent proxy route model.
+When `[agent] type` is configured in `setline.conf`, `setline-agent` acts as an
+agent-style helper for that deployment tooling boundary. It is a separate
+executable: it renders proxy configuration text for an edge proxy machine
+without touching the resident setline proxy or reading `setline.json`.
 
 The helper reads live peers: `[agent] peers` lists remote setline instances, and
-`setline` aggregates their `GET /_setline/routes` tables into one HAProxy or
-Nginx fragment. With no `peers` it renders the local route table instead. This
+`setline-agent` aggregates their `GET /_setline/routes` tables into one HAProxy or
+Nginx fragment. `setline.conf [routes]` always contributes predefined local
+backends; with no `peers` it is the only source. This
 is a rendered fragment, not a full config, so the edge proxy keeps owning its
 own `global`/`defaults`/`http` content.

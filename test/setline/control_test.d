@@ -21,16 +21,13 @@ import std.file : exists, readText, remove;
 
 import setline.control;
 
-@("control parses remote, topology, agent and apply") unittest {
+@("control parses remote, agent, routes and apply") unittest {
   auto config = parseControlConfig(
     "# full local control plane\n" ~
     "[remote]\n" ~
     "url = https://hub.example.com/base\n" ~
     "profile = \"openurp.prod\"\n" ~
     "token = secret\n" ~
-    "\n" ~
-    "[topology]\n" ~
-    "file = /srv/setline/topology.json\n" ~
     "\n" ~
     "[proxy]\n" ~
     "file = /etc/haproxy/haproxy.cfg\n" ~
@@ -39,6 +36,10 @@ import setline.control;
     "type = HAPROXY\n" ~
     "output = /srv/setline/fragments\n" ~
     "peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080\n" ~
+    "\n" ~
+    "[routes]\n" ~
+    "local1.example.com = {\"/api\": 9001, \"/api/edu\": [9002, 9003]}\n" ~
+    "* = {\"/\": 9090}\n" ~
     "\n" ~
     "[apply]\n" ~
     "configs = /etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /srv/setline/fragments\n" ~
@@ -51,7 +52,6 @@ import setline.control;
   assert(config.remote.url == "https://hub.example.com/base");
   assert(config.remote.profile == "openurp.prod");
   assert(config.remote.token == "secret");
-  assert(config.topologyPath == "/srv/setline/topology.json");
   assert(config.proxyPath == "/etc/haproxy/haproxy.cfg");
   assert(config.agent.type == "haproxy");
   assert(config.agent.output == "/srv/setline/fragments");
@@ -59,6 +59,11 @@ import setline.control;
   assert(config.agent.peers[0].name == "app1");
   assert(config.agent.peers[0].url == "http://10.0.1.10:8080");
   assert(config.agent.peers[1].name == "app2");
+  assert(config.agent.routes.length == 2);
+  assert(config.agent.routes[0].host == "local1.example.com");
+  assert(config.agent.routes[0].routes[0].prefix == "/api/edu");
+  assert(config.agent.routes[0].routes[0].ports == [9002, 9003]);
+  assert(config.agent.routes[1].host == "*");
   assert(config.apply.type == "haproxy");
   assert(config.apply.configs ==
     "/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /srv/setline/fragments");
@@ -112,8 +117,24 @@ import setline.control;
     "[agent]\ntype = nginx\n[proxy]\nfile = /srv/nginx/nginx.conf\n");
   assert(explicitPath.proxyPath == "/srv/nginx/nginx.conf");
 
-  auto noType = parseControlConfig("[topology]\nfile = /srv/topology.json\n");
+  auto noType = parseControlConfig("[apply]\nquietSeconds = 1\n");
   assert(noType.proxyPath.length == 0);
+}
+
+@("control parses predefined routes with the same shape as setline.json") unittest {
+  auto config = parseControlConfig(
+    "[routes]\n" ~
+    "Local.Example.COM = {\"/api/\": 9001}\n" ~
+    "* = {\"/\": [9090, 9091]}\n");
+  assert(config.agent.routes.length == 2);
+  assert(config.agent.routes[0].host == "local.example.com");
+  assert(config.agent.routes[0].routes[0].prefix == "/api");
+  assert(config.agent.routes[0].routes[0].ports == [9001]);
+  assert(config.agent.routes[1].host == "*");
+  assert(config.agent.routes[1].routes[0].ports == [9090, 9091]);
+
+  auto empty = parseControlConfig("[routes]\n");
+  assert(empty.agent.routes.length == 0);
 }
 
 @("control renders apply settings as shell assignments") unittest {
@@ -141,7 +162,6 @@ import setline.control;
 @("control rejects malformed or unsafe values") unittest {
   assertThrown!Exception(parseControlConfig("[agent]\ntype = apache\n"));
   assertThrown!Exception(parseControlConfig("[agent]\noutput = relative/path\n"));
-  assertThrown!Exception(parseControlConfig("[topology]\nfile = relative.json\n"));
   assertThrown!Exception(parseControlConfig("[apply]\nquietSeconds = -1\n"));
   assertThrown!Exception(parseControlConfig("[apply]\nconfigs = /etc/haproxy bad\n"));
   assertThrown!Exception(parseControlConfig("[remote]\nurl = hub.example.com\n"));
@@ -152,6 +172,15 @@ import setline.control;
   assertThrown!Exception(parseControlConfig("[agent]\npeers = app1=file:///tmp/routes\n"));
   assertThrown!Exception(parseControlConfig(
     "[agent]\npeers = app1=http://10.0.1.10:8080, http://10.0.1.11:8080\n"));
+  assertThrown!Exception(parseControlConfig("[routes]\nlocal.example.com = not-json\n"));
+  assertThrown!Exception(parseControlConfig("[routes]\nlocal.example.com = {\"/api\": 0}\n"));
+  assertThrown!Exception(parseControlConfig("[routes]\nlocal.example.com = []\n"));
+  assertThrown!Exception(parseControlConfig(
+    "[routes]\nlocal.example.com = {\"/api\": 9001}\n" ~
+    "local.example.com = {\"/api\": 9002}\n"));
+  assertThrown!Exception(parseControlConfig(
+    "[routes]\nlocal.example.com = {\"/api\": 9001}\n" ~
+    "Local.Example.COM = {\"/api\": 9002}\n"));
 }
 
 @("control requires a complete remote block before downloads") unittest {

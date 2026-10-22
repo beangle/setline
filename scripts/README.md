@@ -48,9 +48,9 @@ the start of a line.
 
 ## Install layout
 
-`/usr/bin/setline`; `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`;
+`/usr/bin/{setline,setline-agent}`; `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`;
 `/usr/share/doc/setline/*.md` (everything under `docs/`, plus the `CHANGELOG.md`);
-`/usr/lib/setline/{setline-agent,setline-apply}`;
+`/usr/lib/setline/{setline-agent-run,setline-apply}`;
 `/usr/lib/systemd/system/{setline.service,setline-agent.service,setline-agent-interval.service,setline-agent.timer}`;
 `/etc/setline/{setline.conf,setline.json}`; `/var/lib/setline/{haproxy,nginx,apply}/`.
 
@@ -62,7 +62,7 @@ neither tracks nor removes either file.
 
 ## Fragment reload
 
-`setline` writes fragments atomically to `/var/lib/setline/<proxy>/`; the
+`setline-agent` writes fragments atomically to `/var/lib/setline/<proxy>/`; the
 root-owned `setline-apply` validates them and reloads (timer-driven, idempotent
 on a content hash, rolls the whole set back on failure). Rationale and
 alternatives: `docs/agent-reload.md`.
@@ -74,12 +74,12 @@ alternatives: `docs/agent-reload.md`.
   adding or removing a backend reloads.
 
 Enable it with one timer - `[agent] type` in `setline.conf` picks the proxy:
-`systemctl enable --now setline-agent.timer`. `setline.service` remains the
-resident listener whenever `listen` is enabled, including with `[agent] peers`.
+`systemctl enable --now setline-agent.timer`. `setline.service` is independent and
+only reads `setline.json`; enable it separately when the data plane is needed.
 The timer starts `setline-agent.service` once (remote manifest check), then every
-30s runs `setline-agent-interval.service`: `setline render` as the `setline`
+30s runs `setline-agent-interval.service`: `setline-agent render` as the `setline`
 user followed by `setline-apply` as root. Peers only change the renderer's data
-source; the interval service never contacts bashub.
+source; `[routes]` always participates. The interval service never contacts bashub.
 `setline-agent` exits 0 when `[agent] type` is empty, so an idle timer on a
 plain proxy host is normal. Run
 `sudo /usr/lib/setline/setline-apply --now auto` to apply once by hand.
@@ -91,8 +91,8 @@ machine (2.0+; `HAPROXY_BINARIES=/path/to/haproxy`, comma-separated, runs one
 round each). It fails with that hint when none is installed rather than
 downloading one. Covered: 1xx intermediates, `Expect: 100-continue`, HTTP/1.0,
 close-delimited bodies, HEAD/204/304, request framing, upstream reuse, upstream
-read timeout, client abort, `status.json`, `listen:false`
-render-only mode, WebSocket echo/idle/one-way, SIGTERM shutdown (exit status 0)
+read timeout, client abort, `status.json`, `setline-agent` rendering predefined
+`[routes]`, WebSocket echo/idle/one-way, SIGTERM shutdown (exit status 0)
 and how `/_setline` is split between the two listeners: the peer-protocol
 `GET /_setline/routes` rides both the admin listener (its own port, default
 `127.0.0.1:8081`) and the data plane, while status reads and writes stay on the
