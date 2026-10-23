@@ -60,6 +60,10 @@ write `setline.json`, so it is owned by `setline:beangle` and group-writable.
 `setline.conf` holds the Profile key and stays `root:beangle 0640`. The package
 neither tracks nor removes either file.
 
+> **Never add `/etc/setline/setline.conf` or `setline.json` to `%files`/`conffiles`,
+> and never `rm` them in pre/post scripts.** They are user data (the Profile key and
+> runtime routes); uninstall, reinstall and upgrade must leave both files untouched.
+
 ## Fragment reload
 
 `setline-agent` writes fragments atomically to `/var/lib/setline/<proxy>/`; the

@@ -91,7 +91,8 @@ owner = setline:beangle
 
 `[apply]` may also set `type`, `configs`, `fragmentDir` and `service`; they are
 derived from `[agent] type` and `[agent] output` when omitted. The package installs
-`/etc/setline/setline.conf` once and never overwrites it on upgrade.
+`/etc/setline/setline.conf` once and never overwrites or removes it on upgrade or
+uninstall; `setline.json` is user data in the same way.
 
 Apply state (`applied.sha256` and `lastgood/`) is always placed at
 `<agent.output>/apply`; it is not configurable separately.
