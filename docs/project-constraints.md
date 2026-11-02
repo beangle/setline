@@ -91,13 +91,12 @@ These are intentionally out of scope unless the project goal changes:
   is not gated, and neither are the exits it invokes as root
   (`setline-agent --agent-type`, `--agent-peers`, `--sync-map`) or
   `-c` and `--help`.
-- Privileged work belongs to short-lived root units,
-  `setline-agent.service` / `setline-agent-interval.service`, and the root helper
-  `setline-apply`. They only orchestrate: on start/reload the remote agent drops
-  to the `setline` user with `runuser`
-  for the remote manifest check and staging download, installs that local
-  staging as root, executes `setline-agent render` unprivileged, and invokes
-  `setline-apply`. The timer-driven interval service only renders peers/local
+- Privileged work belongs to the short-lived static `setline-agent.service`,
+  the explicit manual sync helper, and the root helper `setline-apply`. They only
+  orchestrate: manual sync drops to the `setline` user with `runuser` for the
+  remote manifest check and staging download, installs that local staging as
+  root, executes `setline-agent render` unprivileged, and invokes
+  `setline-apply`. The timer-driven static service only renders peers/local
   routes and applies fragments; it does not contact bashub.
   `setline-apply` validates fragments, runs `systemctl reload`, rolls the
   fragment directory back, and talks to a proxy admin socket.
@@ -266,8 +265,9 @@ exactly one round and exits; the cadence is external
 (`setline-agent.timer` in the package), so there is no in-process scheduler and no
 `sync` config. Each interval round runs `setline-agent render` as the `setline` user,
 then applies the result as root through `setline-apply`. The timer does not
-contact bashub; the separate start/reload path performs one manifest check
-before that render. The resident
+contact bashub. Remote sync is never scheduled by systemd; an operator runs
+`setline-agent pull` or `setline-agent-run --remote` when a refresh is needed.
+The resident
 `setline.service` keeps listening and proxying at the same time.
 
 With no `peers`, the same renderer reads `setline.conf [routes]`

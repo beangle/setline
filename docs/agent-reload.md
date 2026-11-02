@@ -14,8 +14,8 @@ systemd 单元的设计考虑。常驻的 `setline.service` 负责监听和代�
 |---|---|---|
 | `setline`（service，`User=setline`） | 只读 `setline.json`；监听、代理 | 不读 `setline.conf`、不渲染片段、不发信号、不 reload |
 | `setline-agent render`（`User=setline`） | 只读 `setline.conf`；合并 `[routes]`/peers 并原子写出片段，然后退出 | 不监听端口、不发信号、不 reload |
-| `setline-agent-run`（root，oneshot） | 启动/reload 时做一次远端 manifest 检查；降权执行 `setline-agent render`，然后调用 apply | 不在 root 进程解析远端响应、不直接 reload |
-| `setline-agent-interval`（root，oneshot） | timer 每轮只编排 `[routes]`/peers 渲染和 apply | 不访问 bashub、没有 pull/check 入口 |
+| `setline-agent-run`（root，oneshot） | 手工 `--remote` 时做一次远端 manifest 检查；降权执行 `setline-agent render`，然后调用 apply | 不在 root 进程解析远端响应、不直接 reload |
+| `setline-agent.service`（root，static oneshot） | timer 每轮只编排 `[routes]`/peers 渲染和 apply | 不访问 bashub、没有 pull/check 入口 |
 | `setline-apply`（root，helper） | 校验、map 热同步、reload、回滚 | 不生成片段、不做服务发现 |
 | `haproxy` / `nginx` | 按各自方式加载片段 | 不感知 setline |
 
@@ -24,11 +24,12 @@ systemd 单元的设计考虑。常驻的 `setline.service` 负责监听和代�
 直接变成 root 失陷。渲染 peer 路由表同样要解析远端 HTTP/JSON，所以也不能放进
 root 编排进程；`setline-agent-run` 必须用 `runuser` 把它降权到 `setline` 用户。
 
-`setline-agent.service` 在启动或 reload 时做一次远端 manifest 检查；下载仍由
-`setline` 用户执行，root 的 `setline-agent pull --install` 只读本机 `<agent.output>/remote-stage`、
-核对本地哈希并写最终文件，不打开远端 URL。真正的远程下载、manifest/peers 解析和渲染都用
-`runuser -u setline -g beangle` 降权到 `setline` 用户。timer 驱动的
-`setline-agent-interval.service` 不访问 `[remote]`，只做 peers/本地路由的 render/apply。
+远端配置没有被任何 systemd unit 自动检查；需要时手工执行
+`setline-agent pull --check --stage`。下载仍由 `setline` 用户执行，root 的
+`setline-agent pull --install` 只读本机 `<agent.output>/remote-stage`、核对本地哈希并写最终
+文件，不打开远端 URL。真正的远程下载、manifest/peers 解析和渲染都用
+`runuser -u setline -g beangle` 降权到 `setline` 用户。timer 驱动的 static
+`setline-agent.service` 不访问 `[remote]`，只做 peers/本地路由的 render/apply。
 `setline-agent pull --check --stage` 和 `pull --install` 分别拒绝 root 与非 root 调用，避免把下载
 误跑到 root 或把安装误跑到服务账号。
 代码里以 root 启动代理或渲染 agent 会打印一行拒绝并退出（退出码 `2`，对上 unit 的
@@ -39,8 +40,8 @@ root 编排进程；`setline-agent-run` 必须用 `runuser` 把它降权到 `set
 
 ## 启用与使用
 
-包只**安装** `setline.service`、`setline-agent.service`、
-`setline-agent-interval.service`、`setline-agent.timer` 和
+包只**安装** 3 个 unit 文件：`setline.service`、static 的 `setline-agent.service`、
+`setline-agent.timer`，以及
 `/usr/lib/setline/{setline-agent-run,setline-apply}` 和 `/usr/bin/setline-agent`，
 **不会**替你 enable。写了 `[agent] type` 的机器装完后要自己把 timer 拉起来；需要数据面
 代理时再单独启动常驻服务：
@@ -53,16 +54,15 @@ sudo systemctl enable --now setline-agent.timer
 # 2. 确认它在转：下次触发时间、上一次的结果
 systemctl list-timers setline-agent.timer
 systemctl status setline-agent.service --no-pager -l
-systemctl status setline-agent-interval.service --no-pager -l
 
 # 3. 看日志：渲染和 apply 的输出都进同一个 journal
-journalctl -u setline-agent -u setline-agent-interval -n 30 -o cat
-journalctl -u setline-agent -u setline-agent-interval -f
+journalctl -u setline-agent.service -n 30 -o cat
+journalctl -u setline-agent.service -f
 ```
 
-`setline-agent.timer` 的 `[Unit] Wants=setline-agent.service` 会让第一次启用 timer 时
-也执行一次远程检查；之后 timer 只触发 interval 轮次。需要再次检查远端配置时执行
-`sudo systemctl reload setline-agent.service`。
+`setline-agent.service` 没有 `[Install]`，是只供 timer 调用的 static unit；不要单独
+enable。timer 的每一轮都只合并 peers/本地路由，不访问 bashub。需要刷新远端配置时手工执行
+`setline-agent pull`，不存在 remote-sync 服务或 reload 入口。
 
 普通代理机器（`setline.conf` 没有 `[agent] type`）不需要启用 timer；就算开着也只是一轮
 打一行 `no [agent] type in ..., nothing to do` 后退出 0，没有别的副作用。纯渲染机只启用
@@ -75,8 +75,6 @@ timer 跑的是 `setline-agent-run --interval`（不访问 bashub）；排查时
 ```bash
 sudo /usr/lib/setline/setline-agent-run --interval      # 本地一轮（render + apply，不访问远端）
 sudo /usr/lib/setline/setline-agent-run --remote        # 远端检查 + render + apply
-sudo systemctl start setline-agent.service          # 启动时执行 --remote
-sudo systemctl reload setline-agent.service         # 重新执行 --remote
 sudo -u setline -g beangle -- /usr/bin/setline-agent render --config /etc/setline/setline.conf
 # 以下是手工分步刷新
 sudo -u setline -g beangle -- /usr/bin/setline-agent pull --check --stage --config /etc/setline/setline.conf
@@ -116,9 +114,10 @@ timer 的节奏：开机 30s 后第一轮 interval，之后每轮**结束后** 3
 （`OnBootSec=30s` + `OnUnitInactiveSec=30s` + `AccuracySec=1s`）。改周期别直接改包里的
 unit（升级会被覆盖），用 drop-in。interval 轮次不会请求 bashub，也没有 pull/check 入口；
 这个间隔只决定 peers/本地路由的合并频率，不触发远端检查。
-远端检查发生在 `setline-agent.service` 的启动/reload。需要立即同步时执行
-`sudo systemctl reload setline-agent.service`。这条路径只发一次 manifest GET，资源哈希都
-没变时不下载 peers、proxy 或证书。
+远端检查不挂在 systemd 生命周期上。需要立即同步时手工执行
+`setline-agent pull --check --stage` 后再 `pull --install`，或直接执行
+`setline-agent-run --remote`。这条路径只发一次 manifest GET，资源哈希都没变时不下载
+peers、proxy 或证书。
 
 ```bash
 sudo systemctl edit setline-agent.timer      # 写 [Timer] 段覆盖 OnUnitInactiveSec 等
@@ -228,7 +227,7 @@ haproxy 那条 `-c -q` 排在 `kill` 之前，systemd 按顺序执行、前一�
 - 出口码：`0` 成功、`2` 参数错误、`4` 不可用（socket 连不上、map 没被运行配置引用、
   回读不一致）。`setline-apply` 只在 `0` 时跳过 reload。
 
-**怎么确认走了哪条路**（`journalctl -u setline-agent -o cat`）：
+**怎么确认走了哪条路**（`journalctl -u setline-agent.service -o cat`）：
 
 ```
 setline-apply[haproxy]: hot-synced 1 map file(s) via /run/haproxy/admin.sock (no reload)
@@ -245,7 +244,7 @@ setline-apply[haproxy]: hot-synced 1 map file(s) via /run/haproxy/admin.sock (no
 先看 `setline-apply` 自己怎么说（最直接，且不需要额外接线）：
 
 ```bash
-journalctl -u setline-agent -n 5 -o cat    # 成功时最后一行是 "reloaded <服务名>"
+journalctl -u setline-agent.service -n 5 -o cat    # 成功时最后一行是 "reloaded <服务名>"
 ```
 
 如果这一轮完全没有输出，通常说明片段没变、**故意没有** reload；可以用
@@ -327,7 +326,7 @@ OnUnitInactiveSec=30s
 ```
 
 代价是最多一个周期的延迟；配置同步不差这几秒。同时
-`setline-agent-interval.service` 设 `StartLimitInterval=0`，因为这个 unit 就是被周期
+static 的 `setline-agent.service` 设 `StartLimitInterval=0`，因为这个 unit 就是被周期
 触发的，幂等动作不怕重复
 （为什么不是 `StartLimitIntervalSec=`，见 [deployment.md](deployment.md) 的
 「systemd 版本兼容」）。

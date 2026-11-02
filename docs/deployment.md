@@ -39,8 +39,8 @@ The binary package installs:
 - `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
 - `/usr/lib/setline/setline-agent-run` (root render/apply orchestrator)
 - `/usr/lib/systemd/system/setline.service`
-- `/usr/lib/systemd/system/setline-agent.service` (start/reload manifest check)
-- `/usr/lib/systemd/system/setline-agent-interval.service` + `setline-agent.timer`
+- `/usr/lib/systemd/system/setline-agent.service` (static timer worker)
+- `/usr/lib/systemd/system/setline-agent.timer`
 - `/etc/setline/setline.conf` and `/etc/setline/setline.json` (created on first install)
 
 `scripts/build_srpm.sh` produces the same package from source on the target
@@ -62,13 +62,13 @@ otherwise the generated fragment is never rendered, validated or reloaded. How
 to run it by hand, its exit codes and the `[apply]` settings in `setline.conf`
 are in `docs/agent-reload.md`. `setline.service` always remains the resident
 listener; it reads only `setline.json` and is independent of `[agent] peers`.
-At startup (and whenever the operator runs
-`systemctl reload setline-agent.service`), `setline-agent.service` performs one
-remote manifest check, then renders and applies. Every 30s
-`setline-agent.timer` instead runs `setline-agent-interval.service`, which
+Every 30s `setline-agent.timer` runs the static `setline-agent.service`, which
 executes `setline-agent render` as the unprivileged `setline` user and then applies
 the result as root without contacting bashub. `setline.conf [routes]` is always
 part of that render; the service never generates or overwrites fragments.
+Remote configuration is refreshed explicitly with `setline-agent pull`; no
+systemd unit contacts bashub. The static service has no `[Install]` section, so
+enabling `setline-agent.timer` is the only scheduling switch.
 
 The systemd service runs:
 
@@ -76,12 +76,11 @@ The systemd service runs:
 /usr/bin/setline -f /etc/setline/setline.json
 ```
 
-Both agent units run as root, but only orchestrate: they drop to the `setline`
-user for remote downloads and `setline-agent render`, then call `setline-apply --now`
-as root. The remote download is staged by the unprivileged user; root only
-installs the verified staging.
-Drop a `/etc/systemd/system/setline-agent.service.d/*.conf` with an `ExecStart=`
-override if `setline.conf` lives elsewhere.
+The agent service runs as root but only orchestrates: it drops to the `setline`
+user for `setline-agent render`, then calls `setline-apply --now` as root.
+Manual remote downloads are staged by the unprivileged user; root only installs
+the verified staging. Drop a `/etc/systemd/system/setline-agent.service.d/*.conf`
+with an `ExecStart=` override if `setline.conf` lives elsewhere.
 
 Runtime route updates rewrite `/etc/setline/setline.json`, so package install
 scripts make it writable by the `setline` service user. `setline.conf` stays

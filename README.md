@@ -149,17 +149,15 @@ Nginx **fragment** from `[routes]` plus a set of live `setline` peers
 (`[agent] peers`). It never rewrites the proxy's own config and never listens.
 The service and agent are independent: `setline.service` only sees
 `setline.json`; `setline-agent` only sees `setline.conf`.
-`setline-agent.timer` drives the interval service: `setline-agent render` runs
+`setline-agent.timer` drives the static `setline-agent.service`: `setline-agent render` runs
 as the unprivileged `setline` user and `setline-apply --now` validates and
 reloads as root, hot-syncing a routes-only map change without a reload when a
-HAProxy admin socket is available. Timer interval rounds do not contact bashub.
-A manifest check runs when
-`setline-agent.service` is started or reloaded (and with the explicit
-`setline-agent pull` commands documented below); when the proxy main config or
-certificate pair changed, the agent follows with
-`setline-apply --now --force auto`. The download runs as the `setline` user;
-root only verifies the staged hashes and installs the managed files. A remote
-outage keeps the last successfully installed files.
+HAProxy admin socket is available. Timer rounds do not contact bashub.
+Remote configuration is refreshed only by an explicit `setline-agent pull`
+command (or the one-shot `setline-agent-run --remote` helper); there is no
+remote-sync systemd service. The download runs as the `setline` user, root only
+verifies the staged hashes and installs the managed files, and a remote outage
+keeps the last successfully installed files.
 
 Fields and examples: `docs/configuration.md`. Wiring: `docs/haproxy-integration.md`
 and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
@@ -190,9 +188,10 @@ Run the stage command as the unprivileged `setline` user, then run
 `pull --install` as root. The install phase does not access the network: it
 re-verifies every staged body against the local manifest before replacing any
 managed file. Downloaded bodies are therefore never parsed by the root agent.
-The timer interval service does not call either command. `setline-agent.service`
-calls them once on start/reload, and `systemctl reload setline-agent.service`
-requests another check.
+The timer-driven `setline-agent.service` does not call either command. Remote
+refresh is an explicit operator action; no unit triggers it on start, boot or
+reload. `setline-agent-run --remote` wraps the same staged pull and render/apply
+sequence when a one-shot command is more convenient.
 The command exits `10` when the proxy main config or certificate pair changed,
 so an operator can force one validation/reload with
 `setline-apply --now --force auto` even when the rendered fragments stayed

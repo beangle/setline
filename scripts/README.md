@@ -51,7 +51,7 @@ the start of a line.
 `/usr/bin/{setline,setline-agent}`; `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`;
 `/usr/share/doc/setline/*.md` (everything under `docs/`, plus the `CHANGELOG.md`);
 `/usr/lib/setline/{setline-agent-run,setline-apply}`;
-`/usr/lib/systemd/system/{setline.service,setline-agent.service,setline-agent-interval.service,setline-agent.timer}`;
+`/usr/lib/systemd/system/{setline.service,setline-agent.service,setline-agent.timer}`;
 `/etc/setline/{setline.conf,setline.json}`; `/var/lib/setline/{haproxy,nginx,apply}/`.
 
 The first install copies `setline.conf.default` and `setline.json.default` to
@@ -80,10 +80,10 @@ alternatives: `docs/agent-reload.md`.
 Enable it with one timer - `[agent] type` in `setline.conf` picks the proxy:
 `systemctl enable --now setline-agent.timer`. `setline.service` is independent and
 only reads `setline.json`; enable it separately when the data plane is needed.
-The timer starts `setline-agent.service` once (remote manifest check), then every
-30s runs `setline-agent-interval.service`: `setline-agent render` as the `setline`
-user followed by `setline-apply` as root. Peers only change the renderer's data
-source; `[routes]` always participates. The interval service never contacts bashub.
+Every 30s the timer runs the static `setline-agent.service`: `setline-agent render`
+as the `setline` user followed by `setline-apply` as root. Peers only change the
+renderer's data source; `[routes]` always participates. The service never
+contacts bashub; remote refresh is an explicit `setline-agent pull`.
 `setline-agent` exits 0 when `[agent] type` is empty, so an idle timer on a
 plain proxy host is normal. Run
 `sudo /usr/lib/setline/setline-apply --now auto` to apply once by hand.

@@ -25,7 +25,7 @@ Per-release notes with the upgrade steps spelled out live in
   into `cert.pem`/`key.pem` for nginx and concatenated into `bundle.pem` for
   haproxy under the fixed `/etc/setline/certs` directory; private-key files are
   mode `0600`, and clearing the Profile certificate removes the managed files.
-- `setline-agent-run --remote` (start and reload) fetches
+- `setline-agent-run --remote` performs one explicit remote sync and fetches
   `GET /api/{profile}/config/setline-manifest`, compares per-resource SHA-256
   values with `<agent.output>/remote.manifest.json`, and download only changed
   resources. A remote failure keeps the last successfully pulled configuration
@@ -37,13 +37,13 @@ Per-release notes with the upgrade steps spelled out live in
   installs the managed files without accessing the network. Installed files
   inherit the owner and mode of the file they replace, so `setline.conf` keeps
   its `0640` protection.
-- `setline-agent.timer` drives `setline-agent-interval.service`, which only
+- `setline-agent.timer` drives the static `setline-agent.service`, which only
   renders peers/local routes and applies fragments. It does not contact
-  bashub; remote configuration is checked by `setline-agent.service` on
-  start/reload, or manually with `setline-agent pull`.
+  bashub; remote configuration is refreshed only with an explicit
+  `setline-agent pull` or `setline-agent-run --remote`.
 - `setline-agent pull --check --stage` exits `10` after staging a changed proxy main config or
-  certificate pair. The agent
-  then runs `setline-apply --now --force`, which bypasses both the unchanged
+  certificate pair. The manual `setline-agent-run --remote` path then runs
+  `setline-apply --now --force`, which bypasses both the unchanged
   fragment hash and HAProxy map hot-sync so a changed main proxy config or
   certificate triggers a real validation and reload.
 - `setline-agent init` writes a commented `setline.conf` template only when the
@@ -56,9 +56,9 @@ Per-release notes with the upgrade steps spelled out live in
   always renders `[routes]` and merges `[agent] peers` when configured; the
   root-owned `setline-agent-run` helper invokes it through `runuser`.
 - `setline-agent` and `setline-agent.timer` replace the separate render and
-  apply timers. The start/reload unit performs one remote manifest check; the
-  timer-driven interval unit runs `setline-agent render` as the `setline` user with
-  `runuser`, then runs `setline-apply --now` as root.
+  apply timers. The timer invokes the static `setline-agent.service`, which runs
+  `setline-agent render` as the `setline` user with `runuser`, then runs
+  `setline-apply --now` as root. The service does not access bashub.
 
 ### Changed
 
@@ -82,6 +82,10 @@ Per-release notes with the upgrade steps spelled out live in
 - `setline.service` always listens and proxies; agent routes and peers no longer
   affect the resident process. Runtime route changes are not rendered by the
   service; periodic rendering belongs to `setline-agent`.
+- The package installs three unit files: `setline.service`, the static
+  `setline-agent.service`, and `setline-agent.timer`. The timer is the only
+  scheduler; there is no remote-sync service. Upgrades remove the old remote and
+  interval unit names and keep an active timer running.
 - Package install creates `/etc/setline/setline.conf` (`root:beangle 0640`) on
   first install and preserves it on upgrades.
 

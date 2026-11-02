@@ -1,8 +1,10 @@
 #!/bin/bash
 # setline-agent-run: render one round, optionally refreshing remote configuration first.
 #
-# The service unit runs as root only to orchestrate the privilege boundary:
-#   - refresh the bashub-managed files on start/reload (the timer does not);
+# The timer invokes this helper with --interval. The manual --remote mode is an
+# explicit operator action; no systemd unit performs it automatically.
+# It runs as root only to orchestrate the privilege boundary:
+#   - in --remote mode, refresh the bashub-managed files;
 #   - render one round as the setline user through `setline-agent render`;
 #   - validate and reload the fragments as root through `setline-apply`.
 #
@@ -16,7 +18,7 @@ SETLINE_APPLY="${SETLINE_APPLY:-/usr/lib/setline/setline-apply}"
 RUN_USER="${SETLINE_AGENT_USER:-setline}"
 RUN_GROUP="${SETLINE_AGENT_GROUP:-beangle}"
 
-REMOTE=1
+REMOTE=0
 for arg in "$@"; do
   case "$arg" in
     --remote) REMOTE=1 ;;
@@ -45,8 +47,8 @@ if [ -z "$agent_type" ]; then
   exit 0
 fi
 
-# Start/reload performs one manifest check. The interval service deliberately
-# skips this block, so its timer only merges peers and local routes.
+# Manual --remote performs one manifest check. The timer-driven --interval mode
+# deliberately skips this block, so it only merges peers and local routes.
 force_apply=0
 if [ "$REMOTE" = 1 ]; then
   set +e

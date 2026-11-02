@@ -154,8 +154,8 @@ peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 | `[agent] peers` | `app1=http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
 
 渲染入口 `setline-agent render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
-`setline-agent.timer`（每 30s）拉起 `setline-agent-interval.service` 完成一轮；
-启动/reload `setline-agent.service` 时会先做一次 bashub manifest 检查。常驻
+`setline-agent.timer`（每 30s）拉起 static 的 `setline-agent.service` 完成一轮；
+需要刷新 bashub 配置时手工执行 `setline-agent pull`，timer 不访问远端。常驻
 `setline.service` 只读 `setline.json`，是否启动与 agent 无关：
 
 ```bash
@@ -204,9 +204,9 @@ app.example.com = {"/api/edu": [9002, 9003]}
 后端标识只由 host 分组名和路径前缀决定（例如 `app_example_com_api_edu`），与数据来自
 `[routes]` 还是某个 peer 无关；同一 host + 前缀的实例会合并到同一个 backend。
 
-`setline-agent.timer` 两种模式都照用；interval 轮次调用 `setline-agent render` 后执行 apply，
-片段变了才 reload（见「校验与热加载」）。远程配置只在 `setline-agent.service` 启动或
-reload 时检查。
+`setline-agent.timer` 对两种数据源都照用；每轮调用 `setline-agent render` 后执行 apply，
+片段变了才 reload（见「校验与热加载」）。远端配置只由显式的
+`setline-agent pull` 或 `setline-agent-run --remote` 刷新。
 
 写完先校验，这一步不需要 peer 在线：
 
@@ -346,7 +346,7 @@ backend 名是 `b_` 加上标识，标识 = host 分组名 + 路径前缀（`*` 
 
 ## 校验与热加载
 
-片段落盘后由 root 的 `setline-apply` 负责（`setline-agent.timer` 周期驱动 interval，
+片段落盘后由 root 的 `setline-apply` 负责（`setline-agent.timer` 周期驱动 setline-agent.service，
 自动按
 `[agent] type` 选中 haproxy；手工排查时可显式跑 `/usr/lib/setline/setline-apply haproxy`）。它按顺序做：
 

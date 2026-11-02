@@ -58,7 +58,7 @@ owner = setline:beangle
 
 | 段 | 键 | 默认值 | 说明 |
 |---|---|---|---|
-| `[remote]` | `url` | 无 | bashub 根地址，不要带 `/api` 或 Profile；setline-agent 启动/reload 和显式 `setline-agent pull` 使用，timer 的 interval 轮次不访问 |
+| `[remote]` | `url` | 无 | bashub 根地址，不要带 `/api` 或 Profile；只由显式 `setline-agent pull` 使用，timer 和常驻服务都不访问 |
 | | `profile` | 无 | `org.name` |
 | | `token` | 无 | `Profile.key` |
 | `[proxy]` | `file` | 按代理类型推导 | `setline-agent pull` 写代理主配置的目标：haproxy 用 `/etc/haproxy/haproxy.cfg`，nginx 用 `/etc/nginx/nginx.conf`；只在非标准路径时显式配置 |
@@ -111,19 +111,17 @@ local1.example.com = {"/api": 9001, "/api/edu": [9002, 9003]}
 `cert.pem` / `key.pem`，haproxy 配置引用 `bundle.pem`，因此不提供可改目录，避免下载端和
 代理配置指向不同位置。
 
-`setline-agent` 在**启动或 reload** 时做一次远程 manifest 检查：先以 setline 用户执行
+远端 manifest 检查不由任何 systemd unit 自动触发。需要刷新时先以 setline 用户执行
 `setline-agent pull --check --stage`，读取 `GET /api/{profile}/config/setline-manifest`，把四个
 资源的 SHA-256 与 `<agent.output>/remote.manifest.json` 比较，只把变化项下载到
 `<agent.output>/remote-stage`；随后 root 执行 `setline-agent pull --install`，再次核对 staging
-中的哈希并安装。若 pull 返回 `10`，agent 会用 `setline-apply --now --force auto` 强制
-校验并 reload。远程不可达或安装失败时保留上次成功安装的文件，agent 打一条告警后继续用
-本地配置 render/apply。
+中的哈希并安装。若 pull 返回 `10`，说明代理主配置或证书发生变化，需要执行
+`setline-apply --now --force auto` 强制校验并 reload。远程不可达或安装失败时保留上次成功
+安装的文件。`setline-agent-run --remote` 是把上述 pull、render/apply 和退出码 `10` 的
+force 处理串起来的一次性手工入口。
 
-timer 驱动的 interval 轮次（`setline-agent-interval.service`）**不会**访问 `[remote]`，
-只做 peers/本地路由的 render/apply；它也没有 pull/check 入口。需要在不重启
-`setline-agent.service` 的情况下刷新远程配置，可显式执行 `systemctl reload
-setline-agent.service`，或手工执行 `setline-agent pull --check --stage` /
-`setline-agent pull --install` 后再 apply。手工执行 `setline-agent pull` 仍会强制下载全部资源。
+timer 驱动的 static `setline-agent.service` **不会**访问 `[remote]`，只做 peers/本地路由的
+render/apply；它也没有 pull/check 入口。手工执行 `setline-agent pull` 仍会强制下载全部资源。
 
 ## setline.json 顶层字段
 
@@ -432,12 +430,11 @@ setline 不做业务解析，但必须知道「请求体和响应体到哪里结
 | 无 | 无 | 没有后端；仍会写出空的片段文件 |
 
 渲染没有调度循环：包里的 `setline-agent.timer` 每 30s 拉起
-`setline-agent-interval.service`。interval 轮次以 `setline` 用户执行
+static 的 `setline-agent.service`。这一轮以 `setline` 用户执行
 `setline-agent render`，再以 root 调用 `setline-apply --now auto`；它不访问
-`[remote]`。远程 manifest 检查只在 `setline-agent.service` 启动或 reload 时做
-（root 编排脚本 `setline-agent-run --remote`），并复用同一套 setline 用户下载、
-root 安装的权限边界。只有 `setline-agent` 会生成片段；`setline.service` 不会因为
-管理接口上的路由变化自动重渲染。
+`[remote]`。远程 manifest 检查只由显式命令触发（手工 staged pull，或 root 编排脚本
+`setline-agent-run --remote`），并复用同一套 setline 用户下载、root 安装的权限边界。
+只有 `setline-agent` 会生成片段；`setline.service` 不会因为管理接口上的路由变化自动重渲染。
 
 | 位置 | 字段 | 默认值 | 说明 |
 |---|---|---|---|
