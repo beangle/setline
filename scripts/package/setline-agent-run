@@ -81,7 +81,7 @@ fi
 runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \
   "$SETLINE_BIN" render --config "$SETLINE_CONF"
 if [ "$force_apply" = 1 ]; then
-  "$SETLINE_APPLY" --now --force auto
+  "$SETLINE_APPLY" --force
 else
-  "$SETLINE_APPLY" --now auto
+  "$SETLINE_APPLY"
 fi

@@ -68,7 +68,7 @@ sudo systemctl enable --now setline.service
 ```
 
 `setline-agent-run` drops to the `setline` user for downloads and rendering,
-then calls `setline-apply --now` as root. See `docs/agent-reload.md`.
+then calls `setline-apply` as root. See `docs/agent-reload.md`.
 
 Runtime route updates rewrite `/etc/setline/setline.json`, so package install
 scripts make it writable by the `setline` service user. `setline.conf` stays

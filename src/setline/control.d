@@ -61,7 +61,6 @@ struct ApplyControl {
   string configs;
   string fragmentDir;
   string service;
-  int quietSeconds = 15;
   string runtimeDir = "/run";
   string owner = "setline:beangle";
 }
@@ -121,7 +120,6 @@ ControlConfig parseControlConfig(string text) {
       else if (key == "configs") result.apply.configs = value;
       else if (key == "fragmentdir") result.apply.fragmentDir = value;
       else if (key == "service") result.apply.service = value;
-      else if (key == "quietseconds") result.apply.quietSeconds = value.to!int;
       else if (key == "runtimedir") result.apply.runtimeDir = value;
       else if (key == "owner") result.apply.owner = value;
     }
@@ -191,7 +189,6 @@ void validateControlConfig(const ControlConfig config) {
     enforceAbsolute(config.apply.fragmentDir, "apply.fragmentDir");
   if (config.apply.runtimeDir.length > 0)
     enforceAbsolute(config.apply.runtimeDir, "apply.runtimeDir");
-  enforce(config.apply.quietSeconds >= 0, "apply.quietSeconds must not be negative");
   foreach (path; config.apply.configs.split) {
     if (path.length > 0)
       enforceAbsolute(path, "apply.configs");
@@ -212,7 +209,6 @@ string renderApplyShell(const ControlConfig config) {
   appendShellVar(out_, "SETLINE_APPLY_CONFIGS", config.apply.configs);
   appendShellVar(out_, "SETLINE_APPLY_FRAGMENT_DIR", config.apply.fragmentDir);
   appendShellVar(out_, "SETLINE_APPLY_SERVICE", config.apply.service);
-  appendShellVar(out_, "SETLINE_APPLY_QUIET_SECONDS", config.apply.quietSeconds.to!string);
   auto outputRoot = config.agent.output.length > 0 ? config.agent.output : defaultFragmentRoot;
   appendShellVar(out_, "SETLINE_APPLY_STATE_DIR", outputRoot ~ "/apply");
   appendShellVar(out_, "SETLINE_APPLY_RUNTIME_DIR", config.apply.runtimeDir);
@@ -224,7 +220,7 @@ string renderApplyShell(const ControlConfig config) {
 enum controlConfigTemplate =
   "# setline-agent control plane. setline.json belongs to the setline service.\n" ~
   "[remote]\n" ~
-  "# Used only by explicit `setline-agent pull`; the interval timer never contacts it.\n" ~
+  "# Used by explicit `setline-agent pull` or one-shot `setline-agent-run`.\n" ~
   "url = http://127.0.0.1:8082\n" ~
   "project = org.name\n" ~
   "# local IP used to select this machine's routes (optional).\n" ~
@@ -240,13 +236,7 @@ enum controlConfigTemplate =
   "[agent]\n" ~
   "type = haproxy\n" ~
   "output = /var/lib/setline\n" ~
-  "\n" ~
-  "[apply]\n" ~
-  "# type, configs, fragmentDir and service are derived from [agent] type when omitted.\n" ~
-  "quietSeconds = 15\n" ~
-  "# Apply state is fixed at <agent.output>/apply.\n" ~
-  "runtimeDir = /run\n" ~
-  "owner = setline:beangle\n";
+  "\n";
 
 /** 写入模板；目标已存在时保留原文件并返回 false。 */
 bool writeControlConfigTemplate(string path) {

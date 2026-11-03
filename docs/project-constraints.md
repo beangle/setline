@@ -86,20 +86,18 @@ These are intentionally out of scope unless the project goal changes:
   client HTTP, parses request heads, and tunnels WebSocket frames, so running it
   as root would turn any bug on that path into a root compromise.
 - The daemon enforces that itself: starting the proxy or the render agent with
-  effective uid 0 prints a refusal and exits with code 2, which the shipped unit
-  maps to `RestartPreventExitStatus=2` so systemd does not loop. `setline-apply`
+  effective uid 0 prints a refusal and exits with code 2. `setline-apply`
   is not gated, and neither are the exits it invokes as root
-  (`setline-agent --agent-type`, `--agent-peers`, `--sync-map`) or
-  `-c` and `--help`.
+  (`setline-agent --agent-type`, `--sync-map`) or `-c` and `--help`.
 - Privileged work belongs to the short-lived manual `setline-agent-run`,
   the explicit manual sync helper, and the root helper `setline-apply`. They only
   orchestrate: manual sync drops to the `setline` user with `runuser` for the
   remote manifest check and staging download, installs that local staging as
   root, executes `setline-agent render` unprivileged, and invokes
-  `setline-apply`. The timer-driven static service only renders peers/local
-  routes and applies fragments; it performs a conditional manifest check.
-  `setline-apply` validates fragments, runs `systemctl reload`, rolls the
-  fragment directory back, and talks to a proxy admin socket.
+  `setline-apply`. There is no timer: `setline-agent-run` is the manual
+  one-shot entry, and `setline-apply` validates fragments, runs
+  `systemctl reload`, rolls the fragment directory back, and talks to a proxy
+  admin socket.
 - Remote responses are parsed only by the unprivileged `setline` user. The root
   `setline-agent pull --install` reads `<agent.output>/remote-stage`, re-verifies its
   SHA-256 values against the local manifest, and installs the files; it must not

@@ -41,7 +41,6 @@ import setline.control;
     "configs = /etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /srv/setline/fragments\n" ~
     "fragmentDir = /srv/setline/fragments/haproxy\n" ~
     "service = haproxy.service\n" ~
-    "quietSeconds = 3\n" ~
     "runtimeDir = /run/setline\n" ~
     "owner = setline:beangle\n");
 
@@ -56,7 +55,6 @@ import setline.control;
     "/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /srv/setline/fragments");
   assert(config.apply.fragmentDir == "/srv/setline/fragments/haproxy");
   assert(config.apply.service == "haproxy.service");
-  assert(config.apply.quietSeconds == 3);
   assert(config.apply.runtimeDir == "/run/setline");
   assert(config.apply.owner == "setline:beangle");
 }
@@ -93,7 +91,7 @@ import setline.control;
     "[agent]\ntype = nginx\n[proxy]\nfile = /srv/nginx/nginx.conf\n");
   assert(explicitPath.proxyPath == "/srv/nginx/nginx.conf");
 
-  auto noType = parseControlConfig("[apply]\nquietSeconds = 1\n");
+  auto noType = parseControlConfig("[apply]\nruntimeDir = /run\n");
   assert(noType.proxyPath.length == 0);
 }
 
@@ -103,7 +101,6 @@ import setline.control;
   config.apply.configs = "/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d";
   config.apply.fragmentDir = "/var/lib/setline/haproxy";
   config.apply.service = "haproxy";
-  config.apply.quietSeconds = 15;
   config.apply.runtimeDir = "/run";
   config.apply.owner = "setline:be'angle";
 
@@ -113,7 +110,6 @@ import setline.control;
     "SETLINE_APPLY_CONFIGS='/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d'\n" ~
     "SETLINE_APPLY_FRAGMENT_DIR='/var/lib/setline/haproxy'\n" ~
     "SETLINE_APPLY_SERVICE='haproxy'\n" ~
-    "SETLINE_APPLY_QUIET_SECONDS='15'\n" ~
     "SETLINE_APPLY_STATE_DIR='/var/lib/setline/apply'\n" ~
     "SETLINE_APPLY_RUNTIME_DIR='/run'\n" ~
     "SETLINE_APPLY_FRAGMENT_OWNER='setline:be'\\''angle'\n");
@@ -122,7 +118,6 @@ import setline.control;
 @("control rejects malformed or unsafe values") unittest {
   assertThrown!Exception(parseControlConfig("[agent]\ntype = apache\n"));
   assertThrown!Exception(parseControlConfig("[agent]\noutput = relative/path\n"));
-  assertThrown!Exception(parseControlConfig("[apply]\nquietSeconds = -1\n"));
   assertThrown!Exception(parseControlConfig("[apply]\nconfigs = /etc/haproxy bad\n"));
   assertThrown!Exception(parseControlConfig("[remote]\nurl = hub.example.com\n"));
   assertThrown!Exception(parseControlConfig("[remote]\nproject = ../bad\n"));

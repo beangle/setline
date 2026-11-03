@@ -34,9 +34,6 @@ token = <Project.key>
 [agent]
 type = haproxy
 output = /var/lib/setline
-
-[apply]
-quietSeconds = 15
 ```
 
 | 段 | 键 | 默认值 | 说明 |
@@ -51,11 +48,10 @@ quietSeconds = 15
 | | `configs` | 按类型推导 | 代理主配置和片段目录列表 |
 | | `fragmentDir` | `<output>/<type>` | 片段目录 |
 | | `service` | 按类型推导 | `systemctl reload` 的服务名 |
-| | `quietSeconds` | `15` | apply 静默窗口 |
 | | `runtimeDir` | `/run` | 锁文件目录 |
 | | `owner` | `setline:beangle` | 片段目录属主 |
 
-没有 peers、peerReaders、本地路由配置。`setline-agent` 从 bashub 下载：
+`[apply]` 可省略，标准部署从 `[agent] type` 推导。没有 peers、peerReaders、本地路由配置。`setline-agent` 从 bashub 下载：
 
 ```text
 routes
@@ -83,7 +79,7 @@ agent 先读 manifest，按 SHA-256 只下载变化资源到 `remote-stage`；ro
 `pull --check` 返回 `10` 表示代理主配置或证书变化，需要：
 
 ```bash
-setline-apply --now --force auto
+setline-apply --force
 ```
 
 `setline-agent-run` 会串起条件检查、安装、渲染和 apply。

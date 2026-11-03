@@ -17,7 +17,7 @@ sudo -u setline -g beangle -- \
   setline-agent render --config /etc/setline/setline.conf
 
 # 4. root 校验并 reload
-sudo setline-apply --now auto
+sudo setline-apply
 ```
 
 或者用一次性编排入口：
@@ -79,6 +79,6 @@ agent 的刷新节奏。
 
 ## apply
 
-`setline-apply --now auto` 根据 `[agent] type` 选择 haproxy/nginx，校验片段，
-执行 `systemctl reload`，失败时回滚片段目录。`--force auto` 用于 proxy 主配置或证书
+`setline-apply` 根据 `[agent] type` 选择 haproxy/nginx，校验片段，
+执行 `systemctl reload`，失败时回滚片段目录。`--force` 用于 proxy 主配置或证书
 变化后强制走一次完整校验。

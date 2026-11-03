@@ -75,7 +75,6 @@ token = <Project.key>
 type = haproxy
 output = /var/lib/setline
 [apply]
-quietSeconds = 15
 runtimeDir = /run
 owner = setline:beangle
 ```
@@ -141,7 +140,7 @@ The service and agent are independent: `setline.service` only sees
 `setline-agent` is manual: no timer and no systemd scheduling. Run
 `setline-agent-run` as root when configuration or routes need refreshing. It does
 a conditional manifest GET, downloads changed resources, renders as the
-unprivileged `setline` user, and calls `setline-apply --now` as root. A 304 skips
+unprivileged `setline` user, and calls `setline-apply` as root. A 304 skips
 download and render. The download runs as the `setline` user; root only verifies
 the staged hashes and installs the managed files. A remote outage keeps the last
 successfully installed files.
@@ -180,7 +179,7 @@ There is no timer: remote refresh is always an explicit operator action.
 manual command.
 The command exits `10` when the proxy main config or certificate pair changed,
 so an operator can force one validation/reload with
-`setline-apply --now --force auto` even when the rendered fragments stayed
+`setline-apply --force` even when the rendered fragments stayed
 identical.
 Certificates are written as `/etc/setline/certs/cert.pem` and
 `/etc/setline/certs/key.pem` (nginx), and `/etc/setline/certs/bundle.pem`

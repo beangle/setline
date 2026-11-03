@@ -29,18 +29,3 @@ type = haproxy
 # Fragment root. Defaults to /var/lib/setline when type is set.
 output = /var/lib/setline
 
-[apply]
-# The proxy is selected by [agent] type. The following values are derived from
-# it when omitted:
-#
-#type = haproxy
-#configs = /etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /var/lib/setline/haproxy
-#fragmentDir = /var/lib/setline/haproxy
-#service = haproxy
-
-# Wait this many seconds after the newest fragment change before reloading.
-quietSeconds = 15
-# Apply state is fixed at <agent.output>/apply.
-runtimeDir = /run
-# Only a fragment directory owned by root is corrected to this owner.
-owner = setline:beangle

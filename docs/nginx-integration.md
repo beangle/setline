@@ -201,7 +201,7 @@ location 的路径**不会**落到 `*`，而是走这个 server 自己的 `root`
 ## 校验与热加载
 
 片段落盘后由 root 的 `setline-apply` 负责（手工执行 `setline-agent-run` 时由 `setline-apply` 自动按
-`[agent] type` 选中 nginx；手工排查时可显式跑 `/usr/lib/setline/setline-apply nginx`）：
+`[agent] type` 选中 nginx；手工排查时可直接执行 `/usr/lib/setline/setline-apply`）：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；
 2. 片段目录整体内容哈希没变就直接退出（幂等）；

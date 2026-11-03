@@ -286,7 +286,7 @@ backend 名是 `b_` 加上标识，标识 = host 分组名 + 路径前缀（`*` 
 ## 校验与热加载
 
 片段落盘后由 root 的 `setline-apply` 负责（手工执行 `setline-agent-run` 时由 `setline-apply` 自动按
-`[agent] type` 选中 haproxy；手工排查时可显式跑 `/usr/lib/setline/setline-apply haproxy`）。它按顺序做：
+`[agent] type` 选中 haproxy；手工排查时可直接执行 `/usr/lib/setline/setline-apply`）。它按顺序做：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；
 2. 片段目录整体内容哈希没变就直接退出（幂等）；
