@@ -33,7 +33,7 @@ import core.sys.posix.unistd : chown, getegid, geteuid;
 
 import setline.control : defaultFragmentRoot;
 import setline.config : normalizeRouteHost, normalizeRoutePrefix, parsePort;
-import setline.edge : fetchText;
+import setline.edge : fetchText, fetchTextStatus;
 import setline.model : HostRoutes, Route;
 import setline.util : toLowerAscii;
 
@@ -47,6 +47,7 @@ enum DownloadKind {
 }
 
 enum manifestResourceProxy = "proxy";
+enum manifestResourceRoutes = "routes";
 enum manifestResourceCertificate = "certificate";
 enum manifestResourceCertificateKey = "certificate-key";
 
@@ -144,6 +145,27 @@ string downloadConfig(string remoteUrl, string project, string token, DownloadKi
   if (kind == DownloadKind.manifest)
     parseRemoteManifest(text);
   return text;
+}
+
+/** 条件 GET manifest；304 时返回空串并置 notModified。 */
+string downloadManifest(string remoteUrl, string project, string token, string ip,
+    string ifNoneMatch, out bool notModified, out string etag) {
+  auto url = downloadUrl(remoteUrl, project, DownloadKind.manifest);
+  auto headers = ["Authorization: Bearer " ~ bearerToken(project, token)];
+  if (ip.length > 0)
+    headers ~= "ip: " ~ ip;
+  if (ifNoneMatch.length > 0)
+    headers ~= "If-None-Match: " ~ ifNoneMatch;
+  auto response = fetchTextStatus(url, headers);
+  if (response.status == 304) {
+    notModified = true;
+    etag = ifNoneMatch;
+    return "";
+  }
+  enforce(response.status == 200, "manifest download failed: HTTP " ~ response.status.to!string);
+  notModified = false;
+  etag = "\"" ~ sha256Hex(response.body) ~ "\"";
+  return response.body;
 }
 
 /** 解析 bashub 的 routes 响应：`{"host":"...","routes":[{"prefix":"/x","port":8080}]}`。 */

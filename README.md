@@ -141,10 +141,9 @@ The service and agent are independent: `setline.service` only sees
 `setline-agent.timer` drives the static `setline-agent.service`: `setline-agent render` runs
 as the unprivileged `setline` user and `setline-apply --now` validates and
 reloads as root, hot-syncing a routes-only map change without a reload when a
-HAProxy admin socket is available. Timer rounds do not contact bashub.
-Remote configuration is refreshed only by an explicit `setline-agent pull`
-command (or the one-shot `setline-agent-run --remote` helper); there is no
-remote-sync systemd service. The download runs as the `setline` user, root only
+HAProxy admin socket is available. Timer rounds perform a conditional manifest GET; a 304 skips download and render.
+Remote configuration is also available explicitly through `setline-agent pull`
+(or the one-shot `setline-agent-run --remote` helper). The download runs as the `setline` user, root only
 verifies the staged hashes and installs the managed files, and a remote outage
 keeps the last successfully installed files.
 

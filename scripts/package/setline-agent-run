@@ -1,8 +1,8 @@
 #!/bin/bash
 # setline-agent-run: render one round, optionally refreshing remote configuration first.
 #
-# The timer invokes this helper with --interval. The manual --remote mode is an
-# explicit operator action; no systemd unit performs it automatically.
+# The timer invokes this helper with --remote for a conditional manifest check.
+# Without arguments it is a local render/apply round.
 # It runs as root only to orchestrate the privilege boundary:
 #   - in --remote mode, refresh the bashub-managed files;
 #   - render one round as the setline user through `setline-agent render`;
@@ -22,12 +22,11 @@ REMOTE=0
 for arg in "$@"; do
   case "$arg" in
     --remote) REMOTE=1 ;;
-    --interval) REMOTE=0 ;;
     --help|-h)
-      echo "usage: setline-agent-run [--remote|--interval]"
+      echo "usage: setline-agent-run [--remote]"
       exit 0
       ;;
-    *) echo "usage: setline-agent-run [--remote|--interval]" >&2; exit 2 ;;
+    *) echo "usage: setline-agent-run [--remote]" >&2; exit 2 ;;
   esac
 done
 
@@ -47,8 +46,8 @@ if [ -z "$agent_type" ]; then
   exit 0
 fi
 
-# Manual --remote performs one manifest check. The timer-driven --interval mode
-# deliberately skips this block, so it only merges local routes.
+# --remote performs the conditional manifest check, then refreshes changed
+# resources before rendering. A 304 exits without rendering.
 force_apply=0
 if [ "$REMOTE" = 1 ]; then
   set +e
@@ -61,6 +60,10 @@ if [ "$REMOTE" = 1 ]; then
       ;;
     10)
       force_apply=1
+      ;;
+    12)
+      log "remote manifest unchanged"
+      exit 0
       ;;
     1)
       log "remote configuration check failed; keeping the last installed configuration"

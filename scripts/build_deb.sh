@@ -162,7 +162,7 @@ chmod 2775 /var/lib/setline /var/log/setline
 chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
 if command -v systemctl >/dev/null 2>&1; then
   # 旧版把远端检查和周期渲染拆成两个 unit；中间版本还用过模板实例。
-  # 新布局只有 static 的 setline-agent.service，由 timer 调用，不再连接远端。
+  # 新布局只有 static 的 setline-agent.service，由 timer 调用并做条件 manifest 检查。
   # 先记录 timer 状态，停掉旧实例和 timer，迁移完再恢复 timer。
   timer_was_active=0
   systemctl is-active --quiet setline-agent.timer 2>/dev/null && timer_was_active=1

@@ -14,8 +14,8 @@ systemd 单元的设计考虑。常驻的 `setline.service` 负责监听和代�
 |---|---|---|
 | `setline`（service，`User=setline`） | 只读 `setline.json`；监听、代理 | 不读 `setline.conf`、不渲染片段、不发信号、不 reload |
 | `setline-agent render`（`User=setline`） | 只读 `setline.conf`；读取 routes 缓存并原子写出片段，然后退出 | 不监听端口、不发信号、不 reload |
-| `setline-agent-run`（root，oneshot） | 手工 `--remote` 时做一次远端 manifest 检查；降权执行 `setline-agent render`，然后调用 apply | 不在 root 进程解析远端响应、不直接 reload |
-| `setline-agent.service`（root，static oneshot） | timer 每轮只编排 routes 缓存渲染和 apply | 不访问 bashub、没有 pull/check 入口 |
+| `setline-agent-run`（root，oneshot） | timer 或手工 `--remote` 时做条件 manifest 检查；变化时下载，降权 render，然后 apply；304 直接退出 | 不在 root 进程解析远端响应、不直接 reload |
+| `setline-agent.service`（root，static oneshot） | timer 每轮条件 GET manifest；未变直接退出，变化才下载并编排 render/apply | 不在 root 进程解析下载内容 |
 | `setline-apply`（root，helper） | 校验、map 热同步、reload、回滚 | 不生成片段、不做服务发现 |
 | `haproxy` / `nginx` | 按各自方式加载片段 | 不感知 setline |
 
@@ -61,7 +61,7 @@ journalctl -u setline-agent.service -f
 ```
 
 `setline-agent.service` 没有 `[Install]`，是只供 timer 调用的 static unit；不要单独
-enable。timer 的每一轮都只读取 routes 缓存，不访问 bashub。需要刷新远端配置时手工执行
+enable。timer 每轮先做条件 manifest 检查；没有变化直接退出，变化才下载。需要立即刷新时执行
 `setline-agent pull`，不存在 remote-sync 服务或 reload 入口。
 
 普通代理机器（`setline.conf` 没有 `[agent] type`）不需要启用 timer；就算开着也只是一轮
@@ -70,10 +70,10 @@ timer，不启用 `setline.service`；需要数据面时再单独启用服务。
 
 ### 手工执行
 
-timer 跑的是 `setline-agent-run --interval`（不访问 bashub）；排查时可以分别跑：
+timer 跑的是 `setline-agent-run --remote`（条件 manifest）；排查时可以分别跑：
 
 ```bash
-sudo /usr/lib/setline/setline-agent-run --interval      # 本地一轮（render + apply，不访问远端）
+sudo /usr/lib/setline/setline-agent-run                 # 本地一轮（render + apply）
 sudo /usr/lib/setline/setline-agent-run --remote        # 远端检查 + render + apply
 sudo -u setline -g beangle -- /usr/bin/setline-agent render --config /etc/setline/setline.conf
 # 以下是手工分步刷新
@@ -110,14 +110,13 @@ staging 损坏或无法写入最终路径时返回 `1`；缺少清单表示本�
 
 ### 频率与 reload 参数
 
-timer 的节奏：开机 30s 后第一轮 interval，之后每轮**结束后** 30s 再跑
+timer 的节奏：开机 30s 后第一轮，之后每轮**结束后** 30s 再跑
 （`OnBootSec=30s` + `OnUnitInactiveSec=30s` + `AccuracySec=1s`）。改周期别直接改包里的
-unit（升级会被覆盖），用 drop-in。interval 轮次不会请求 bashub，也没有 pull/check 入口；
-这个间隔只决定 routes 缓存的渲染频率，不触发远端检查。
+unit（升级会被覆盖），用 drop-in。timer 轮次会做一次条件 manifest GET；304 时不下载、不 render。
+这个间隔只决定变更检测频率。
 远端检查不挂在 systemd 生命周期上。需要立即同步时手工执行
 `setline-agent pull --check --stage` 后再 `pull --install`，或直接执行
-`setline-agent-run --remote`。这条路径只发一次 manifest GET，资源哈希都没变时不下载
-routes、proxy 或证书。
+`setline-agent-run --remote`。这条路径先条件 GET manifest：304 直接退出；变化时按资源 hash 下载，routes 缓存随 manifest 的 routes hash 刷新。
 
 ```bash
 sudo systemctl edit setline-agent.timer      # 写 [Timer] 段覆盖 OnUnitInactiveSec 等
@@ -333,7 +332,7 @@ static 的 `setline-agent.service` 设 `StartLimitInterval=0`，因为这个 uni
 
 ## 处理哪个代理：由 `[agent] type` 决定
 
-timer 只有一个，跑 `setline-agent-run --interval`，代理由配置决定，不需要人工挑实例：
+timer 只有一个，跑 `setline-agent-run --remote`，代理由配置决定，不需要人工挑实例：
 
 ```bash
 setline-agent --config /etc/setline/setline.conf --agent-type   # 打印 haproxy / nginx / 空

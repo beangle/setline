@@ -64,9 +64,8 @@ are in `docs/agent-reload.md`. `setline.service` always remains the resident
 listener; it reads only `setline.json` and is independent of `setline.conf`.
 Every 30s `setline-agent.timer` runs the static `setline-agent.service`, which
 executes `setline-agent render` as the unprivileged `setline` user and then applies
-the result as root without contacting bashub. `render` uses `<agent.output>/routes.json`, refreshed by explicit `setline-agent pull`.
-Remote configuration is refreshed explicitly with `setline-agent pull`; no
-systemd unit contacts bashub. The static service has no `[Install]` section, so
+the result as root. Before that it does a conditional manifest GET; a 304 exits without rendering. `render` uses `<agent.output>/routes.json`.
+Remote configuration is refreshed by the timer via a conditional manifest check, or explicitly with `setline-agent pull`. The static service has no `[Install]` section, so
 enabling `setline-agent.timer` is the only scheduling switch.
 
 The systemd service runs:

@@ -97,7 +97,7 @@ These are intentionally out of scope unless the project goal changes:
   remote manifest check and staging download, installs that local staging as
   root, executes `setline-agent render` unprivileged, and invokes
   `setline-apply`. The timer-driven static service only renders peers/local
-  routes and applies fragments; it does not contact bashub.
+  routes and applies fragments; it performs a conditional manifest check.
   `setline-apply` validates fragments, runs `systemctl reload`, rolls the
   fragment directory back, and talks to a proxy admin socket.
 - Remote responses are parsed only by the unprivileged `setline` user. The root
