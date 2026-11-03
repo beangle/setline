@@ -13,28 +13,28 @@ systemd 单元的设计考虑。常驻的 `setline.service` 负责监听和代�
 | 组件 | 负责 | 不负责 |
 |---|---|---|
 | `setline`（service，`User=setline`） | 只读 `setline.json`；监听、代理 | 不读 `setline.conf`、不渲染片段、不发信号、不 reload |
-| `setline-agent render`（`User=setline`） | 只读 `setline.conf`；合并 `[routes]`/peers 并原子写出片段，然后退出 | 不监听端口、不发信号、不 reload |
+| `setline-agent render`（`User=setline`） | 只读 `setline.conf`；读取 routes 缓存并原子写出片段，然后退出 | 不监听端口、不发信号、不 reload |
 | `setline-agent-run`（root，oneshot） | 手工 `--remote` 时做一次远端 manifest 检查；降权执行 `setline-agent render`，然后调用 apply | 不在 root 进程解析远端响应、不直接 reload |
-| `setline-agent.service`（root，static oneshot） | timer 每轮只编排 `[routes]`/peers 渲染和 apply | 不访问 bashub、没有 pull/check 入口 |
+| `setline-agent.service`（root，static oneshot） | timer 每轮只编排 routes 缓存渲染和 apply | 不访问 bashub、没有 pull/check 入口 |
 | `setline-apply`（root，helper） | 校验、map 热同步、reload、回滚 | 不生成片段、不做服务发现 |
 | `haproxy` / `nginx` | 按各自方式加载片段 | 不感知 setline |
 
 `setline` **不得以 root 运行**，这是硬性要求而不是部署偏好：它监听网络，接受任意
 客户端 HTTP、解析请求头、还做 WebSocket 隧道，这条路径上任何一个解析或内存 bug 都会
-直接变成 root 失陷。渲染 peer 路由表同样要解析远端 HTTP/JSON，所以也不能放进
+直接变成 root 失陷。渲染 routes 缓存同样要解析远端 JSON，所以也不能放进
 root 编排进程；`setline-agent-run` 必须用 `runuser` 把它降权到 `setline` 用户。
 
 远端配置没有被任何 systemd unit 自动检查；需要时手工执行
 `setline-agent pull --check --stage`。下载仍由 `setline` 用户执行，root 的
 `setline-agent pull --install` 只读本机 `<agent.output>/remote-stage`、核对本地哈希并写最终
-文件，不打开远端 URL。真正的远程下载、manifest/peers 解析和渲染都用
+文件，不打开远端 URL。真正的远程下载、manifest/routes 解析和渲染都用
 `runuser -u setline -g beangle` 降权到 `setline` 用户。timer 驱动的 static
-`setline-agent.service` 不访问 `[remote]`，只做 peers/本地路由的 render/apply。
+`setline-agent.service` 不访问 `[remote]`，只做 routes 缓存的 render/apply。
 `setline-agent pull --check --stage` 和 `pull --install` 分别拒绝 root 与非 root 调用，避免把下载
 误跑到 root 或把安装误跑到服务账号。
 代码里以 root 启动代理或渲染 agent 会打印一行拒绝并退出（退出码 `2`，对上 unit 的
 `RestartPreventExitStatus=2`）。`setline-apply` 以 root 调用的几个只读出口
-`setline-agent --agent-type`、`--agent-peers`、`--sync-map`，以及 `-c`、`--help`
+`setline-agent --agent-type`、`--sync-map`，以及 `-c`、`--help`
 不受这条判据约束。
 完整条目见 `docs/project-constraints.md` 的 Privilege Model。
 
@@ -61,7 +61,7 @@ journalctl -u setline-agent.service -f
 ```
 
 `setline-agent.service` 没有 `[Install]`，是只供 timer 调用的 static unit；不要单独
-enable。timer 的每一轮都只合并 peers/本地路由，不访问 bashub。需要刷新远端配置时手工执行
+enable。timer 的每一轮都只读取 routes 缓存，不访问 bashub。需要刷新远端配置时手工执行
 `setline-agent pull`，不存在 remote-sync 服务或 reload 入口。
 
 普通代理机器（`setline.conf` 没有 `[agent] type`）不需要启用 timer；就算开着也只是一轮
@@ -113,11 +113,11 @@ staging 损坏或无法写入最终路径时返回 `1`；缺少清单表示本�
 timer 的节奏：开机 30s 后第一轮 interval，之后每轮**结束后** 30s 再跑
 （`OnBootSec=30s` + `OnUnitInactiveSec=30s` + `AccuracySec=1s`）。改周期别直接改包里的
 unit（升级会被覆盖），用 drop-in。interval 轮次不会请求 bashub，也没有 pull/check 入口；
-这个间隔只决定 peers/本地路由的合并频率，不触发远端检查。
+这个间隔只决定 routes 缓存的渲染频率，不触发远端检查。
 远端检查不挂在 systemd 生命周期上。需要立即同步时手工执行
 `setline-agent pull --check --stage` 后再 `pull --install`，或直接执行
 `setline-agent-run --remote`。这条路径只发一次 manifest GET，资源哈希都没变时不下载
-peers、proxy 或证书。
+routes、proxy 或证书。
 
 ```bash
 sudo systemctl edit setline-agent.timer      # 写 [Timer] 段覆盖 OnUnitInactiveSec 等
@@ -341,9 +341,8 @@ setline-agent --config /etc/setline/setline.conf --agent-type   # 打印 haproxy
 
 - `--agent-type` 让 `setline-agent` 自己解析 `setline.conf`（复用同一套配置校验），shell 侧只做
   字符串比较，避免在 bash 里手写 INI 解析；
-- `--agent-peers` 返回 `[agent] peers` 的数量，便于诊断，但不再决定 agent 是否渲染；
 - `setline-agent-run` 始终执行 `runuser -u setline -g beangle -- setline-agent render ...`；
-  `[routes]` 总是参与，配了 peers 再把远端路由聚合进来；
+  渲染只使用 `<agent.output>/routes.json` 缓存；
 - 渲染完成后执行 `setline-apply --now auto` 立即校验/reload；
 - `[agent] type` 为空（普通代理机器）→ 什么都不做，直接退出 0；
 - 配置的类型不是 `haproxy`/`nginx` 时在配置校验阶段就失败，不会静默跳过；
@@ -411,7 +410,7 @@ setline-agent --config /etc/setline/setline.conf --agent-type   # 打印 haproxy
 升级也不会重置。跨文件系统 rename 不会出问题：`writeSnippet` 在目标同目录写 tmp 再
 rename，只要片段目录本身可写即可。
 
-远程配置同样遵守这条边界：manifest、peers、proxy 和证书只由 setline 用户下载并解析到
+远程配置同样遵守这条边界：manifest、routes、proxy 和证书只由 setline 用户下载并解析到
 `remote-stage/`。root 的 `pull --install` 读取本地 staging，按清单复核 SHA-256 后写入
 `setline.conf`、主代理配置和证书目录；安装会继承已有文件的属主和权限，避免把
 `setline.conf` 的 `0640` 变成可被其他用户读取的临时文件权限。

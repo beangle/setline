@@ -61,11 +61,10 @@ sudo systemctl enable --now setline-agent.timer   # remote check + periodic rend
 otherwise the generated fragment is never rendered, validated or reloaded. How
 to run it by hand, its exit codes and the `[apply]` settings in `setline.conf`
 are in `docs/agent-reload.md`. `setline.service` always remains the resident
-listener; it reads only `setline.json` and is independent of `[agent] peers`.
+listener; it reads only `setline.json` and is independent of `setline.conf`.
 Every 30s `setline-agent.timer` runs the static `setline-agent.service`, which
 executes `setline-agent render` as the unprivileged `setline` user and then applies
-the result as root without contacting bashub. `setline.conf [routes]` is always
-part of that render; the service never generates or overwrites fragments.
+the result as root without contacting bashub. `render` uses `<agent.output>/routes.json`, refreshed by explicit `setline-agent pull`.
 Remote configuration is refreshed explicitly with `setline-agent pull`; no
 systemd unit contacts bashub. The static service has no `[Install]` section, so
 enabling `setline-agent.timer` is the only scheduling switch.
@@ -141,7 +140,7 @@ systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
 
 3. `refusing to run as root: ...` —— 手工 `sudo setline ...` 起服务时最常见。代理和
    渲染 agent 都要求非 root；`setline-apply` 以 root 调用的
-   `setline-agent --agent-type` / `--agent-peers` / `--sync-map` 出口、以及 `-c`
+   `setline-agent --agent-type` / `--sync-map` 出口、以及 `-c`
    校验不受影响。这条以退出码 `2` 结束，unit 里的
    `RestartPreventExitStatus=2` 会直接停住，不会重启五次。
 
@@ -236,55 +235,30 @@ timeout.
 
 ### The admin plane
 
-The admin API is split across the two listeners. The data plane (`listen`)
-serves exactly one endpoint, `GET /_setline/routes`; the status page,
-`status.json` and every write live only on `adminListen` (`127.0.0.1:8081` by
-default, so writes stay a local operation). The recommended production shape
-keeps the data plane on loopback and leaves the admin listener alone:
+The data plane (`listen`) has one non-proxy endpoint, `GET /_setline/routes`.
+The status endpoint, `status.json` and all writes live on `adminListen`
+(`127.0.0.1:8081` by default). Both listeners accept reads only from localhost.
 
 ```json
 {
   "listen": "127.0.0.1:8080",
   "adminListen": "127.0.0.1:8081",
-  "peerReaders": ["10.0.1.7"]
+  "routes": {}
 }
 ```
 
-`listen` is where the front proxy sends traffic, so it never needs to leave the
-machine - and because it also carries the peer protocol read (`GET
-/_setline/routes`), "who can reach the proxy" matters for the route table too.
-That read is open to anything that reaches `listen` from loopback (including
-requests a front proxy forwards), and to the addresses listed in `peerReaders`;
-keep the front proxy rejecting `/_setline`, list only the machines that render
-this setline's routes, or point the proxy only at the application backends.
+Keep `/_setline` denied at the front proxy:
 
-`adminListen` is what tools and collectors may also connect to; it serves the
-whole `/_setline/*` API (everything else is `404`) and does not route to
-backends. It carries the writes, which still require a local caller, so the
-default `127.0.0.1:8081` keeps route changes a purely local operation. It is
-also the only door for the status page and `status.json`: those describe the
-listener, timeouts, health-check tuning and counters, have no cross-machine
-consumer, and would only widen what a leaked `/_setline` exposes. Bind it to `*`
-only when a collector cannot go through the proxy.
+```haproxy
+http-request deny if { path_beg /_setline }
+```
 
-Writes require a loopback TCP peer *and* a loopback request host, so a local
-proxy relaying a remote request (`remote client -> haproxy/nginx -> setline`)
-cannot change routes: it gets `403`. A proxy can rewrite `Host` to evade that, so
-keep denying the admin path at the proxy itself (`http-request deny if { path_beg
-/_setline }`, `location ^~ /_setline { return 404; }`). Reads do not look at the
-host - a local caller may address setline by its public name - which is why that
-proxy-side deny is the read side's only protection.
+```nginx
+location ^~ /_setline { return 404; }
+```
 
-Tools work against either door: basctl writes (so `adminListen`), and the peer
-protocol reads the route table on `listen`. Sending a write to `listen` gets a
-`404` - the admin listener is the only place where routes can be changed - and
-so does a status read, which only `adminListen` serves.
-
-Startup still validates the address pair: `adminListen` may not duplicate
-`listen` (including `*:port` versus a concrete address on the same port), and
-`"adminListen": false` is rejected — it no longer means "share `listen`". A
-`"listen": false` deployment must not set `adminListen` at all, and a `listen`
-that would land on 8081 without an explicit `adminListen` is rejected too.
+Writes require a loopback TCP peer and a loopback request host. Bind
+`adminListen` to `*` only when a local collector cannot use the proxy.
 
 ## Runtime Route Updates
 
@@ -304,25 +278,13 @@ route host. There is no credential: the localhost check is the whole access
 control for writes. Keep these endpoints bound to trusted local automation such
 as service startup scripts or deployment hooks.
 
-Reads take a different path: their gate is the source address (localhost, or an
-address listed in `peerReaders`), and `GET /_setline/routes` is served on
-`listen` as well as on `adminListen`, so a peer can read the route table without
-knowing the admin listener. The status page and `status.json` live on
-`adminListen` alone. Because the route table read rides the data plane, keep
-`/_setline` denied at the proxy (a rule matching just `/_setline/routes` is
-enough) or keep `listen` on loopback.
+Reads are local-only: `GET /_setline/routes` is served on `listen` and
+`adminListen`; status pages only on `adminListen`. There is no cross-machine
+route read and no `peerReaders` setting.
 
-That read path is what `[agent] peers` uses: `setline-agent` reads each peer's
-route table (no credential - the peer's `peerReaders` lists the edge), rewrites
-the peer's local ports to
-`<peer url host>:<port>`, merges routes that share a host and path prefix, and writes
-a HAProxy/Nginx fragment under the `[agent] output` root directory
-(`<root>/{haproxy,nginx}/setline.{cfg,conf}`). `setline.conf [routes]` supplies
-predefined local backends and always participates; peer routes are merged into
-the same host/prefix groups. The resident `setline.service` neither reads
-`setline.conf` nor renders fragments. By default the fragment carries only rules
-and backends, so the proxy's own config keeps the listener; how to wire each
-proxy is in `docs/haproxy-integration.md` and `docs/nginx-integration.md`.
+`setline-agent` obtains the routes for its machine from bashub and writes
+`<agent.output>/routes.json`; `render` uses that cache. It no longer reads
+routes from another setline or from `setline.conf [routes]`.
 
 Reloading is separate and privileged. `setline-agent render` runs as the unprivileged
 `setline` user and only writes the fragment; `setline-agent-run` (root, oneshot)

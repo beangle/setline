@@ -61,7 +61,6 @@ setline **不在业务流量的路径上**。片段里的 `server` 写的就是�
 ```
 # 单机部署：回源主机固定 127.0.0.1
 server app_example_com_api_edu_0 127.0.0.1:9002 check
-# peers 模式：回源主机取自 peer.url，端口取自对端的路由表
 server app_example_com_api_edu_0 10.0.1.10:9002 check
 ```
 
@@ -76,8 +75,7 @@ server app_example_com_api_edu_0 10.0.1.10:9002 check
   它缺省绑回环，所以改路由是纯本机操作。
 
 所以 `listen` 平时绑回环（`"127.0.0.1:8080"`）就够；跨机采集走 `listen` 上的路由表读，
-要么**在 haproxy 上按源地址放行**，要么直接把采集机的地址写进被读端的 `peerReaders`
-（读方不带任何凭据，见 `docs/configuration.md` 的「peerReaders」一节）。
+读接口只允许本机；不需要 peerReaders。
 
 真的要把 setline 当下级代理（客户端 → haproxy → setline）时，**frontend 必须自己拒掉
 管理路径**：路由表读搭在 `listen` 上，而读只看来源地址——经 haproxy 转发的请求来源是回环，
@@ -104,7 +102,7 @@ haproxy 的 `http-request deny` 在转发前生效，被挡的请求连 setline 
 grep -n '^  server ' /var/lib/setline/haproxy/setline.cfg
 ```
 
-每行都应是 `127.0.0.1:<业务端口>`（单机）或 `<peer 主机>:<业务端口>`（peers）。出现
+每行都应是 `127.0.0.1:<业务端口>`。出现
 `<某主机>:8080` 就是配错了，8080 是 setline 的管理端口，不是业务端口。
 
 ## 文件布局
@@ -125,96 +123,37 @@ grep -n '^  server ' /var/lib/setline/haproxy/setline.cfg
 `output=/var/lib/setline` 会写出 `/var/lib/setline/haproxy/setline.cfg` 和
 `/var/lib/setline/haproxy/setline.map`，目录不存在时自动创建。
 
-## setline 配置示例
+## setline-agent 配置
 
-先选数据来源：**边缘机聚合多台 setline** 用 `peers`（下面第一个例子）；haproxy 与
-setline **同机**时不配 `peers`，把本地后端写进 `setline.conf [routes]`
-（见「单机部署」）。
-
-### 聚合多台 setline（peers）
-
-跑 haproxy 这台机器上，本机参数和远端 peers 都写在 `/etc/setline/setline.conf`；
-如果这台机器同时运行 `setline.service`，就照常提供 `listen` / `routes`；只跑 agent 的
-纯渲染机可以不提供 `setline.json`，也不要启用 `setline.service`。配了 `[agent] type`
-后，`setline-agent` 负责把 peer 路由渲染成片段。
+setline-agent 从 bashub 下载本机 routes，写入 `<output>/routes.json`；`render` 只读
+这个缓存，不再从 `setline.conf [routes]` 或其它 setline 取路由。
 
 ```ini
+[remote]
+url = http://127.0.0.1:8082
+project = openurp.prod
+ip = 192.168.1.10
+token = <Project.key>
+
 [agent]
 type = haproxy
 output = /var/lib/setline
-peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
 ```
 
-各字段在这里的作用：
-
-| 字段 | 值 | 说明 |
-|---|---|---|
-| `[agent] type` | `haproxy` | 决定片段语法，也是 `setline-apply auto` 的分派依据 |
-| `[agent] output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径），`setline-agent` 在其下建 `haproxy/` 并写固定文件名 `setline.cfg`（`-f <dir>` 只加载 `*.cfg`）与 `setline.map` |
-| `[agent] peers` | `app1=http://10.0.1.10:8080` | 对端 setline 的基地址：既用于读路由表，也提供回源主机（**只取主机、丢掉端口**，业务端口由每条路由自带） |
-
-渲染入口 `setline-agent render` **跑一轮就退出**：进程里没有调度循环，重渲染和 apply 由包里的
-`setline-agent.timer`（每 30s）拉起 static 的 `setline-agent.service` 完成一轮；
-需要刷新 bashub 配置时手工执行 `setline-agent pull`，timer 不访问远端。常驻
-`setline.service` 只读 `setline.json`，是否启动与 agent 无关：
-
-```bash
-sudo systemctl enable --now setline.service      # 监听/代理
-sudo systemctl enable --now setline-agent.timer  # 远程检查 + 周期渲染/校验/reload
-```
-
-某一台 peer 暂时读不到时，这一轮 render 以非 0 退出；下一轮照常再试，片段保持上一轮的
-内容（写文件是按内容哈希幂等的）。
-
-### 单机部署（haproxy 与 setline 同机）
-
-haproxy、setline 装在同一台机器上时，回源目标和 setline 调度的后端是同一批进程，
-不配 `peers` 即可：把本地后端写进 `setline.conf [routes]`，agent 渲染时固定回源
-`127.0.0.1:<port>`。常驻 `setline.service` 不参与片段生成；需要数据面接收 basctl
-推路由时再单独维护 `setline.json`。
-
-```ini
-[agent]
-type = haproxy
-output = /var/lib/setline
-
-[routes]
-app.example.com = {"/api/edu": [9002, 9003]}
-```
+`routes.json` 由 `setline-agent pull` 更新，例如：
 
 ```json
 {
-  "listen": "127.0.0.1:8080",
-  "routes": {
-    "app.example.com": {
-      "/api/edu": [9002, 9003]
-    }
-  }
+  "host": "app.example.com",
+  "routes": [
+    { "prefix": "/api/edu", "port": 9002 },
+    { "prefix": "/api/edu", "port": 9003 }
+  ]
 }
 ```
 
-与上面 peers 模式的差别：
-
-| 项 | peers 模式 | 单机模式 |
-|---|---|---|
-| 数据源 | peers | `setline.conf [routes]` |
-| 回源主机 | 各 peer 的 `url` 主机 | `127.0.0.1` |
-| 重渲染时机 | timer 周期聚合 peers | timer 周期读取 `[routes]` |
-
-后端标识只由 host 分组名和路径前缀决定（例如 `app_example_com_api_edu`），与数据来自
-`[routes]` 还是某个 peer 无关；同一 host + 前缀的实例会合并到同一个 backend。
-
-`setline-agent.timer` 对两种数据源都照用；每轮调用 `setline-agent render` 后执行 apply，
-片段变了才 reload（见「校验与热加载」）。远端配置只由显式的
-`setline-agent pull` 或 `setline-agent-run --remote` 刷新。
-
-写完先校验，这一步不需要 peer 在线：
-
-```bash
-setline-agent -c
-```
-
-片段落盘后的校验与热加载见「校验与热加载」一节。
+同一个 host + 前缀的多个端口会合并成同一个 backend/upstream，回源固定
+`127.0.0.1:<port>`。不需要 `setline.json`，也不需要启动 `setline.service`。
 
 ## 接线（一次性）
 

@@ -63,8 +63,8 @@ rendering, local backends and proxy reload settings. `setline.json` rejects an
 ```ini
 [remote]
 url = http://127.0.0.1:8082
-profile = openurp.prod
-token = <Profile.key>
+project = openurp.prod
+token = <Project.key>
 
 [proxy]
 # Optional. haproxy -> /etc/haproxy/haproxy.cfg,
@@ -74,15 +74,6 @@ token = <Profile.key>
 [agent]
 type = haproxy
 output = /var/lib/setline
-# Filled by `setline-agent pull`; name=url pairs separated by commas.
-peers =
-
-[routes]
-# Same shape as setline.json `routes`: host -> prefix -> port(s).
-# Backends are local: each port maps to 127.0.0.1:<port>.
-local.example.com = {"/api": 9001, "/api/edu": [9002, 9003]}
-* = {"/": 9090}
-
 [apply]
 quietSeconds = 15
 runtimeDir = /run
@@ -107,7 +98,6 @@ location.
 {
   "listen": "127.0.0.1:8080",
   "adminListen": "127.0.0.1:8081",
-  "peerReaders": ["10.0.1.7"],
   "routes": {
     "local1.example.com": { "/api/edu": [9002, 9003], "/api": 9001 },
     "local2.example.com": { "/api": 9081 },
@@ -120,8 +110,8 @@ Routes are chosen by the request `Host` header (port stripped, lowercased), then
 by longest path prefix within that host, with `*` as the fallback namespace.
 Each port maps to `127.0.0.1:<port>`: setline proxies only to local backends.
 `config.example.json` shows the topology keys, and `scripts/package/setline.json`
-is what the packages install. Any `agent` field is rejected here; `[agent] type`,
-`output` and `peers` belong to `setline.conf`.
+is what the packages install. Any `agent` field is rejected here; `[agent] type`
+and `output` belong to `setline.conf`.
 
 The admin API is `/_setline/*`. It always has its own listener, `adminListen`,
 defaulting to `127.0.0.1:8081`, the neighbour of the data plane port and off the
@@ -130,9 +120,8 @@ open there). The data plane `listen` serves exactly one endpoint,
 `GET /_setline/routes` (the peer protocol), so a machine that only knows the
 service port can read the route table; the status page, `status.json` and every
 write live on `adminListen` alone. Route changes are therefore a localhost-only
-action. Reads are gated by source address: localhost, or an address listed in
-`peerReaders` - setline holds no credentials. Front proxies should reject
-`/_setline` outright.
+action. Reads are also localhost-only; setline holds no credentials and has no
+peerReaders list. Front proxies should reject `/_setline` outright.
 
 `http://127.0.0.1:8081/_setline/status.html` shows listeners, live counters, the
 route table with per-port health, and refreshes itself every 5 seconds
@@ -145,8 +134,8 @@ examples - is `docs/configuration.md`.
 ## Agent mode
 
 With `[agent] type` in `setline.conf`, `setline-agent` renders a HAProxy or
-Nginx **fragment** from `[routes]` plus a set of live `setline` peers
-(`[agent] peers`). It never rewrites the proxy's own config and never listens.
+Nginx **fragment** from `<agent.output>/routes.json`, which is refreshed by
+`setline-agent pull`. It never rewrites the proxy's own config and never listens.
 The service and agent are independent: `setline.service` only sees
 `setline.json`; `setline-agent` only sees `setline.conf`.
 `setline-agent.timer` drives the static `setline-agent.service`: `setline-agent render` runs
@@ -165,7 +154,7 @@ and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
 ## Download generated configs
 
 `setline` can authenticate to bashub and download all machine-generated
-configuration directly. URL, Profile, token and destinations all come from
+configuration directly. URL, project, token and destinations all come from
 `setline.conf`, so the commands need no arguments:
 
 ```bash
@@ -175,15 +164,15 @@ setline-agent pull --install        # root: verify and install the staging direc
 ```
 
 `[remote] url` is the bashub root (do not append `/api`). The downloader sends
-`Authorization: Bearer <profile>:<key>` and accepts the key already written in
+`Authorization: Bearer <project>:<key>` and accepts the key already written in
 that form. Writes are atomic and left untouched when the content is unchanged.
-`setline-agent pull` fetches the peer list, the proxy config selected by the Profile's
-`proxyEngine`, and the Profile's HTTPS certificate pair. It rewrites only
-`[agent] peers` in `setline.conf`, so the token, local agent settings,
-`setline.json`, `listen` and `routes` all survive.
-`--check --stage` first reads `GET /api/{profile}/config/setline-manifest`,
-compares the four SHA-256 values with `<agent.output>/remote.manifest.json`,
-and downloads only changed resources into `<agent.output>/remote-stage`.
+`setline-agent pull` fetches the machine's routes, the proxy config selected by
+the endpoint engine, and the HTTPS certificate pair. It writes routes to
+`<agent.output>/routes.json`; `setline.conf` is not rewritten.
+`--check --stage` first reads `GET /api/{project}/config/setline-manifest`,
+compares the SHA-256 values with `<agent.output>/remote.manifest.json`,
+and downloads changed proxy/certificate resources into `<agent.output>/remote-stage`.
+Routes are refreshed separately into `routes.json`.
 Run the stage command as the unprivileged `setline` user, then run
 `pull --install` as root. The install phase does not access the network: it
 re-verifies every staged body against the local manifest before replacing any
@@ -195,12 +184,12 @@ sequence when a one-shot command is more convenient.
 The command exits `10` when the proxy main config or certificate pair changed,
 so an operator can force one validation/reload with
 `setline-apply --now --force auto` even when the rendered fragments stayed
-identical. A peers-only change stays on the normal fragment-hash/hot-sync path.
+identical.
 Certificates are written as `/etc/setline/certs/cert.pem` and
 `/etc/setline/certs/key.pem` (nginx), and `/etc/setline/certs/bundle.pem`
 (haproxy). The directory is fixed because the generated proxy config references
 those paths. The private-key files are mode `0600`.
-When the Profile has no certificate pair, a pull removes the three managed
+When the Project has no certificate pair, a pull removes the three managed
 files instead of leaving an old key behind.
 
 ## Documentation

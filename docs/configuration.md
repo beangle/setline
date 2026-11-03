@@ -1,623 +1,103 @@
 # 配置文件参考
 
-setline 使用两份**互不读取**的配置，并对应两个可执行文件：
+setline 使用两份互不读取的配置：
 
-| 可执行文件 | 文件 | 内容 | 默认路径 |
+| 程序 | 文件 | 职责 | 默认路径 |
 |---|---|---|---|
 | `setline` | `setline.json` | 数据面：监听、超时、运行时路由 | `/etc/setline/setline.json` |
-| `setline-agent` | `setline.conf` | 控制面：远端地址、片段路由/peers、下载目标、reload 参数 | `/etc/setline/setline.conf` |
+| `setline-agent` | `setline.conf` | 控制面：远端下载、片段渲染、reload 参数 | `/etc/setline/setline.conf` |
 
-`setline` 不读 `setline.conf`；`setline-agent` 不读 `setline.json`。agent 数据只写
-`setline.conf`，`setline.json` 里出现任何 `agent` 字段都会被 `setline -c` 拒绝。
+`setline` 不读 `setline.conf`；`setline-agent` 不读 `setline.json`。`setline.json` 中出现
+`agent` 字段会被拒绝。
 
 ```bash
-setline -f /etc/setline/setline.json                 # 启动数据面
-setline -c -f /etc/setline/setline.json              # 只校验服务配置
+setline -f /etc/setline/setline.json
+setline -c -f /etc/setline/setline.json
 
-setline-agent --config /etc/setline/setline.conf     # 渲染一轮并退出
+setline-agent --config /etc/setline/setline.conf
 setline-agent render --config /etc/setline/setline.conf
 setline-agent pull --check --stage --config /etc/setline/setline.conf
-setline-agent -c --config /etc/setline/setline.conf  # 只校验 agent 配置
+setline-agent -c --config /etc/setline/setline.conf
 setline-agent init --config /etc/setline/setline.conf
 ```
 
-服务启动时 `setline.json` **可以不存在**：只打印一条提示并按空路由表启动，方便先起代理
-再用运行时 API 加路由；`-c` 校验要求文件必须存在。`setline-agent` 的配置文件不存在时
-直接报错。`setline -f` 只作用于 `setline.json`，`setline-agent --config` 只作用于
-`setline.conf`，两边不共享参数别名。
-
 ## setline.conf
 
-INI 格式，和 basctl 的 `basctl.conf` 同形：
+INI 格式：
 
 ```ini
 [remote]
 url = http://127.0.0.1:8082
-profile = openurp.prod
-token = <Profile.key>
-
-[proxy]
-# 可选。haproxy -> /etc/haproxy/haproxy.cfg，
-# nginx -> /etc/nginx/nginx.conf。
-#file = /etc/haproxy/haproxy.cfg
+project = openurp.prod
+token = <Project.key>
 
 [agent]
 type = haproxy
 output = /var/lib/setline
-peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
-
-[routes]
-local.example.com = {"/api": 9001, "/api/edu": [9002, 9003]}
-* = {"/": 9090}
 
 [apply]
 quietSeconds = 15
-runtimeDir = /run
-owner = setline:beangle
 ```
 
 | 段 | 键 | 默认值 | 说明 |
 |---|---|---|---|
-| `[remote]` | `url` | 无 | bashub 根地址，不要带 `/api` 或 Profile；只由显式 `setline-agent pull` 使用，timer 和常驻服务都不访问 |
-| | `profile` | 无 | `org.name` |
-| | `token` | 无 | `Profile.key` |
-| `[proxy]` | `file` | 按代理类型推导 | `setline-agent pull` 写代理主配置的目标：haproxy 用 `/etc/haproxy/haproxy.cfg`，nginx 用 `/etc/nginx/nginx.conf`；只在非标准路径时显式配置 |
-| `[agent]` | `type` | 空 | `haproxy` / `nginx`；空表示不渲染片段 |
-| | `output` | `/var/lib/setline` | 片段根目录，绝对路径 |
-| | `peers` | 空 | `name=url` 用逗号分隔；`setline-agent pull` 直接更新这一行 |
-| `[routes]` | `<host>` | 空 | 预定义本地路由；值是一段与 `setline.json` `routes` 同构的 JSON 对象，后端固定为 `127.0.0.1:<port>` |
+| `[remote]` | `url` | 无 | bashub 根地址，不带 `/api` 或 Project；仅显式 `pull` / `setline-agent-run --remote` 使用 |
+| | `project` | 无 | `org.name` |
+| | `token` | 无 | Project.key，发送为 `Bearer <project>:<key>` |
+| `[proxy]` | `file` | 按代理类型推导 | `pull` 写入的代理主配置；仅非标准路径时填写 |
+| `[agent]` | `type` | 空 | `haproxy` / `nginx`；空表示不渲染 |
+| | `output` | `/var/lib/setline` | 片段根目录 |
 | `[apply]` | `type` | 取 `[agent] type` | reload 的代理类型 |
-| | `configs` | 按代理类型推导 | 给 `haproxy -f` 或 `nginx -c` 的配置列表 |
+| | `configs` | 按类型推导 | 代理主配置和片段目录列表 |
 | | `fragmentDir` | `<output>/<type>` | 片段目录 |
-| | `service` | 取代理类型 | `systemctl reload` 的服务名 |
-| | `quietSeconds` | `15` | 手工 apply 的静默窗口；`setline-agent` 在渲染完成后用 `--now` 跳过它 |
-| | `runtimeDir` | `/run` | 锁文件位置 |
-| | `owner` | `setline:beangle` | 片段目录属主为 root 时纠正成它 |
-
-`setline-agent init --config <path>` 会写一份模板；目标已存在时保留原文件。包安装时也只复制一次，
-升级不覆盖 `/etc/setline/setline.conf`。
-
-`[proxy] file` 是选填项：解析时先确定 `[apply] type`（缺省取 `[agent] type`），
-再按 `haproxy` / `nginx` 推导主配置路径。只有实际路径不同才需要写这一段。
-
-`[apply]` 的状态目录固定为 `<agent.output>/apply`，没有单独的配置项。修改
-`[agent] output` 时，哈希和 last-known-good 快照会一起移动。
-
-### `[routes]`：预定义本地路由
-
-`[routes]` 给 `setline-agent` 提供一组不需要运行时下发的本地路由。每一行是
-`host = <JSON object>`，值对象与 `setline.json` 的 `routes` 完全同构：
-
-```ini
-[routes]
-local1.example.com = {"/api": 9001, "/api/edu": [9002, 9003]}
-* = {"/": 9090}
-```
-
-- 对象 key 是路径前缀，value 是端口或端口数组；前缀、host 的规范化与校验和
-  `setline.json` 相同（host 小写化，前缀去尾部 `/`，禁止 `/_setline`）。
-- 每个端口都表示这台机器上的本地后端，渲染时固定写成 `127.0.0.1:<port>`；
-  这里不接受完整 URL，与 `setline.json` 的约束一致。
-- `*` 是 host fallback，和精确 host 同时存在时精确 host 优先。
-- 预定义路由**总是参与渲染**。配置了 `[agent] peers` 时，peer 路由再并入；同一
-  host + 前缀的实例会去重后合并成同一个 backend/upstream 组。
-- JSON 必须写在同一行。整行 `#` / `;` 注释会被忽略，但值后面不能再写行尾注释。
-
-这份 `[routes]` 只影响 agent 生成的 haproxy/nginx 片段，不进入 `setline` 的数据面。
-如果同一台机器还要让常驻 `setline` 代理这些路由，需要把需要的路由同时写进
-`setline.json`；两份配置的职责和读取者都不同。
-
-`setline-agent pull` 的证书目录固定为 `/etc/setline/certs`：bashub 生成的 nginx 配置引用
-`cert.pem` / `key.pem`，haproxy 配置引用 `bundle.pem`，因此不提供可改目录，避免下载端和
-代理配置指向不同位置。
-
-远端 manifest 检查不由任何 systemd unit 自动触发。需要刷新时先以 setline 用户执行
-`setline-agent pull --check --stage`，读取 `GET /api/{profile}/config/setline-manifest`，把四个
-资源的 SHA-256 与 `<agent.output>/remote.manifest.json` 比较，只把变化项下载到
-`<agent.output>/remote-stage`；随后 root 执行 `setline-agent pull --install`，再次核对 staging
-中的哈希并安装。若 pull 返回 `10`，说明代理主配置或证书发生变化，需要执行
-`setline-apply --now --force auto` 强制校验并 reload。远程不可达或安装失败时保留上次成功
-安装的文件。`setline-agent-run --remote` 是把上述 pull、render/apply 和退出码 `10` 的
-force 处理串起来的一次性手工入口。
-
-timer 驱动的 static `setline-agent.service` **不会**访问 `[remote]`，只做 peers/本地路由的
-render/apply；它也没有 pull/check 入口。手工执行 `setline-agent pull` 仍会强制下载全部资源。
-
-## setline.json 顶层字段
-
-> **定位**：setline 只部署在 haproxy/nginx 之后，不是用户访问的第一站（详见
-> `docs/project-constraints.md` 的 Positioning 与 Unsupported Features）。作为数据面代理时
-> `listen` 必须只绑回环；TLS、请求头大小限制、客户端超时、限流、访问日志都由前置代理
-> 负责，setline 不重复实现。
-
-## 顶层字段
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `listen` | 整数或字符串 | `127.0.0.1:8080` | 数据面监听地址；`setline` 总是监听 |
-| `adminListen` | 整数或字符串 | `127.0.0.1:8081` | 写操作的独立监听，见「adminListen」一节 |
-| `peerReaders` | 字符串数组 | `[]` | 允许跨机读路由表与状态页的来源地址，见「peerReaders」一节 |
-| `connectTimeoutMillis` | 整数 > 0 | `3000` | 连接后端的 TCP 超时 |
-| `readTimeoutMillis` | 整数 > 0 | `15000` | 单次上游读取的不活动超时 |
-| `reusePort` | 布尔 | `false` | 同地址多进程监听时启用 Linux `SO_REUSEPORT` |
-| `upstreamIdleTimeoutMillis` | 整数 > 0 | `30000` | 空闲上游连接保留多久：客户端连接亲和挂着的连接和空闲池里的连接都用它 |
-| `webSocketIdleTimeoutMillis` | 整数 ≥ 0 | `0` | WebSocket 隧道两个方向都静默多久后断开；`0` 表示不断开 |
-| `maxConnections` | 整数 > 0 | `65535` | 并发客户端连接上限，超出返回 `503` |
-| `healthCheck` | 对象 | 见下 | 后端健康检查（始终开启，只调参数） |
-| `agent` | 对象 | 无 | JSON 顶层不接受该字段；agent 配置在 `setline.conf`，见「agent」一节 |
-| `routes` | 对象 | `{}` | host → 路径前缀 → 端口，见「routes」一节 |
-
-`maxConnections` 是并发**连接**上限，不是请求数上限：一条连接从 `accept` 到 `close` 一直
-占一个名额（空闲的 keep-alive 连接、打开的 WebSocket 隧道都算），超出时在读取请求之前
-直接返回 `503`。上游连接按客户端连接亲和，每条连接都挂着一条自己的上游连接，进程的
-fd 预算按 `2 * maxConnections + 64` 配 `LimitNOFILE`；每一项的来历和「多端口时 64 不够」
-的边界见 `docs/deployment.md` 的 File Descriptors 一节。
-
-`readTimeoutMillis` 限制已经连上的后端在两次读操作之间可以停顿多久。最终响应尚未开始时
-超时，setline 会回收客户端和上游连接并向客户端返回 `504`；响应头一旦发出，任何后续失败
-（读超时、响应体被上游截断、客户端中途断开）都只回收连接，不会再补发状态码——原因见
-「报文边界（framing）」一节。空闲连接池取出连接时会重新套用这个超时。
-
-setline 自己不打访问日志：它只走 haproxy/nginx 到后端的最后一跳，完整请求画像（客户端地址、
-耗时分布、计费口径）只有前置代理拿得到，在 setline 里再记一份既不完整又和它的日志重复。
-要看「哪个请求落到哪个端口、上游有没有超时」，用状态页和 `status.json` 的计数器。
-
-`upstreamIdleTimeoutMillis` 管的是「空闲的上游连接留多久」。setline 按客户端连接做上游
-连接亲和（见 `docs/deployment.md` 的连接一节）：一条 keep-alive 的客户端连接会一直握着它的
-上游连接，超过这个时间没有新请求就把连接交回空闲池，空闲池里的连接也用同一个时限过期
-回收。调小能更快释放 fd 和临时端口，代价是「请求间隔大于该值」的客户端连接每次都要重新
-握一次上游连接；默认 30s 足够覆盖前置代理的 `timeout server` 量级。
-
-`status.json` 里还有一组累计计数：`counters.poolHits`（上游连接复用：命中空闲池或客户端
-连接亲和自带的连接）、`counters.upstreamConnects`（新建上游连接）、
-`counters.upstreamTimeouts`（上游读超时）、`counters.unhealthyTransitions`（端口由健康变
-离线）、`counters.portRequests`（每个后端端口的请求数）。其中 `counters.upstreamLeased`
-（正挂在客户端连接上的上游连接数）和 `counters.upstreamIdle`（空闲池里的上游连接数）是
-瞬时值，不是累计量。进程启动时清零，不持久化。
-
-WebSocket 隧道单独一组：`activeWebSockets`（当前打开的隧道数）和
-`counters.webSocketTunnels`（累计建立）、`counters.webSocketIdleTimeouts`（被空闲超时断开）、
-`counters.webSocketBytesToUpstream` / `counters.webSocketBytesToClient`（两个方向的字节数，
-不含 101 握手本身）。
-
-`webSocketIdleTimeoutMillis` 默认 `0`：WebSocket 是长连接，空闲多久算超时由业务决定，
-常规位置是前置代理的 `timeout tunnel`。设成正数时它只是资源回收的兜底，而且只在**两个
-方向都没有字节**时才计时——只有一侧在动（例如后端只推、客户端不回）不算空闲。要注意
-101 之后隧道不算「在途请求」：优雅退出不会等它自然结束，进程退出时隧道随之断开。
-
-`reusePort` 只是监听能力开关：它把 Linux 的 `SO_REUSEPORT` 交给 `listenTCP`，让多个
-setline 进程可以绑定完全相同的地址。默认关闭，避免无意间让多个拥有独立路由状态的进程
-分摊管理接口。启用前必须让所有实例加载相同配置并维持路由同步；设置开关本身不等于已经
-完成多实例扩展验证，见 `docs/deployment.md` 的多实例一节。
-
-### healthCheck
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `intervalMillis` | 整数 > 0 | `5000` | 检查周期 |
-| `timeoutMillis` | 整数 > 0 | `1000` | 单次 TCP connect 超时 |
-| `unhealthyThreshold` | 整数 > 0 | `2` | 连续失败多少次标记离线 |
-| `healthyThreshold` | 整数 > 0 | `1` | 连续成功多少次标记恢复 |
-
-健康检查是 TCP connect 到 `127.0.0.1:<port>`，只维护在线状态，不主动探测 HTTP 路径。
-这个周期只管探测：空闲上游连接池的回收（过期和超容量）由独立的后台巡检按自己的 1s 节奏
-做，高水位也按真实经过时间衰减，所以把 `intervalMillis` 调大不会让池里的连接多留那么久。
-
-## listen 的写法
-
-| 写法 | 结果 |
-|---|---|
-| `8080` 或 `"8080"` | 绑定 `127.0.0.1:8080` |
-| `"127.0.0.1:8080"` | 绑定指定地址 |
-| `"192.168.1.10:8080"` | 绑定指定网卡地址 |
-| `"*:8080"` | 绑定所有 IPv4 地址（`0.0.0.0:8080`） |
-| `false` | 已移除：`setline` 总是监听；纯渲染由 `setline-agent` 负责 |
-
-只写端口时默认绑回环，不会意外对外暴露。要让别的机器直接连数据面（正常不该发生，前置
-代理是本机的话不需要）才写 `*:port` 或具体地址——那时任何能连上端口的人都绕过前置代理，
-直接按路由表打到本机业务端口，认证、限流、日志全都不再经过；**peer 协议的路由表读也搭在
-`listen` 上**（见下节），这个绑定方式同时决定了「谁能读路由表」，所以要把读方写进 `peerReaders`，
-或者由前置代理按来源放行 `/_setline`。
-
-需要让 haproxy/nginx 直接回源、业务流量不经过 setline 时，片段由 `setline-agent` 生成；
-常驻服务是否启动与是否渲染片段无关。跨机采集要么经前置代理读 `listen` 上的
-`/_setline/routes`，要么把 `adminListen` 显式放开；两条路都要求把采集机地址写进
-`peerReaders`。这条跨机读只有 `/_setline/routes` 一个端点（见下节）：数据面上没有状态页。
-
-### adminListen：写操作的独立入口
-
-管理接口分挂在两个监听上——**数据面 `listen` 只承接 peer 协议一个端点**，其余都在管理口。
-缺省配置不用写任何东西：
-
-```json
-{
-  "listen": "127.0.0.1:8080",
-  "adminListen": "127.0.0.1:8081",
-  "peerReaders": ["10.0.1.7"]
-}
-```
-
-| 接口 | 挂在哪 | 谁能访问 |
-|---|---|---|
-| `GET /_setline/routes`（peer 协议） | `listen` **和** `adminListen` | 本机来源，或来源地址在 `peerReaders` 里 |
-| `GET /_setline/status`、`/status.html`、`/status.json` | 只有 `adminListen` | 本机来源，或来源地址在 `peerReaders` 里 |
-| `PUT` / `DELETE /_setline/routes*`（写） | 只有 `adminListen` | 只接受本机请求（回环对端 + 回环 Host） |
-
-为什么这么分：
-
-- **路由表读搭在业务端口上**：跨机采集（`[agent] peers`）只需要知道 `listen`（它本来就
-  知道——那是代理回源的地址）就能读路由表，不用额外知道管理口在哪。它的准入是**来源地址**：
-  对端是远端机器，所以要把那台机器的地址写进 `peerReaders`。
-- **状态页和 `status.json` 只在管理口上**：它们没有跨机消费者，内容却是监听地址、超时、
-  `maxConnections`、健康检查调参、计数器和整张路由表。挂在数据面上只会放大暴露面——前置
-  代理漏掉 `deny /_setline` 时，泄露的东西从「一份路由表」变成「整幅运行画像」。跨机监控
-  要读 `status.json` 就直连管理口（显式放开并把采集机写进 `peerReaders`），或者在代理本机采集。
-- **写只在管理口上，而管理口缺省绑回环**：拨不动 `127.0.0.1:8081` 就改不了路由，
-  「只有本机能改流量走向」成了 TCP 层事实，不再依赖「回环对端 + 回环 Host」那两维判定
-  （Host 是请求头，前置代理改写它就能骗过判定；那两维只是纵深防御，不是边界）。
-
-  缺省端口 `8081` 是数据面 `8080` 的邻居，挑它时避开的是**浏览器的「受限端口」清单**：
-  状态页是给人用浏览器打开的，而命中的端口浏览器连请求都不发（Firefox 直接报
-  `This address is restricted`），`10080`（Amanda 备份）就在清单里。这份清单比 IANA 的
-  知名端口表短得多，也不认「像不像 8080 的兄弟端口」，自己改 `adminListen` 时要单独避开。
-  `8081` 本身是个热门号（Nexus、Tomcat 之类都爱用），撞了就把管理口挪开。
-- 数据面收到除 `GET /_setline/routes` 之外的任何 `/_setline/*` 一律回 `404`，不查路由表、
-  也不做写操作；配置校验另外禁止路由前缀以 `/_setline` 开头。
-- 管理口绑在哪只在**状态页 HTML** 和**启动日志**里写明（`status.json` 面向机器读取，
-  不暴露管理入口）；启动日志在绑非回环时还会补一行读接口的可达性说明。
-- `"adminListen": false` 不再表示「和数据面共用」，它已经是配置错误；`"listen": false`
-  同样已被移除，纯渲染部署只运行 `setline-agent`，不启动 `setline.service`。
-- `adminListen` 和 `listen` 不能落在同一个地址上（`8081` 是管理口的缺省端口，给数据面
-  用会直接报错）。
-- 跨机读还有一条路：把 `adminListen` 显式放开（例如 `*:8081`）并把读方写进 `peerReaders`。
-  缺省绑回环是因为路由表读已经能从 `listen` 走；真要读状态页就得开管理口，或者本机采集。
-
-同机的工具（basctl 等）照旧访问 `adminListen`：写请求只有那一个入口。
-
-## peerReaders：读接口的准入
-
-setline 不持有任何凭据：读接口的准入**只看来源地址**，写接口只看「是不是本机」。
-
-| 请求 | 来源 | 结果 |
-|---|---|---|
-| `GET /_setline/routes`（`listen` 或 `adminListen` 都认） | 本机 | 放行 |
-| `GET /_setline/routes` | 其他主机，地址在 `peerReaders` 里 | 放行 |
-| `GET /_setline/routes` | 其他主机，地址不在名单里 | `403` |
-| `GET /_setline/status`、`/status.html`、`/status.json`（只有 `adminListen`） | 本机，或 `peerReaders` 里的地址 | 放行，其余 `403` |
-| `PUT` / `DELETE /_setline/routes*`（只有 `adminListen`） | 仅本机 | 不在此列：写接口自己判定，非本机一律 `403` |
-
-```json
-{
-  "listen": "127.0.0.1:8080",
-  "adminListen": "127.0.0.1:8081",
-  "peerReaders": ["10.0.1.7", "10.0.1.8"]
-}
-```
-
-几条规则要记住：
-
-- **为什么用地址而不是 token。** 这条链路上唯一的跨机读方是另一个 setline（`setline`
-  按 `[agent] peers` 的 url 拉路由表），机器对机器、读方固定。给它配一份要在两台机器上同步的
-  秘密，换不来比来源地址更实在的东西——token 走的是明文 HTTP，能抓到这条流量的中间人直接
-  拿到并可复用；地址无法被「嗅探复用」，只能被伪造，而伪造 TCP 源地址需要位置且拿不到回程。
-  代价是名单本身要维护：换机器要改被读端（读端只要 URL）。
-- **只认数值地址**：`10.0.1.7`、`fe80::1` 这种写法，不支持主机名（配置解析会变成一次 DNS
-  查询，且名字解析出的地址未必是 TCP 对端地址）与 CIDR（要按位比较，规则就不再是「一行
-  地址」）。写法会归一化：去空白、转小写、去掉 IPv4-mapped 前缀，所以双栈监听上
-  `::ffff:10.0.1.7` 与配置里的 `10.0.1.7` 是同一个地址。
-- **本机来源永远放行**，不需要写进名单（写了会报错：`127.0.0.1` 是个空操作）。同机的工具
-  （如 basctl）因此什么都不用配。
-- **读不看 `Host`，写才看。** 本机调用方可能按公开主机名访问，所以读只认来源地址；写要求
-  「TCP 对端是回环 **且** 请求声明的 Host 是回环名」（`Host` 或 `X-Forwarded-Host`，
-  忽略端口，没有 Host 一律不算本机）。
-- **前置代理必须自己拒掉管理路径。** 代理转发的请求来源是回环（代理在本机），读侧只看
-  来源，所以代理漏掉 deny 就等于把路由表（`listen` 上）或状态页（管理口上）转发出去：
-
-  ```haproxy
-  http-request deny if { path_beg /_setline }
-  ```
-  ```nginx
-  location ^~ /_setline { return 404; }
-  ```
-
-  写侧还有 Host 这一维兜底（代理通常原样转发浏览器的 Host），但它依赖代理行为，不算边界。
-- **写接口不区分本机上的用户或进程。** 只要能和 setline 的监听端口建立 TCP 连接，就能改
-  路由；不要把 setline 和不可信的进程放在同一台机器或同一个网络命名空间里。
-- 来源判定的是**连接的对端地址**，所以读方经 NAT/L4 代理接入时，名单要写代理的地址（那一跳
-  之后的客户端都会被当成读方），这种拓扑下地址判定就不再合适。
-- 管理接口的请求体有 4 MiB 防御性上限（整体替换路由表也远够用），超限回 `413`。
-
-读路由表：
-
-```bash
-# 本机，走管理口或数据面都行
-curl http://127.0.0.1:8081/_setline/routes
-curl -H 'Host: app.example.com' http://127.0.0.1:8080/_setline/routes
-
-# 其他主机：把来源地址写进被读端的 peerReaders 即可，客户端不带任何凭据
-curl http://setline.internal:8080/_setline/routes
-```
-
-读方（`setline`）那一侧只需要 `[agent] peers` 的 url，没有配套的凭据字段（见「agent」一节）。
-浏览器地址栏看状态页只在本机可行；远程读状态页同样靠 `peerReaders`。
-
-## routes
-
-`routes` 是两层对象：`host → 路径前缀 → 端口`。端口值可以是单个整数，也可以是非空数组。
-
-```json
-{
-  "routes": {
-    "app.example.com": {
-      "/api/edu": [9002, 9003],
-      "/m/edu/learning": 5173,
-      "/api": 9001
-    },
-    "admin.example.com": {
-      "/": 9090
-    },
-    "*": {
-      "/": 8081
-    }
-  }
-}
-```
-
-### 匹配规则
-
-1. 取请求的 `Host` 头，去掉端口、转小写。
-2. 在该 host 下按**最长前缀**匹配路径，所以 `/api/edu` 优先于 `/api`。
-3. 该 host 下没有能匹配该路径的路由时，回退到 `*` 命名空间。
-
-第 3 条是**逐条路由**的回退，不是整个 host 的回退：精确 host 一旦有能匹配该 path 的路由，
-就不再往下看 `*`，哪怕 `*` 的前缀更长。所以 `a.com` 只有 `/`、`*` 有 `/api` 时，
-`a.com/api` 走的是 `a.com` 的 `/`，而不是 `*` 的 `/api`；只有 `a.com` 完全没有匹配该
-path 的路由（例如 `a.com/other`）才落到 `*`。haproxy 的 map 拼接（先查 `host~path`、
-再查 `path`）与这里逐条对应，所以两者的分派结果一致。
-
-### host 的写法
-
-- 普通主机名，**不带端口**（带端口会报 `route host must not include port`）。
-- 大小写不敏感，加载时统一转小写。
-- `*` 是 fallback 命名空间，不是通配后缀：`*.example.com` 没有特殊含义。
-- 只服务一个域名、或所有域名共用同一套路由时，不必写任何 hostname，只配 `*` 即可：路由
-  决策完全不看 `Host`（缺 `Host` 的请求也算 `*`），域名相关的证书、`server_name`、跳转
-  都留在前置代理那边，换域名不需要改 setline。
-
-### prefix 的写法
-
-- 必须以 `/` 开头（`route prefix must start with /`）。
-- 除根路径外尾部 `/` 会被去掉：`/api/edu/` 与 `/api/edu` 等价。
-- 不能以 `/_setline` 开头（会和管理接口冲突）。
-- 不做 URL 重写：命中后原样转发给后端。
-
-### 端口
-
-- 必须是 `1..65535` 的整数。
-- 数组必须非空；多个端口之间是随机选择，不支持权重。
-- 每个端口固定映射到 `127.0.0.1:<port>`。**不能写完整的后端 URL**，
-  这是本项目的约束：setline 只代理本机后端，跨机路由交给 haproxy/nginx。
-
-## 报文边界（framing）
-
-setline 不做业务解析，但必须知道「请求体和响应体到哪里结束」，否则透传会串包：
-
-- `Content-Length` 只接受 `1*DIGIT`（RFC 9110）：同一个头重复出现且值完全相同算合法；值
-  不同、带符号（`+5`、`-1`）、带其他字符或超出 `long` 范围都算非法。
-- `Transfer-Encoding` 与 `Content-Length` 同时出现、或 `Transfer-Encoding` 里没有
-  `chunked`，都算非法。
-- **请求侧**出现上述非法组合时，在入口直接返回 `400`，报文不转发给后端。
-- **响应侧**优先原样透传：上游的响应头不会被改写；framing 冲突的响应仍会转发给前置代理，
-  但 setline 不会再用这条上游连接承载下一个请求。
-- 响应体在代理过程中被上游截断（声明的 `Content-Length` 没读完就 EOF、chunk 未正常结束）
-  时，setline 只关掉 client 连接，**不会**再补一个 `502`。响应头已经发出去了，补发只会把
-  状态行和错误文本混进响应体；前置代理看到的是「响应被截断」，由它决定回什么给客户端。
-
-## agent
-
-> `[agent]`、`[routes]` 和 `[apply]` 只存在于 `setline.conf`：它们是 `setline-agent`
-> 的输入。`setline.json` 出现任何 `agent` 字段都会被 `setline -c` 拒绝。
-
-`setline-agent` 是独立入口：它读取 `setline.conf`，按 `[agent] type` 渲染供边缘代理
-（haproxy / nginx）使用的片段，写完即退出。它不监听端口，也不读 `setline.json`。
-常驻的 `setline.service` 只读 `setline.json`，监听和运行时路由与 agent 是否运行无关。
-
-| `[routes]` | `peers` | 渲染的数据来源 |
-|---|---|---|
-| 有 | 无 | 只渲染预定义本地路由，回源 `127.0.0.1:<port>` |
-| 有 | 有 | 本地路由 + 各 peer 的路由表，同 host + 前缀合并实例 |
-| 无 | 有 | 只聚合 peer 路由表 |
-| 无 | 无 | 没有后端；仍会写出空的片段文件 |
-
-渲染没有调度循环：包里的 `setline-agent.timer` 每 30s 拉起
-static 的 `setline-agent.service`。这一轮以 `setline` 用户执行
-`setline-agent render`，再以 root 调用 `setline-apply --now auto`；它不访问
-`[remote]`。远程 manifest 检查只由显式命令触发（手工 staged pull，或 root 编排脚本
-`setline-agent-run --remote`），并复用同一套 setline 用户下载、root 安装的权限边界。
-只有 `setline-agent` 会生成片段；`setline.service` 不会因为管理接口上的路由变化自动重渲染。
-
-| 位置 | 字段 | 默认值 | 说明 |
-|---|---|---|---|
-| `setline.conf [agent]` | `type` | 空 | `haproxy` 或 `nginx`；空表示不渲染片段 |
-| `setline.conf [agent]` | `output` | `/var/lib/setline` | 片段落盘**根目录**（绝对路径） |
-| `setline.conf [agent]` | `peers` | 空 | agent 聚合的远端 setline 实例 |
-| `setline.conf [routes]` | `<host>` | 空 | 预定义本地路由，格式见上文 `[routes]` 一节 |
-
-`[agent] type` 与 `[agent] peers` 的边界：只写了 peers 而没写 `type` 报
-`[agent] peers requires [agent] type in setline.conf`。空的 `peers =` 合法，
-表示当前没有远端路由表要聚合。都靠 `setline-agent -c` 就能看到，不用起服务。
-
-`[agent] output` 只给一个根目录即可，里面放什么由 agent 决定：按 `type` 落到
-`<output>/haproxy/` 或 `<output>/nginx/`，文件名固定为 `setline.cfg`（haproxy）或
-`setline.conf`（nginx）；haproxy 另写一份路由 map，nginx 按 host 再分几个 location
-文件（见「output 的目录布局」）。目录不存在时会逐级创建，因此运维只要保证根目录可写
-（`setline.conf [apply] fragmentDir` 默认正是 `/var/lib/setline/haproxy` 与
-`/var/lib/setline/nginx`）。
-
-完整可跑的 agent 配置见 `docs/haproxy-integration.md` 与 `docs/nginx-integration.md`
-的「setline 配置示例」。
-
-片段**固定只出规则和后端定义**，不含任何监听段：`bind` / `listen` 归代理主配置。
-接线步骤（haproxy 的 `-f <dir>` 与四条 map 查询、nginx 的 `include`）见
-`docs/haproxy-integration.md` 与 `docs/nginx-integration.md`。
-
-`type` 也是热加载分派的依据：`setline-agent.timer` 只启用一个。
-`setline-agent-run`（root 编排脚本）先以 `setline` 用户执行 `setline-agent render`，
-再以 root 执行 `setline-apply --now auto`。`setline-apply` 通过
-`setline-agent --apply-config --config /etc/setline/setline.conf` 读取 `[apply]` 段，
-并按 `[agent] type` 决定校验和 reload 谁。所以改 `type` 之后不需要动 systemd。timer
-装完不会自动启用：`sudo systemctl enable --now setline-agent.timer`（启用、手工执行与
-参数见 `docs/agent-reload.md` 的「启用与使用」）。
-
-### peers
-
-```ini
-[agent]
-type = nginx
-output = /var/lib/setline
-peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
-```
-
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `name` | 是 | `=` 左侧；只用于日志与报错里称呼这台机器，不参与生成的后端标识 |
-| `url` | 是 | `=` 右侧；对端 setline 的基地址，既用于读路由表，也提供回源主机；见下节 |
-
-多个 peer 用逗号分隔。`name` 不能含逗号或空白；`url` 必须是 `http://` 或
-`https://` 基地址，不能带空白、逗号、查询串或片段。`setline-agent pull` 会把 bashub
-返回的 peers 规范成同样的 `name=url, name=url` 形式，只改这一行，其他键和注释不动。
-
-peer 不带凭据：读方只需 URL，被读端按来源地址放行。这里没有存凭据的字段，
-也就没有要在两台机器之间同步的秘密。
-
-每个 peer 路由表里的本机端口会被改写成 `<url 的主机>:<port>`；不同 peer 上 host 与
-前缀相同的路由会合并成同一个 upstream/backend 的多台 server。
-
-#### 回源主机来自 url，没有单独的 address 字段
-
-`url` 一个字段承担两个方向：它既是 agent 拉取路由表的管理入口，也是边缘代理回源的
-目标主机。取值时只取主机部分，并且会**丢掉端口**——因为 URL 端口是管理端口，而业务
-端口由每条路由自带。上面 `url` 里的 `8080` 和业务端口 `9002` 无关：
+| | `service` | 按类型推导 | `systemctl reload` 的服务名 |
+| | `quietSeconds` | `15` | apply 静默窗口 |
+| | `runtimeDir` | `/run` | 锁文件目录 |
+| | `owner` | `setline:beangle` | 片段目录属主 |
+
+没有 peers、peerReaders、本地路由配置。`setline-agent` 从 bashub 下载：
 
 ```text
-peers 中的 http://10.0.1.10:8080     →  回源主机 = 10.0.1.10
-                                     →  后端     = 10.0.1.10:9002
+routes
+proxy
+certificate
+certificate-key
 ```
 
-因此 `url` 必须带主机。这两类写法在 `setline-agent -c` 时就会报错：
+`routes` 由 bashub 根据 basagent 的 `report:bas` 生成，缓存为 `<agent.output>/routes.json`。`[remote] ip` 可选，用于在多台
+agent 中选择本机；不写时要求该 project 只有一台在线 agent。
 
-- `file:///tmp/peer`：没有主机；
-- `/tmp/peer`：本地路径，也没有主机。
 
-如果管理入口和业务入口不在同一个地址（管理网、NAT、隧道等），就让 `url` 指向边缘
-代理能连到业务主机的那个地址：读路由表和管理入口共用同一条通路即可。
+证书目录固定为 `/etc/setline/certs`，与 bashub 生成的 nginx/haproxy 配置一致。
 
-`name` 只用于日志与报错（例如「读不到某台 peer 的路由表」时指名道姓），留空就用 `url`。
-生成的后端标识与它无关：标识只看 host 分组名加路径前缀，见 `docs/haproxy-integration.md`。
+### 远端刷新
 
-### 单机部署（不配 peers）
-
-haproxy/nginx、setline、basctl 在同一台机器上时，边缘代理要回源的后端和 setline 要
-调度的后端是同一批进程，没有必要让 agent 绕一圈去拉自己的路由表。直接在
-`setline.conf` 写 `[agent] type/output` 和 `[routes]`，不写 `peers`：
-
-```ini
-[agent]
-type = haproxy
-output = /var/lib/setline
-
-[routes]
-app.example.com = {"/api/edu": [9002, 9003]}
+```bash
+setline-agent pull --check --stage --config /etc/setline/setline.conf
+setline-agent pull --install --config /etc/setline/setline.conf
 ```
 
-这份 `[routes]` 只给 agent 渲染片段。若还要让常驻 `setline.service` 监听并代理同样的
-路径，再在 `setline.json` 里配一份数据面路由；它不读取上面的 INI：
+agent 先读 manifest，按 SHA-256 只下载变化资源到 `remote-stage`；root 安装前再次核对哈希。
+网络失败或安装失败时保留上次成功的文件。
+
+`pull --check` 返回 `10` 表示代理主配置或证书变化，需要：
+
+```bash
+setline-apply --now --force auto
+```
+
+`setline-agent-run --remote` 会串起检查、安装、渲染、apply 和退出码 `10` 的处理。
+
+## setline.json
+
+数据面配置示例：
 
 ```json
 {
   "listen": "127.0.0.1:8080",
-  "routes": {
-    "app.example.com": {
-      "/api/edu": [9002, 9003]
-    }
-  }
-}
-```
-
-和配了 `peers` 的聚合部署相比：
-
-- `setline.service` 的监听、运行时 API 与 agent 无关；不启动它也能只做片段渲染；
-- agent 每次都从 `setline.conf [routes]` 取本地路由，管理接口修改 `setline.json` 不会
-  自动触发重渲染，周期刷新仍由 `setline-agent.timer` 完成；
-- `[agent] output` 不写时默认 `/var/lib/setline`；只有把 `[agent] type` 留空时才不会渲染片段。
-
-`setline-agent render` 写片段失败（根目录不可写、磁盘满等）会以非 0 退出并打印错误；
-`setline.service` 不受影响，因为两者互不读取。子目录（`haproxy/`、`nginx/`）由 agent
-按需创建，不需要事先手建。
-
-回源主机固定为 `127.0.0.1` —— 单机部署下路由端口都在本机。生成的后端标识只由 host
-分组名和路径前缀决定（例如 `app_example_com_api_edu`），与数据来自 `[routes]` 还是
-某个 peer 无关。
-
-单机模式下 `setline-agent.timer` 负责周期执行 `setline-agent render` 和 apply；
-片段变了就 reload 代理，片段没变则无动作。
-
-### output 的目录布局
-
-`[agent] output` 是**根目录**，下面的目录名和文件名都由 setline 决定，不开放配置——它们同时是
-`setline-apply` 与代理主配置接线的约定（`include` / `-f` 的路径写死了），运维只需要给
-一个可写的根目录，别再手工拼文件名。目录不存在时逐级创建。
-
-目录名按 `type` 取固定值 `haproxy`/`nginx`；文件名主干固定为 `setline`，扩展名按代理
-区分，这个不是风格问题：
-
-- haproxy 的 `-f <dir>` **只加载 `.cfg`**，所以主片段叫 `setline.cfg`；
-- nginx 的 `include` 通常写成 `*.conf`，所以主片段叫 `setline.conf`。
-
-除主片段外还会派生几个文件：
-
-| 代理 | 文件（相对 `<output>`） | 作用 |
-|---|---|---|
-| haproxy | `haproxy/setline.cfg` | 只有 `backend` 段 |
-| haproxy | `haproxy/setline.map` | 路由表，主配置 frontend 用 `map_beg()` 查它 |
-| nginx | `nginx/setline.conf` | 只有 `upstream` 段，在 `http {}` 里 include |
-| nginx | `nginx/setline.<host>.conf` | 该 host 的 `location`，在对应 `server {}` 里 include；`*` 回退路由是 `nginx/setline.default.conf` |
-
-`[agent] output` 覆盖范围是**整个 `<type>` 子目录**，所以不要把别的文件放进
-`<output>/haproxy/`（`setline-apply` 按目录整体校验和还原，见 `docs/agent-reload.md`）。
-
-写好后还需要一次性接线（nginx 加 `include`，haproxy 加 `-f`），校验与热加载由
-`setline-apply` 负责，见 `docs/haproxy-integration.md`、`docs/nginx-integration.md`
-和 `docs/agent-reload.md`。
-
-## 示例
-
-### 最小本地开发
-
-绑回环、无凭据；管理口用缺省值，本机直连 8081 读状态页和路由表：
-
-```json
-{
-  "listen": 8080,
-  "routes": {
-    "*": {
-      "/api": 9001,
-      "/web": [5173, 5174]
-    }
-  }
-}
-```
-
-### 生产：对外监听 + 读方名单
-
-```json
-{
-  "listen": "*:8080",
   "adminListen": "127.0.0.1:8081",
-  "peerReaders": ["10.0.1.7"],
   "connectTimeoutMillis": 3000,
   "readTimeoutMillis": 15000,
-  "reusePort": false,
   "upstreamIdleTimeoutMillis": 30000,
   "webSocketIdleTimeoutMillis": 0,
   "maxConnections": 65535,
@@ -629,6 +109,68 @@ app.example.com = {"/api/edu": [9002, 9003]}
   },
   "routes": {
     "app.example.com": {
+      "/api": 9001,
+      "/api/edu": [9002, 9003]
+    },
+    "*": {
+      "/": 8081
+    }
+  }
+}
+```
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `listen` | `127.0.0.1:8080` | 数据面监听地址 |
+| `adminListen` | `127.0.0.1:8081` | 管理接口独立监听，必须与 `listen` 不同 |
+| `connectTimeoutMillis` | `3000` | 连接后端的 TCP 超时 |
+| `readTimeoutMillis` | `15000` | 单次上游读取的不活动超时 |
+| `reusePort` | `false` | 是否启用 `SO_REUSEPORT` |
+| `upstreamIdleTimeoutMillis` | `30000` | 空闲上游连接保留时间 |
+| `webSocketIdleTimeoutMillis` | `0` | WebSocket 空闲回收；`0` 表示不回收 |
+| `maxConnections` | `65535` | 并发客户端连接上限 |
+| `healthCheck` | 见上 | 后端 TCP 健康检查 |
+| `routes` | `{}` | host → 路径前缀 → 端口或端口数组 |
+
+### listen
+
+| 写法 | 结果 |
+|---|---|
+| `8080` / `"8080"` | `127.0.0.1:8080` |
+| `"127.0.0.1:8080"` | 指定地址 |
+| `"*:8080"` | `0.0.0.0:8080` |
+
+只写端口默认绑回环。数据面只应部署在 haproxy/nginx 之后；TLS、限流、访问日志由前置代理负责。
+
+### adminListen
+
+管理接口：
+
+| 接口 | 监听 | 权限 |
+|---|---|---|
+| `GET /_setline/routes` | `listen` 和 `adminListen` | 仅本机 |
+| `GET /_setline/status`、`status.html`、`status.json` | `adminListen` | 仅本机 |
+| `PUT` / `DELETE /_setline/routes*` | `adminListen` | 仅本机 |
+
+写接口还要求请求的 Host 是回环名。数据面除 `GET /_setline/routes` 外的 `/_setline/*`
+返回 404。前置代理应拒绝转发管理路径：
+
+```haproxy
+http-request deny if { path_beg /_setline }
+```
+
+```nginx
+location ^~ /_setline { return 404; }
+```
+
+### routes
+
+`host → 路径前缀 → 端口`，端口可为单值或非空数组：
+
+```json
+{
+  "routes": {
+    "app.example.com": {
       "/api/edu": [9002, 9003],
       "/api": 9001
     },
@@ -639,118 +181,28 @@ app.example.com = {"/api/edu": [9002, 9003]}
 }
 ```
 
-### 运行时改路由
+- host 小写化；前缀去掉尾部 `/`。
+- 前缀不能以 `/_setline` 开头。
+- `*` 是 fallback。
+- 端口必须在本机监听。
 
-写接口只接受本机来源（回环对端 + 回环 Host），不需要任何凭据：
+### healthCheck
 
-```bash
-# 新增/替换一条
-curl -X PUT 'http://127.0.0.1:8081/_setline/routes?host=app.example.com' \
-  -d '{"/api/edu":[9002,9003]}'
+TCP connect 到 `127.0.0.1:<port>`，只维护在线状态，不探测 HTTP 路径。
 
-# 替换某 host 的全部路由
-curl -X PUT 'http://127.0.0.1:8081/_setline/routes/all?host=app.example.com' \
-  -d '{"routes":{"/api":9001}}'
-
-# 删除一条 / 清空某 host
-curl -X DELETE 'http://127.0.0.1:8081/_setline/routes?host=app.example.com&prefix=/api'
-curl -X DELETE 'http://127.0.0.1:8081/_setline/routes?host=app.example.com'
-```
-
-改动会写回配置文件顶层 `routes` 字段（其余字段原样保留），重启后仍然生效。
-写回是就地重写整个文件：2 空格缩进、对象键排序，所以同一份配置每次写出的字节完全一致
-（不会因为多次更新而反复产生 diff），路径也不会被转义成 `\/var\/lib`。
-完整接口见 `docs/runtime-routes-api.md`。
-
-### agent：聚合多台 setline 生成 nginx 片段
-
-片段不含 `listen`，监听归你自己的 `server {}`。生成
-`nginx/setline.conf`（upstream）加每个 host 一份 `nginx/setline.<host>.conf`
-（location 文件）。
-
-```ini
-[agent]
-type = nginx
-output = /var/lib/setline
-peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080
-```
-
-### agent：生成 haproxy 片段
-
-生成 `haproxy/setline.cfg`（backend）加 `haproxy/setline.map`（路由表），主配置的
-frontend 加四行（`set-var` + `concat` + 两条 `map_beg()` 查询）即可。
-
-```ini
-[agent]
-type = haproxy
-output = /var/lib/setline
-peers = app1=http://10.0.1.10:8080
-```
-
-### agent：单机部署（同机 haproxy + setline + basctl）
-
-边缘代理和 setline 同机时省掉 `peers`，把要渲染的本地路由写进 `setline.conf [routes]`。
-业务流量由 haproxy 按片段直接回源，不经过 setline。若还需要 setline 数据面接收
-basctl 的运行时路由，再单独维护一份 `setline.json`；两者互不读取。
-
-```ini
-[agent]
-type = haproxy
-output = /var/lib/setline
-
-[routes]
-app.example.com = {"/api/edu": [9002, 9003], "/": 9090}
-```
-
-需要数据面时，另写：
-
-```json
-{
-  "listen": "127.0.0.1:8080",
-  "routes": {
-    "app.example.com": {
-      "/api/edu": [9002, 9003],
-      "/": 9090
-    }
-  }
-}
-```
-
-## 常见校验错误
-
-`setline -c` / `setline-agent -c` 会把下面这类消息打在 `Config <path> is invalid: ` 之后
-（服务配置与 agent 配置分别校验）：
-
-| 消息 | 原因 |
+| 字段 | 默认值 |
 |---|---|
-| `listen must be port or host:port` | `listen` 既不是整数也不是字符串 |
-| `listen must be host:port` | 字符串里的冒号不止一个 |
-| `listen must be port or host:port; setline always listens, rendering belongs to setline-agent` | `listen` 写成 `true` / `false` 或其他类型；纯渲染请使用 `setline-agent` |
-| `adminListen must be port or host:port: the admin API always has its own listener` | `adminListen` 写成 `false`（不再支持共用 `listen`） |
-| `adminListen must be port or host:port` | `adminListen` 写成 `true` 或其他类型 |
-| `adminListen must differ from listen` | `adminListen` 和 `listen` 是同一个地址（含 `*:` 与具体地址同端口） |
-| `listen must not use the default admin port 8081: set adminListen explicitly` | 没写 `adminListen`，而 `listen` 用了管理口的缺省端口 8081 |
-| `connectTimeoutMillis must be positive` / `readTimeoutMillis must be positive` | 超时写成 0 / 负数 |
-| `upstreamIdleTimeoutMillis must be positive` | 空闲上游连接保留时间写成 0 / 负数 |
-| `maxConnections must be positive` | 连接上限写成 0 / 负数 |
-| `reusePort must be boolean` | `reusePort` 不是 `true` / `false` |
-| `webSocketIdleTimeoutMillis must not be negative` | `webSocketIdleTimeoutMillis` 写成负数 |
-| `route prefix must start with /` | 前缀没以 `/` 开头 |
-| `route updates are only allowed from localhost`（HTTP `403`） | 写接口的来源不是回环对端，或 Host 不是回环名（多为经本机代理转发的远端请求） |
-| `route reads are only allowed from localhost or a peerReaders address`（HTTP `403`） | 读接口的来源不是本机，也不在 `peerReaders` 里 |
-| `route prefix conflicts with admin API` | 前缀以 `/_setline` 开头 |
-| `route value must be port or ports` | 路由值不是整数也不是数组 |
-| `route port must be 1..65535` | 端口越界 |
-| `route host must not include port` | host 里写了端口 |
-| `setline.json must not contain agent; put [agent] type/output/peers in setline.conf` | `setline.json` 里还有 `agent`（任何子字段都不接受） |
-| `invalid [routes] entry for <host>: ...` | `setline.conf [routes]` 的值不是合法 JSON，或其中的路由格式错误 |
-| `[agent] peers requires [agent] type in setline.conf` | 配了 peers，但本机没有 `[agent] type` |
-| `[agent] output is required when [agent] type is set` | 直接构造 `AgentConfig` 时才会看到；正常读取 `setline.conf` 会为 `[agent] type` 补默认目录 |
-| `[agent] output must be an absolute directory path` | `output` 写成相对路径（会随 CWD 漂移，破坏固定布局） |
-| `[agent] peers entries must be name=url: <item>` | peers 里有一项缺少 `name=` 或 `url` |
-| `[agent] peers url must start with http:// or https://` | peer 地址不是 HTTP(S) 基地址 |
-| `request body exceeds <n> bytes`（HTTP `413`） | 管理接口 PUT 的 body 超过 4 MiB 防御性上限 |
-| `cannot derive backend host from [agent] peers url` | peer 的 `url` 没有主机（`file://`、本地路径） |
+| `intervalMillis` | `5000` |
+| `timeoutMillis` | `1000` |
+| `unhealthyThreshold` | `2` |
+| `healthyThreshold` | `1` |
 
-多写的键**既不报错也不生效**：校验只对着本文列出的字段跑，INI 里写一个不存在的键
-不会拦住启动。
+## 常见错误
+
+| 错误 | 原因 |
+|---|---|
+| `setline.json must not contain agent` | `agent` 只能写进 `setline.conf` |
+| `adminListen must differ from listen` | 两个监听地址冲突 |
+| `route prefix must not start with /_setline` | 管理路径不能作为业务路由前缀 |
+| `control config not found` | `setline.conf` 路径不存在 |
+| `[agent] type is required` | 需要渲染但没有代理类型 |
