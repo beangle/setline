@@ -31,7 +31,7 @@ import setline.jsonview;
 import setline.model : HostRoutes, Route;
 import setline.proxy;
 import setline.state;
-import setline.util : adminPrefix, escapeHtml, isListedAddress, isLoopbackAddress, toLowerAscii;
+import setline.util : adminPrefix, escapeHtml, isLoopbackAddress, routesPath, toLowerAscii;
 
 /** 处理 `_setline` 管理接口请求。
 
@@ -39,15 +39,12 @@ import setline.util : adminPrefix, escapeHtml, isListedAddress, isLoopbackAddres
 
     - **写**（`PUT` / `DELETE` 路由）：只接受**本机**请求。改路由等于改流量走向，不对外开放。
       它只挂在管理监听上（见 `docs/configuration.md`）。
-    - **读**（`GET` 路由表、状态页、`status.json`）：**本机**来源，或来源地址写在
-      `peerReaders` 里的远端读方。准入只看地址，全程没有凭据：路由表的跨机读方是另一个
-      setline（`[agent] peers`），给它配一份要在两台机器上同步的秘密，换不来比源地址
-      更实在的东西，却让「谁能读」变成两处配置。读也不看 Host——本机调用方可能就是按公开
+    - **读**（`GET` 路由表、状态页、`status.json`）：**本机**来源，或只接受本机来源。读也不看 Host——本机调用方可能就是按公开
       主机名访问的；代价是「前置代理没 deny `/_setline`」的泄露路径只对读成立，而那条路径
       本来就要靠代理侧的 deny 关掉（见 docs/haproxy-integration.md）。
 
     哪些读走哪个监听由 `setline.server` 决定：数据面 `listen` 只把 `GET /_setline/routes`
-    （peer 协议，`setline.util.peerRoutesPath`）转发到这里，状态页与 `status.json` 只在管理口
+    （peer 协议，`setline.util.routesPath`）转发到这里，状态页与 `status.json` 只在管理口
     上——它们没有跨机消费者，含监听地址、超时和计数器，挂在数据面上只会放大暴露面。
 
     **写的「本机」= TCP 对端是回环，且请求的 Host 也是回环名**（见 {@link isLocalAdminRequest}）。
@@ -62,13 +59,11 @@ import setline.util : adminPrefix, escapeHtml, isListedAddress, isLoopbackAddres
 void handleAdmin(TCPConnection client, string method, string target, string request) {
   auto path = requestPath(target);
   // 写要求「回环对端 + 回环 Host」（见 isLocalAdminRequest）；读只看来源地址，多一个
-  // peerReaders 名单。
+  // 本机来源。
   auto writableFromLocal = isLocalAdminRequest(client, request);
-  auto readableFromLocal = isLocalhost(client);
-  auto fromPeerReader = isTrustedReader(client);
   if ((path == adminPrefix ~ "/status" || path == adminPrefix ~ "/status.html") && method == "GET") {
-    if (!isReadAllowed(readableFromLocal, fromPeerReader)) {
-      rejectUnlistedReader(client);
+    if (!isLocalhost(client)) {
+      rejectRemoteReader(client);
       return;
     }
     sendRaw(client, "200 OK", "text/html; charset=utf-8", statusHtml(statusRefreshSeconds(target)));
@@ -76,8 +71,8 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/status.json" && method == "GET") {
-    if (!isReadAllowed(readableFromLocal, fromPeerReader)) {
-      rejectUnlistedReader(client);
+    if (!isLocalhost(client)) {
+      rejectRemoteReader(client);
       return;
     }
     sendJson(client, statusJson());
@@ -85,8 +80,8 @@ void handleAdmin(TCPConnection client, string method, string target, string requ
   }
 
   if (path == adminPrefix ~ "/routes" && method == "GET") {
-    if (!isReadAllowed(readableFromLocal, fromPeerReader)) {
-      rejectUnlistedReader(client);
+    if (!isLocalhost(client)) {
+      rejectRemoteReader(client);
       return;
     }
     sendJson(client, hostRoutesJson(routesSnapshot()));
@@ -215,36 +210,19 @@ string routeHostFromTarget(string target) {
   return normalizeRouteHost(host);
 }
 
-/**
- * 读接口（`GET` 路由表、状态页、`status.json`）的准入：**本机来源，或地址在 `peerReaders`
- * 里的读方**。所有读接口共用这一条规则，没有例外、也没有第二种凭据。
- *
- * 两个参数分别是 {@link isLocalhost} 与 {@link isTrustedReader} 的结果——做成纯函数是为了
- * 能在单测里覆盖四种组合：TCP 对端地址在单测里伪造不了。两端都不需要凭据：拨得动
- * localhost 的本来就在这台机器上（basctl 因此不需要存任何东西），远端读方按地址放行。
- */
-bool isReadAllowed(bool fromLocalhost, bool fromPeerReader) {
-  return fromLocalhost || fromPeerReader;
+/** 读接口只接受本机来源；路由表不再跨机读取。 */
+bool isReadAllowed(bool fromLocalhost) {
+  return fromLocalhost;
 }
 
-/** 回写一条 403，说明读接口只接受本机来源或 `peerReaders` 里的地址。
-
-    这里不用 404 装作端点不存在：peer 协议写在文档里，读方是需要可诊断答案的机器，而
-    「路径存在但来源不在名单里」并不比「路径不存在」多泄露什么。
-*/
-void rejectUnlistedReader(TCPConnection client) {
-  sendResponse(client, 403, "Forbidden",
-    "route reads are only allowed from localhost or a peerReaders address");
+/** 回写 403：读接口只允许本机。 */
+void rejectRemoteReader(TCPConnection client) {
+  sendResponse(client, 403, "Forbidden", "route reads are only allowed from localhost");
 }
 
 /** 判断连接对端是否为 localhost。 */
 bool isLocalhost(TCPConnection client) {
   return isLoopbackAddress(client.remoteAddress.toAddressString());
-}
-
-/** 判断连接对端是否为 `peerReaders` 里列出的读方。 */
-bool isTrustedReader(TCPConnection client) {
-  return isListedAddress(client.remoteAddress.toAddressString(), peerReaders());
 }
 
 /** 从 request target 的 query string 中读取指定参数。

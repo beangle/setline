@@ -22,32 +22,27 @@ import std.exception : assertThrown;
 import std.file : exists, getAttributes, mkdirRecurse, readText, remove, rmdirRecurse, setAttributes, write;
 
 import setline.download;
-import setline.model : PeerConfig;
 
 @("download builds bashub machine endpoints") unittest {
   assert(downloadUrl("http://127.0.0.1:8082/", "openurp.prod", DownloadKind.manifest) ==
-    "http://127.0.0.1:8082/api/openurp.prod/config/setline-manifest");
-  assert(downloadUrl("http://127.0.0.1:8082/", "openurp.prod", DownloadKind.peers) ==
-    "http://127.0.0.1:8082/api/openurp.prod/config/setline-peers");
+    "http://127.0.0.1:8082/api/bashub/config/openurp.prod/setline-manifest");
   assert(downloadUrl("https://hub.example.com", "openurp.prod", DownloadKind.proxy) ==
-    "https://hub.example.com/api/openurp.prod/config/proxy");
+    "https://hub.example.com/api/bashub/config/openurp.prod/proxy");
   assert(downloadUrl("https://hub.example.com", "openurp.prod", DownloadKind.certificate) ==
-    "https://hub.example.com/api/openurp.prod/config/certificate");
+    "https://hub.example.com/api/bashub/config/openurp.prod/certificate");
   assert(downloadUrl("https://hub.example.com", "openurp.prod", DownloadKind.certificateKey) ==
-    "https://hub.example.com/api/openurp.prod/config/certificate-key");
-  assertThrown!Exception(downloadUrl("127.0.0.1:8082", "openurp.prod", DownloadKind.peers));
-  assertThrown!Exception(downloadUrl("http://127.0.0.1:8082", "../bad", DownloadKind.peers));
+    "https://hub.example.com/api/bashub/config/openurp.prod/certificate-key");
+  assertThrown!Exception(downloadUrl("127.0.0.1:8082", "openurp.prod", DownloadKind.proxy));
+  assertThrown!Exception(downloadUrl("http://127.0.0.1:8082", "../bad", DownloadKind.proxy));
 }
 
 @("manifest parsing, state persistence and per-resource comparison") unittest {
   auto text = "{\"version\":1,\"resources\":{" ~
-    "\"peers\":\"" ~ sha256Hex("peers\n") ~ "\"," ~
     "\"proxy\":\"" ~ sha256Hex("proxy\n") ~ "\"," ~
     "\"certificate\":\"" ~ sha256Hex("") ~ "\"," ~
     "\"certificate-key\":\"" ~ sha256Hex("") ~ "\"}}";
   auto manifest = parseRemoteManifest(text);
   assert(manifest.schemaVersion == 1);
-  assert(manifest.resources[manifestResourcePeers] == sha256Hex("peers\n"));
 
   auto path = "/tmp/setline-remote-manifest-test/remote.manifest.json";
   auto corrupt = "/tmp/setline-remote-manifest-test/corrupt.json";
@@ -68,17 +63,17 @@ import setline.model : PeerConfig;
   assert(resourceChanged(loaded, changed, manifestResourceProxy));
 
   assertThrown!Exception(parseRemoteManifest(
-    "{\"version\":1,\"resources\":{\"peers\":\"bad\"}}"));
+    "{\"version\":1,\"resources\":{\"proxy\":\"bad\"}}"));
   assertThrown!Exception(parseRemoteManifest(
     "{\"version\":2,\"resources\":{}}"));
   assertThrown!Exception(parseRemoteManifest(
-    "{\"version\":1,\"resources\":{\"peers\":\"" ~ sha256Hex("p") ~ "\"," ~
+    "{\"version\":1,\"resources\":{\"proxy\":\"" ~ sha256Hex("p") ~ "\"," ~
     "\"proxy\":\"" ~ sha256Hex("x") ~ "\"," ~
     "\"certificate\":\"" ~ sha256Hex("") ~ "\"," ~
     "\"certificate-key\":\"" ~ sha256Hex("") ~ "\"," ~
     "\"unknown\":\"" ~ sha256Hex("u") ~ "\"}}"));
   assertThrown!Exception(downloadConfig("http://127.0.0.1:8082", "openurp.prod", "secret",
-      DownloadKind.manifest, delegate string(string url, string[] headers) {
+      DownloadKind.manifest, "", delegate string(string url, string[] headers) {
     return "not json";
   }));
 }
@@ -94,76 +89,15 @@ import setline.model : PeerConfig;
   string requestedUrl;
   string[] requestedHeaders;
   auto text = downloadConfig("http://127.0.0.1:8082", "openurp.prod", "secret",
-      DownloadKind.proxy, delegate string(string url, string[] headers) {
+      DownloadKind.proxy, "", delegate string(string url, string[] headers) {
     requestedUrl = url;
     requestedHeaders = headers;
     return "global\n";
   });
 
   assert(text == "global\n");
-  assert(requestedUrl == "http://127.0.0.1:8082/api/openurp.prod/config/proxy");
+  assert(requestedUrl == "http://127.0.0.1:8082/api/bashub/config/openurp.prod/proxy");
   assert(requestedHeaders == ["Authorization: Bearer openurp.prod:secret"]);
-}
-
-@("download validates the peers response before returning it") unittest {
-  assertThrown!Exception(downloadConfig("http://127.0.0.1:8082", "openurp.prod", "secret",
-      DownloadKind.peers, delegate string(string url, string[] headers) {
-    return "not json";
-  }));
-}
-
-@("download parses peers and rejects malformed peer entries") unittest {
-  auto text = downloadConfig("http://127.0.0.1:8082", "openurp.prod", "secret",
-      DownloadKind.peers, delegate string(string url, string[] headers) {
-    return `{"peers":[{"name":"host01","url":"http://10.0.0.11:8080"}]}`;
-  });
-  assert(text.canFind("host01"));
-  auto peers = parseDownloadedPeers(text);
-  assert(peers.length == 1);
-  assert(peers[0].name == "host01");
-  assert(peers[0].url == "http://10.0.0.11:8080");
-
-  assertThrown!Exception(downloadConfig("http://127.0.0.1:8082", "openurp.prod", "secret",
-      DownloadKind.peers, delegate string(string url, string[] headers) {
-    return `{"agent":{"peers":[]}}`;
-  }));
-  assertThrown!Exception(downloadConfig("http://127.0.0.1:8082", "openurp.prod", "secret",
-      DownloadKind.peers, delegate string(string url, string[] headers) {
-    return `{"peers":[{"name":"host01","url":"file:///tmp/routes"}]}`;
-  }));
-  assertThrown!Exception(downloadConfig("http://127.0.0.1:8082", "openurp.prod", "secret",
-      DownloadKind.peers, delegate string(string url, string[] headers) {
-    return `{"peers":[{"name":"host01","url":"http://10.0.0.11:8080","port":80}]}`;
-  }));
-}
-
-@("rewrite agent peers preserves the rest of setline.conf") unittest {
-  auto original =
-    "[remote]\nurl = https://hub.example.com\nprofile = openurp.prod\ntoken = secret\n" ~
-    "\n[agent]\ntype = haproxy\noutput = /var/lib/setline\n" ~
-    "peers = old=http://old:8080\n" ~
-    "\n[apply]\nquietSeconds = 15\n";
-  auto peers = [PeerConfig("host01", "http://10.0.0.11:8080"),
-    PeerConfig("cdn01", "http://10.0.0.31:8081")];
-  auto updated = rewriteAgentPeers(original, peers);
-  assert(updated.canFind("[remote]\nurl = https://hub.example.com\n"));
-  assert(updated.canFind("token = secret\n"));
-  assert(updated.canFind("type = haproxy\noutput = /var/lib/setline\n"));
-  assert(updated.canFind("peers = host01=http://10.0.0.11:8080, cdn01=http://10.0.0.31:8081\n"));
-  assert(!updated.canFind("http://old:8080"));
-  assert(updated.canFind("[apply]\nquietSeconds = 15\n"));
-  assert(rewriteAgentPeers(updated, peers) == updated);
-
-  auto inserted = rewriteAgentPeers(
-    "[remote]\nurl = https://hub.example.com\n[agent]\ntype = nginx\n", peers);
-  assert(inserted.canFind("type = nginx\npeers = host01=http://10.0.0.11:8080"));
-
-  auto appended = rewriteAgentPeers("[remote]\nurl = https://hub.example.com\n", peers);
-  assert(appended.canFind("\n[agent]\npeers = host01=http://10.0.0.11:8080"));
-
-  auto cleared = rewriteAgentPeers(original, []);
-  assert(cleared.canFind("peers = \n"));
-  assert(!cleared.canFind("http://old:8080"));
 }
 
 @("download writes atomically and leaves unchanged files untouched") unittest {
@@ -173,12 +107,12 @@ import setline.model : PeerConfig;
     if (exists(path ~ ".tmp")) remove(path ~ ".tmp");
   }
 
-  assert(writeDownloaded(path, "[agent]\npeers =\n"));
-  assert(readText(path) == "[agent]\npeers =\n");
+  assert(writeDownloaded(path, "[agent]\ntype =\n"));
+  assert(readText(path) == "[agent]\ntype =\n");
   setAttributes(path, octal!640);
-  assert(!writeDownloaded(path, "[agent]\npeers =\n"));
-  assert(writeDownloaded(path, "[agent]\npeers = app1=http://10.0.0.11:8080\n"));
-  assert(readText(path) == "[agent]\npeers = app1=http://10.0.0.11:8080\n");
+  assert(!writeDownloaded(path, "[agent]\ntype =\n"));
+  assert(writeDownloaded(path, "[agent]\ntype = app1=http://10.0.0.11:8080\n"));
+  assert(readText(path) == "[agent]\ntype = app1=http://10.0.0.11:8080\n");
   assert((getAttributes(path) & octal!777) == octal!640);
 }
 
@@ -210,17 +144,12 @@ import setline.model : PeerConfig;
   }
   if (exists(root)) rmdirRecurse(root);
 
-  auto peersText = `{"peers":[]}`;
   auto proxyText = "global\n";
-  auto confText = "[agent]\npeers = \n";
   auto manifest = RemoteManifest(1,
-    [manifestResourcePeers: sha256Hex(peersText),
-     manifestResourceProxy: sha256Hex(proxyText),
+    [manifestResourceProxy: sha256Hex(proxyText),
      manifestResourceCertificate: sha256Hex(""),
      manifestResourceCertificateKey: sha256Hex("")]);
   mkdirRecurse(stage);
-  write(stage ~ "/" ~ stagedPeersName, peersText);
-  write(stage ~ "/" ~ stagedControlName, confText);
   write(stage ~ "/" ~ stagedProxyName, proxyText);
   write(stage ~ "/" ~ stagedCertificateEmptyName, "");
   writeRemoteManifest(stage ~ "/" ~ stagedManifestName, manifest);
@@ -230,7 +159,6 @@ import setline.model : PeerConfig;
 
   assert(installRemoteStage(stage,
     RemoteInstallTargets(targetConf, targetProxy, certificateDir, targetState)));
-  assert(readText(targetConf) == confText);
   assert(readText(targetProxy) == proxyText);
   assert(readText(targetState).length > 0);
   foreach (name; ["cert.pem", "key.pem", "bundle.pem"])
@@ -252,8 +180,7 @@ import setline.model : PeerConfig;
 
   auto proxyText = "global\n";
   auto manifest = RemoteManifest(1,
-    [manifestResourcePeers: sha256Hex(""),
-     manifestResourceProxy: sha256Hex(proxyText),
+    [manifestResourceProxy: sha256Hex(proxyText),
      manifestResourceCertificate: sha256Hex(""),
      manifestResourceCertificateKey: sha256Hex("")]);
   mkdirRecurse(stage);

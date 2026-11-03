@@ -7,7 +7,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-# 由 setline-agent.timer 周期触发，只做 peers/本地路由的 render/apply。
+# 由 setline-agent.timer 周期触发，只做本地路由的 render/apply。
 # 不执行 bashub 的 pull/check；需要刷新远端配置时手工执行 setline-agent pull
 # （或 setline-agent-run --remote 这个一次性编排入口）。
 # 连续几轮 peer 不可达不应把 unit 挡成 failed，所以关掉启动限流。

@@ -27,7 +27,7 @@ import std.string : indexOf, stripRight;
 
 import setline.model;
 import setline.router : sortRoutes, validateRoute;
-import setline.util : isAddressLiteral, isLoopbackAddress, normalizeAddressText, toLowerAscii;
+import setline.util : toLowerAscii;
 
 /** setline 服务的缺省拓扑文件。 */
 enum defaultConfigPath = "/etc/setline/setline.json";
@@ -183,9 +183,6 @@ Config parseConfigFile(string path) {
     enforce(adminListen.type != JSONType.true_, "adminListen must be port or host:port");
     config.adminListen = parseListen(adminListen, "adminListen");
   }
-  if ("peerReaders" in root.object) {
-    config.peerReaders = parsePeerReaders(root["peerReaders"]);
-  }
   if ("connectTimeoutMillis" in root.object) {
     config.connectTimeoutMillis = cast(int) root["connectTimeoutMillis"].integer;
     enforce(config.connectTimeoutMillis > 0, "connectTimeoutMillis must be positive");
@@ -217,7 +214,7 @@ Config parseConfigFile(string path) {
     config.healthCheck = parseHealthConfig(root["healthCheck"]);
   }
   enforce(!("agent" in root.object),
-    "setline.json must not contain agent; put [agent] type/output/peers in setline-agent's setline.conf");
+    "setline.json must not contain agent; put [agent] type/output in setline-agent's setline.conf");
   if ("routes" in root.object) {
     config.routes = parseHostRoutes(root["routes"]);
   }
@@ -389,31 +386,6 @@ HealthConfig parseHealthConfig(JSONValue value) {
   enforce(config.unhealthyThreshold > 0, "healthCheck.unhealthyThreshold must be positive");
   enforce(config.healthyThreshold > 0, "healthCheck.healthyThreshold must be positive");
   return config;
-}
-
-/** 解析允许跨机读取的来源地址列表。
-
-    只接受数值地址字面量：主机名要查 DNS（配置解析就变成一次网络调用，而且名字解析出来的
-    地址和 TCP 对端地址未必一致），CIDR 要按位比较，两者都会把「谁能读路由表」从一行地址
-    变成一条需要解释的规则。回环地址一律拒绝：本机来源本来就放行，写上去是个空操作，
-    留着只会让人以为它还有别的含义。
-*/
-string[] parsePeerReaders(JSONValue value) {
-  enforce(value.type == JSONType.array, "peerReaders must be array");
-  enforce(value.array.length > 0, "peerReaders must not be empty");
-  string[] readers;
-  foreach (item; value.array) {
-    enforce(item.type == JSONType.string, "peerReaders item must be string");
-    auto address = normalizeAddressText(item.str);
-    enforce(address.length > 0, "peerReaders item must not be empty");
-    enforce(isAddressLiteral(address),
-      "peerReaders item must be an address literal (10.0.1.7, fe80::1): no host names, no CIDR: " ~
-      item.str);
-    enforce(!isLoopbackAddress(address),
-      "peerReaders must not list loopback: local reads are always allowed, so 127.0.0.1 is a no-op");
-    readers ~= address;
-  }
-  return readers;
 }
 
 /** 解析字符串端口并校验范围。 */

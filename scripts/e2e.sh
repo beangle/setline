@@ -11,8 +11,6 @@ SETLINE_ADMIN_PORT="${SETLINE_ADMIN_PORT:-19196}"
 # 管理面用例要单独起一个 setline，不能和上面那两个端口撞。
 SPLIT_DATA_PORT="${SPLIT_DATA_PORT:-19194}"
 SPLIT_ADMIN_PORT="${SPLIT_ADMIN_PORT:-19195}"
-PEER_SERVICE_PORT="${PEER_SERVICE_PORT:-19193}"
-PEER_SERVICE_ADMIN_PORT="${PEER_SERVICE_ADMIN_PORT:-19192}"
 READ_TIMEOUT_MILLIS="${READ_TIMEOUT_MILLIS:-500}"
 WS_IDLE_MILLIS="${WS_IDLE_MILLIS:-500}"
 # 池内空闲连接保留多久。比检查窗口长，这样「已回池」和「池已清空」两步都能稳定观察到。
@@ -22,18 +20,15 @@ BACKEND_PID=""
 SETLINE_PID=""
 HAPROXY_PID=""
 SPLIT_PID=""
-PEER_SERVICE_PID=""
 KEEPALIVE_PID=""
 
 cleanup() {
   [ -z "$HAPROXY_PID" ] || kill "$HAPROXY_PID" 2>/dev/null || true
   [ -z "$SETLINE_PID" ] || kill "$SETLINE_PID" 2>/dev/null || true
   [ -z "$SPLIT_PID" ] || kill "$SPLIT_PID" 2>/dev/null || true
-  [ -z "$PEER_SERVICE_PID" ] || kill "$PEER_SERVICE_PID" 2>/dev/null || true
   [ -z "$KEEPALIVE_PID" ] || kill "$KEEPALIVE_PID" 2>/dev/null || true
   [ -z "$BACKEND_PID" ] || kill "$BACKEND_PID" 2>/dev/null || true
-  wait "$HAPROXY_PID" "$SETLINE_PID" "$SPLIT_PID" "$PEER_SERVICE_PID" \
-    "$KEEPALIVE_PID" "$BACKEND_PID" 2>/dev/null || true
+  wait "$HAPROXY_PID" "$SETLINE_PID" "$SPLIT_PID"    "$KEEPALIVE_PID" "$BACKEND_PID" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -315,17 +310,17 @@ JSON
 SETLINE_PID=$!
 wait_for_port "$SETLINE_PORT" 50 || fail "setline did not listen"
 
-# setline-agent：只读 setline.conf，按 [routes] 渲染片段，不绑任何监听，渲染完立即退出。
+# setline-agent：读取 bashub 下载的 routes.json 渲染片段，不绑任何监听，渲染完立即退出。
 check_render_only() {
   local dir="$WORK/render-only"
   mkdir -p "$dir"
+  cat >"$dir/routes.json" <<JSON
+{"host":"local.test","routes":[{"prefix":"/","port":$BACKEND_PORT}]}
+JSON
   cat >"$WORK/render-only.conf" <<CONF
 [agent]
 type = haproxy
 output = $dir
-
-[routes]
-local.test = {"/": $BACKEND_PORT}
 CONF
   if ! "$ROOT/target/setline-agent" render --config "$WORK/render-only.conf" \
       >"$WORK/render-only.log" 2>&1; then
@@ -335,8 +330,8 @@ CONF
   [ -s "$dir/haproxy/setline.cfg" ] || fail "setline-agent did not write the backend fragment"
   [ -s "$dir/haproxy/setline.map" ] || fail "setline-agent did not write the routing map"
   grep -q 'local.test' "$dir/haproxy/setline.map" ||
-    fail "setline-agent map is missing the configured [routes] entry"
-  echo "PASS setline-agent renders predefined [routes] and exits"
+    fail "setline-agent map is missing the downloaded routes entry"
+  echo "PASS setline-agent renders downloaded routes and exits"
 }
 check_render_only
 
@@ -380,59 +375,6 @@ check_admin_write_gate() {
   echo "PASS write gate requires a loopback host, not just a loopback peer"
 }
 check_admin_write_gate
-
-# 服务入口只读 setline.json；即使同机存在带 peers 的 setline.conf，也不会自行渲染。
-check_peer_service_still_listens() {
-  local dir="$WORK/peer-service"
-  mkdir -p "$dir"
-  cat >"$WORK/peer-service.conf" <<CONF
-[agent]
-type = haproxy
-output = $dir
-peers = peer=http://127.0.0.1:$SETLINE_ADMIN_PORT
-CONF
-  cat >"$WORK/peer-service.json" <<JSON
-{"listen":"127.0.0.1:$PEER_SERVICE_PORT","adminListen":"127.0.0.1:$PEER_SERVICE_ADMIN_PORT","routes":{}}
-JSON
-  "$ROOT/target/setline" -f "$WORK/peer-service.json" >"$WORK/peer-service.log" 2>&1 &
-  PEER_SERVICE_PID=$!
-  wait_for_port "$PEER_SERVICE_PORT" 50 ||
-    fail "setline.service did not listen: $(cat "$WORK/peer-service.log")"
-  curl -fsS "http://127.0.0.1:$PEER_SERVICE_ADMIN_PORT/_setline/status.json" >/dev/null ||
-    fail "setline.service admin listener did not start"
-  [ ! -e "$dir/haproxy/setline.cfg" ] ||
-    fail "setline.service read setline.conf and rendered agent fragments itself"
-  kill "$PEER_SERVICE_PID" 2>/dev/null || true
-  wait "$PEER_SERVICE_PID" 2>/dev/null || true
-  PEER_SERVICE_PID=""
-  echo "PASS setline.service ignores setline.conf and leaves rendering to setline-agent"
-}
-check_peer_service_still_listens
-
-# 一轮渲染由 agent 入口完成：读 peers、写片段、退出，不碰监听。
-check_peer_render_once() {
-  local dir="$WORK/peer-render"
-  mkdir -p "$dir"
-  cat >"$WORK/peer-render.conf" <<CONF
-[agent]
-type = haproxy
-output = $dir
-peers = peer=http://127.0.0.1:$SETLINE_ADMIN_PORT
-CONF
-  [ "$("$ROOT/target/setline-agent" --agent-peers --config "$WORK/peer-render.conf")" = "1" ] ||
-    fail "setline-agent --agent-peers did not report the configured peer"
-  if ! timeout 20 "$ROOT/target/setline-agent" render --config "$WORK/peer-render.conf" \
-      >"$WORK/peer-render.log" 2>&1; then
-    fail "peer renderer did not exit 0: $(cat "$WORK/peer-render.log")"
-  fi
-  [ -s "$dir/haproxy/setline.cfg" ] || fail "peer renderer did not write the backend fragment"
-  grep -q '^  server local_test_0 127.0.0.1:' "$dir/haproxy/setline.cfg" ||
-    fail "peer renderer did not name the backend after host + path"
-  grep -q '127.0.0.1:' "$dir/haproxy/setline.cfg" ||
-    fail "peer renderer did not rewrite the route port onto the peer host"
-  echo "PASS peer renderer writes fragments and exits after one round"
-}
-check_peer_render_once
 
 # 客户端连接亲和 + 专属上游连接的空闲回收。
 #
@@ -672,14 +614,8 @@ local_addresses() {
 # （本机，或 peerReaders 里列出的读方），全程没有凭据。
 check_admin_listen() {
   local label="admin-listen"
-  # 两个监听都绑所有地址，好让非回环来源真的出现；读方地址写进 peerReaders 才放行。
-  local lan_a lan_b
-  lan_a="$(local_addresses | head -1)"
-  lan_b="$(local_addresses | sed -n 2p)"
-  local readers=""
-  [ -z "$lan_a" ] || readers=",\"peerReaders\":[\"$lan_a\"]"
   cat >"$WORK/split.json" <<JSON
-{"listen":"*:$SPLIT_DATA_PORT","adminListen":"*:$SPLIT_ADMIN_PORT"$readers,
+{"listen":"*:$SPLIT_DATA_PORT","adminListen":"*:$SPLIT_ADMIN_PORT",
  "routes":{"local.test":{"/":$BACKEND_PORT}}}
 JSON
   "$ROOT/target/setline" -f "$WORK/split.json" >"$WORK/split.log" 2>&1 &
@@ -743,29 +679,6 @@ JSON
     -H 'X-Forwarded-Host: split.internal' \
     "http://127.0.0.1:$SPLIT_ADMIN_PORT/_setline/routes?host=evil.test")"
   [ "$write_code" = 403 ] || fail "$label forwarded-host write was not rejected ($write_code)"
-
-  # 非回环来源：列进 peerReaders 的地址读得到，没列的读不到。这条只有在机器上真的有非回环
-  # 地址时才跑得起来（容器里常常只有回环）。
-  if [ -n "$lan_a" ]; then
-    grep -q "setline peer readers: .*$lan_a" "$WORK/split.log" ||
-      fail "$label startup log did not print the reader list: $(cat "$WORK/split.log")"
-    read_code="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_a:$SPLIT_DATA_PORT/_setline/routes")"
-    [ "$read_code" = 200 ] || fail "$label listed reader $lan_a was rejected ($read_code)"
-    read_code="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_a:$SPLIT_ADMIN_PORT/_setline/status.json")"
-    [ "$read_code" = 200 ] || fail "$label listed reader could not read status.json ($read_code)"
-    data_status="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_a:$SPLIT_DATA_PORT/_setline/status.json")"
-    [ "$data_status" = 404 ] || fail "$label listed reader got status.json off the data plane ($data_status)"
-    write_code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-      "http://$lan_a:$SPLIT_ADMIN_PORT/_setline/routes?host=evil.test")"
-    [ "$write_code" = 403 ] || fail "$label listed reader could write routes ($write_code)"
-    if [ -n "$lan_b" ]; then
-      read_code="$(curl -s -o /dev/null -w '%{http_code}' "http://$lan_b:$SPLIT_DATA_PORT/_setline/routes")"
-      [ "$read_code" = 403 ] || fail "$label unlisted address $lan_b was not rejected ($read_code)"
-    fi
-    echo "PASS[$label] peerReaders admits $lan_a${lan_b:+ and rejects $lan_b}"
-  else
-    echo "PASS[$label] no non-loopback address on this host: address allowlist not exercised"
-  fi
 
   local exit_status=0
   kill -TERM "$SPLIT_PID" 2>/dev/null || true

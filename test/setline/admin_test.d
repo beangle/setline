@@ -26,8 +26,7 @@ import setline.health;
 import setline.model;
 import setline.state;
 import setline.test_lock;
-import setline.util : escapeHtml, isAddressLiteral, isListedAddress, isLoopbackAddress,
-  normalizeAddressText;
+import setline.util : escapeHtml, isLoopbackAddress, normalizeAddressText;
 
 @("admin parses the request host down to a name") unittest {
   assert(hostNameOf("127.0.0.1:8080") == "127.0.0.1");
@@ -46,7 +45,7 @@ import setline.util : escapeHtml, isAddressLiteral, isListedAddress, isLoopbackA
   assert(!isLoopbackHostName(""));
 }
 
-@("admin only treats loopback peers with a loopback host as local") unittest {
+@("admin only treats loopback requests with a loopback host as local") unittest {
   // 本机 + 回环 Host：本机来源
   assert(isLoopbackRequestHost("GET /_setline/routes HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n"));
   assert(isLoopbackRequestHost("GET /_setline/routes HTTP/1.1\r\nHost: localhost\r\n\r\n"));
@@ -142,57 +141,9 @@ import setline.util : escapeHtml, isAddressLiteral, isListedAddress, isLoopbackA
     `&lt;tag attr=&quot;x&quot; data-y=&#39;z&#39;&gt;&amp;`);
 }
 
-@("admin normalizes and compares reader addresses") unittest {
-  // 双栈监听上的 IPv4 对端显示成 ::ffff:a.b.c.d，去前缀之后和配置里的写法是同一个地址。
-  assert(normalizeAddressText("  ::FFFF:10.0.1.7 ") == "10.0.1.7");
-  assert(normalizeAddressText("FE80::1") == "fe80::1");
-  assert(normalizeAddressText("::ffff:127.0.0.1") == "127.0.0.1");
-
-  assert(isLoopbackAddress("127.0.0.1"));
-  assert(isLoopbackAddress("::1"));
-  assert(isLoopbackAddress("::ffff:127.0.0.1"));
-  assert(!isLoopbackAddress("192.168.1.10"));
-
-  // 只认字面量：主机名要查 DNS，CIDR 要按位比较，都不能拿来当「谁可以读」。
-  assert(isAddressLiteral("10.0.1.7"));
-  assert(isAddressLiteral("fe80::1"));
-  assert(!isAddressLiteral("10.0.1.7:80"));
-  assert(!isAddressLiteral("10.0.1.0/24"));
-  assert(!isAddressLiteral("app1.internal"));
-  assert(!isAddressLiteral("10.0.1.256"));
-
-  assert(isListedAddress("10.0.1.7", ["10.0.1.7"]));
-  assert(isListedAddress("::ffff:10.0.1.7", ["10.0.1.7"]));
-  assert(!isListedAddress("10.0.1.8", ["10.0.1.7"]));
-  assert(!isListedAddress("10.0.1.7", []));
-}
-
 @("admin allows localhost route updates without credentials") unittest {
   assert(isLocalRouteUpdateAllowed(true));
   assert(!isLocalRouteUpdateAllowed(false));
-}
-
-@("admin gates reads by source: localhost or a listed reader") unittest {
-  // 本机来源放行，远端读方按地址放行，两者都不是才拒绝；读侧没有任何凭据参与判定。
-  assert(isReadAllowed(true, false));
-  assert(isReadAllowed(false, true));
-  assert(isReadAllowed(true, true));
-  assert(!isReadAllowed(false, false));
-}
-
-@("admin publishes the configured peer readers to the read gate") unittest {
-  withStateTestLock({
-    Config config;
-    config.peerReaders = ["10.0.1.7", "fe80::1"];
-    initialize(config);
-    try {
-      // 启动日志和读侧判定都直接读这份快照，所以它必须原样带过去。
-      assert(peerReaders() == ["10.0.1.7", "fe80::1"]);
-    } finally {
-      Config empty;
-      initialize(empty);
-    }
-  });
 }
 
 @("admin extracts query value") unittest {

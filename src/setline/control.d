@@ -27,7 +27,7 @@ import std.string : indexOf, splitLines, strip;
 
 import setline.config : parseHostRoutes;
 import setline.util : toLowerAscii;
-import setline.model : AgentConfig, PeerConfig;
+import setline.model : AgentConfig;
 
 /** 本机控制面配置的缺省位置。 */
 enum defaultControlPath = "/etc/setline/setline.conf";
@@ -45,11 +45,13 @@ enum defaultNginxConfig = "/etc/nginx/nginx.conf";
 /** bashub 的远程连接信息，和 basctl 的 `[remote]` 保持同一形状。 */
 struct RemoteConfig {
   string url;
-  string profile;
+  string project;
+  /** 本机内网 IP，用于向 bashub 查询该机器的 routes；空时由 bashub 按单实例选择。 */
+  string ip;
   string token;
 
   bool complete() const {
-    return url.length > 0 && profile.length > 0 && token.length > 0;
+    return url.length > 0 && project.length > 0 && token.length > 0;
   }
 }
 
@@ -89,7 +91,6 @@ ControlConfig checkControlConfig(string path) {
 ControlConfig parseControlConfig(string text) {
   ControlConfig result;
   string section;
-  JSONValue[string] routeValues;
   foreach (raw; text.splitLines()) {
     auto line = strip(raw);
     if (line.length == 0 || line[0] == '#' || line[0] == ';')
@@ -107,21 +108,14 @@ ControlConfig parseControlConfig(string text) {
     auto value = unquote(line[equals + 1 .. $]);
     if (section == "remote") {
       if (key == "url") result.remote.url = value;
-      else if (key == "profile") result.remote.profile = value;
+      else if (key == "project") result.remote.project = value;
+      else if (key == "ip") result.remote.ip = value.strip;
       else if (key == "token") result.remote.token = value;
     } else if (section == "proxy") {
       if (key == "file") result.proxyPath = value;
     } else if (section == "agent") {
       if (key == "type") result.agent.type = toLowerAscii(value);
       else if (key == "output") result.agent.output = value;
-      else if (key == "peers") result.agent.peers = parseAgentPeers(value);
-    } else if (section == "routes") {
-      enforce(!(key in routeValues), "duplicate [routes] entry for " ~ key);
-      try {
-        routeValues[key] = parseJSON(value);
-      } catch (Exception e) {
-        throw new Exception("invalid [routes] entry for " ~ key ~ ": " ~ e.msg);
-      }
     } else if (section == "apply") {
       if (key == "type") result.apply.type = toLowerAscii(value);
       else if (key == "configs") result.apply.configs = value;
@@ -132,60 +126,12 @@ ControlConfig parseControlConfig(string text) {
       else if (key == "owner") result.apply.owner = value;
     }
   }
-  if (routeValues.length > 0) {
-    try {
-      result.agent.routes = parseHostRoutes(JSONValue(routeValues));
-    } catch (Exception e) {
-      throw new Exception("[routes] " ~ e.msg);
-    }
-  }
   applyDefaults(result);
   validateControlConfig(result);
   return result;
 }
 
-/** 解析 `[agent] peers`：`name=url` 用逗号分隔，空值表示没有 peer。 */
-PeerConfig[] parseAgentPeers(string value) {
-  auto text = strip(value);
-  PeerConfig[] peers;
-  if (text.length == 0)
-    return peers;
-  foreach (raw; text.split(',')) {
-    auto item = strip(raw);
-    enforce(item.length > 0, "[agent] peers contains an empty entry");
-    auto equals = item.indexOf('=');
-    enforce(equals > 0 && equals < item.length - 1,
-      "[agent] peers entries must be name=url: " ~ item);
-    auto name = strip(item[0 .. equals]);
-    auto url = strip(item[equals + 1 .. $]);
-    enforce(name.length > 0, "[agent] peers name must not be empty");
-    enforce(name.indexOf(',') < 0 && name.indexOf(' ') < 0 && name.indexOf('\t') < 0,
-      "[agent] peers name must not contain a comma or whitespace: " ~ name);
-    enforce(url.length > 0, "[agent] peers url must not be empty");
-    enforce(url.indexOf(',') < 0 && url.indexOf(' ') < 0 && url.indexOf('\t') < 0
-        && url.indexOf('?') < 0 && url.indexOf('#') < 0,
-      "[agent] peers url must be a base URL without whitespace, comma, query or fragment: " ~ url);
-    enforce(url.startsWith("http://") || url.startsWith("https://"),
-      "[agent] peers url must start with http:// or https://: " ~ url);
-    peers ~= PeerConfig(name, url);
-  }
-  return peers;
-}
 
-/** 把 peers 渲染回 `[agent] peers` 的值，供 `setline-agent pull` 更新本地配置。 */
-string renderAgentPeers(const PeerConfig[] peers) {
-  auto out_ = appender!string;
-  foreach (i, peer; peers) {
-    enforce(peer.name.length > 0, "[agent] peers name must not be empty");
-    enforce(peer.url.length > 0, "[agent] peers url must not be empty");
-    if (i > 0)
-      out_.put(", ");
-    out_.put(peer.name);
-    out_.put('=');
-    out_.put(peer.url);
-  }
-  return out_.data;
-}
 
 /** 补齐可推导的默认值，让部署方只需要写真正不同的字段。 */
 private void applyDefaults(ref ControlConfig config) {
@@ -225,9 +171,13 @@ void validateControlConfig(const ControlConfig config) {
     enforce(config.remote.url.startsWith("http://") || config.remote.url.startsWith("https://"),
       "remote.url must start with http:// or https://");
   }
-  if (config.remote.profile.length > 0)
-    enforce(validProfileName(config.remote.profile),
-      "remote.profile must be org.name and must not contain path separators");
+  if (config.remote.project.length > 0)
+    enforce(validProjectName(config.remote.project),
+      "remote.project must be org.name and must not contain path separators");
+  if (config.remote.ip.length > 0) {
+    foreach (ch; config.remote.ip)
+      enforce(ch > ' ' && ch != '/' && ch != ':', "remote.ip must be a plain IP address: " ~ config.remote.ip);
+  }
   if (config.remote.token.length > 0)
     enforce(config.remote.token.indexOf('\n') < 0 && config.remote.token.indexOf('\r') < 0,
       "remote.token must not contain a line break");
@@ -251,7 +201,7 @@ void validateControlConfig(const ControlConfig config) {
 /** 下载前要求 `[remote]` 三项齐全。 */
 void validateRemoteConfig(const RemoteConfig remote, string path) {
   enforce(remote.url.length > 0, "No remote.url in " ~ path);
-  enforce(remote.profile.length > 0, "No remote.profile in " ~ path);
+  enforce(remote.project.length > 0, "No remote.project in " ~ path);
   enforce(remote.token.length > 0, "No remote.token in " ~ path);
 }
 
@@ -276,7 +226,9 @@ enum controlConfigTemplate =
   "[remote]\n" ~
   "# Used only by explicit `setline-agent pull`; the interval timer never contacts it.\n" ~
   "url = http://127.0.0.1:8082\n" ~
-  "profile = org.name\n" ~
+  "project = org.name\n" ~
+  "# local IP used to select this machine's routes (optional).\n" ~
+  "#ip = 192.168.1.10\n" ~
   "token = change-me\n" ~
   "\n" ~
   "[proxy]\n" ~
@@ -288,14 +240,6 @@ enum controlConfigTemplate =
   "[agent]\n" ~
   "type = haproxy\n" ~
   "output = /var/lib/setline\n" ~
-  "# Filled by `setline-agent pull`; name=url pairs separated by commas.\n" ~
-  "peers =\n" ~
-  "\n" ~
-  "[routes]\n" ~
-  "# Predefined local routes, same shape as setline.json's host -> prefix -> port(s).\n" ~
-  "# Each value is one JSON object. Backends map to 127.0.0.1:<port>.\n" ~
-  "#local.example.com = {\"/api\": 9001, \"/api/edu\": [9002, 9003]}\n" ~
-  "#* = {\"/\": 9090}\n" ~
   "\n" ~
   "[apply]\n" ~
   "# type, configs, fragmentDir and service are derived from [agent] type when omitted.\n" ~
@@ -325,7 +269,7 @@ private void enforceAbsolute(string path, string field) {
   enforce(path.length > 0 && path[0] == '/', field ~ " must be an absolute path: " ~ path);
 }
 
-private bool validProfileName(string profile) {
+private bool validProjectName(string profile) {
   auto dot = profile.indexOf('.');
   if (dot <= 0 || dot >= profile.length - 1)
     return false;

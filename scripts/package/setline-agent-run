@@ -48,7 +48,7 @@ if [ -z "$agent_type" ]; then
 fi
 
 # Manual --remote performs one manifest check. The timer-driven --interval mode
-# deliberately skips this block, so it only merges peers and local routes.
+# deliberately skips this block, so it only merges local routes.
 force_apply=0
 if [ "$REMOTE" = 1 ]; then
   set +e
@@ -77,7 +77,7 @@ if [ "$REMOTE" = 1 ]; then
   fi
 fi
 
-# The renderer reads remote route tables when peers are configured, so drop to
+# The renderer may write fragments and read staging data, so drop to
 # setline. Rendering is complete when this process returns; no quiet window is
 # needed before validation and reload.
 runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \

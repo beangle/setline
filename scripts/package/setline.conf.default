@@ -6,14 +6,16 @@
 # package upgrades keep the existing file.
 
 [remote]
-# bashub root URL. Do not append /api or the Profile name.
+# bashub root URL. Do not append /api or the Project name.
 # Used only by an explicit `setline-agent pull` (or `setline-agent-run --remote`).
 # The timer-driven setline-agent.service never contacts this URL.
 # The download runs unprivileged, and root installs the verified staging.
 url = http://127.0.0.1:8082
-# Profile qualified name, e.g. openurp.prod.
-profile = org.name
-# Profile.key. Sent as `Authorization: Bearer <profile>:<key>`.
+# Project qualified name, e.g. openurp.prod.
+project = org.name
+# Optional local IP used by bashub to select this machine's routes.
+#ip = 192.168.1.10
+# Project.key. Sent as `Authorization: Bearer <project>:<key>`.
 token = change-me
 
 [proxy]
@@ -27,16 +29,6 @@ token = change-me
 type = haproxy
 # Fragment root. Defaults to /var/lib/setline when type is set.
 output = /var/lib/setline
-# Filled by `setline-agent pull`; name=url pairs separated by commas.
-peers =
-
-[routes]
-# Predefined local routes for rendered fragments. The value shape is identical
-# to setline.json's `routes`: host -> path prefix -> port or port list.
-# Backends always map to 127.0.0.1:<port>. These routes are merged with peer
-# routes; a host + prefix present in both becomes one backend group.
-#local.example.com = {"/api": 9001, "/api/edu": [9002, 9003]}
-#* = {"/": 9090}
 
 [apply]
 # The proxy is selected by [agent] type. The following values are derived from

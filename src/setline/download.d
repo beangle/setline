@@ -31,22 +31,21 @@ import std.digest.sha : sha256Of;
 import core.sys.posix.sys.stat : stat, stat_t;
 import core.sys.posix.unistd : chown, getegid, geteuid;
 
-import setline.control : defaultFragmentRoot, renderAgentPeers;
+import setline.control : defaultFragmentRoot;
+import setline.config : normalizeRouteHost, normalizeRoutePrefix, parsePort;
 import setline.edge : fetchText;
-import setline.model : PeerConfig;
-import setline.peer : peerAddress;
+import setline.model : HostRoutes, Route;
 import setline.util : toLowerAscii;
 
 /** bashub 为 setline 提供的两份机器配置。 */
 enum DownloadKind {
   manifest,
-  peers,
+  routes,
   proxy,
   certificate,
   certificateKey,
 }
 
-enum manifestResourcePeers = "peers";
 enum manifestResourceProxy = "proxy";
 enum manifestResourceCertificate = "certificate";
 enum manifestResourceCertificateKey = "certificate-key";
@@ -54,7 +53,6 @@ enum manifestResourceCertificateKey = "certificate-key";
 /// agent 以非特权用户写入、由 root 原子安装的暂存目录和固定文件名。
 enum remoteStageName = "remote-stage";
 enum stagedControlName = "setline.conf";
-enum stagedPeersName = "peers.json";
 enum stagedProxyName = "proxy.cfg";
 enum stagedCertificateName = "certificate.pem";
 enum stagedCertificateKeyName = "certificate-key.pem";
@@ -67,30 +65,30 @@ struct RemoteManifest {
   string[string] resources;
 }
 
-/** 由 bashub 根地址、Profile 名和配置类型组成下载 URL。
+/** 由 bashub 根地址、Project 名和配置类型组成下载 URL。
 
     `remoteUrl` 与 basctl 的 `[remote] url` 同义，例如 `http://127.0.0.1:8082`；
-    机器配置固定走 `/api/{profile}/config/...`，这里统一补 `/api`，配置文件里不要重复写。
+    机器配置固定走 `/api/{project}/config/...`，这里统一补 `/api`，配置文件里不要重复写。
 */
-string downloadUrl(string remoteUrl, string profile, DownloadKind kind) {
+string downloadUrl(string remoteUrl, string project, DownloadKind kind) {
   auto base = remoteUrl.strip.stripRight("/");
   enforce(base.length > 0, "[remote] url must not be empty");
   enforce(base.startsWith("http://") || base.startsWith("https://"),
     "[remote] url must start with http:// or https://");
   enforce(base.indexOf('?') < 0 && base.indexOf('#') < 0,
     "[remote] url must not contain a query string or fragment");
-  auto name = profile.strip;
-  enforce(name.length > 0, "[remote] profile must not be empty");
+  auto name = project.strip;
+  enforce(name.length > 0, "[remote] project must not be empty");
   enforce(name.indexOf('/') < 0 && name.indexOf(':') < 0 && name.indexOf('?') < 0
       && name.indexOf('#') < 0,
-    "[remote] profile must not contain '/', ':', '?' or '#'");
+    "[remote] project must not contain '/', ':', '?' or '#'");
   string endpoint;
   final switch (kind) {
   case DownloadKind.manifest:
     endpoint = "config/setline-manifest";
     break;
-  case DownloadKind.peers:
-    endpoint = "config/setline-peers";
+  case DownloadKind.routes:
+    endpoint = "config/routes";
     break;
   case DownloadKind.proxy:
     endpoint = "config/proxy";
@@ -102,19 +100,19 @@ string downloadUrl(string remoteUrl, string profile, DownloadKind kind) {
     endpoint = "config/certificate-key";
     break;
   }
-  return base ~ "/api/" ~ name ~ "/" ~ endpoint;
+  return base ~ "/api/bashub/config/" ~ name ~ "/" ~ endpoint["config/".length .. $];
 }
 
 /** 构造 bashub 机器下载使用的 Bearer 值。
 
-    bashub 接受 Profile key 本身，也接受 `<profile>:<key>`；这里优先发送后者，
-    让服务端能同时校验 URL 里的 Profile 与凭证是否绑定。用户显式给出带 Profile 的
-    token 时原样使用，但必须与 `[remote] profile` 一致。
+    bashub 接受 Project key 本身，也接受 `<project>:<key>`；这里优先发送后者，
+    让服务端能同时校验 URL 里的 Project 与凭证是否绑定。用户显式给出带 Profile 的
+    token 时原样使用，但必须与 `[remote] project` 一致。
 */
-string bearerToken(string profile, string token) {
-  auto name = profile.strip;
+string bearerToken(string project, string token) {
+  auto name = project.strip;
   auto value = token.strip;
-  enforce(name.length > 0, "[remote] profile must not be empty");
+  enforce(name.length > 0, "[remote] project must not be empty");
   enforce(value.length > 0, "[remote] token must not be empty");
   enforce(value.indexOf('\r') < 0 && value.indexOf('\n') < 0,
     "[remote] token must not contain a line break");
@@ -122,28 +120,56 @@ string bearerToken(string profile, string token) {
   if (colon < 0)
     return name ~ ":" ~ value;
   enforce(value[0 .. colon] == name,
-    "[remote] token profile does not match [remote] profile: " ~ value[0 .. colon]);
+    "[remote] token project does not match [remote] project: " ~ value[0 .. colon]);
   return value;
 }
 
 /** 下载一份配置。
 
-    默认通过 curl 拉取；`fetcher` 只供单测注入，避免依赖网络。下载 peers 时先校验
+    默认通过 curl 拉取；`fetcher` 只供单测注入，避免依赖网络。下载资源时先校验
     响应结构，防止把错误页或半截响应当成有效配置写出。
 */
-string downloadConfig(string remoteUrl, string profile, string token, DownloadKind kind,
-    string delegate(string url, string[] headers) fetcher = null) {
-  auto url = downloadUrl(remoteUrl, profile, kind);
-  auto headers = ["Authorization: Bearer " ~ bearerToken(profile, token)];
+string downloadConfig(string remoteUrl, string project, string token, DownloadKind kind,
+    string ip = "", string delegate(string url, string[] headers) fetcher = null) {
+  auto url = downloadUrl(remoteUrl, project, kind);
+  if (kind == DownloadKind.routes && ip.length > 0)
+    url ~= "?ip=" ~ ip;
+  auto headers = ["Authorization: Bearer " ~ bearerToken(project, token)];
+  if (ip.length > 0)
+    headers ~= "ip: " ~ ip;
   auto get = fetcher is null ? toDelegate(&fetchText) : fetcher;
   auto text = get(url, headers);
   if (kind == DownloadKind.proxy)
     enforce(text.strip.length > 0, "downloaded config is empty: " ~ url);
   if (kind == DownloadKind.manifest)
     parseRemoteManifest(text);
-  if (kind == DownloadKind.peers)
-    parseDownloadedPeers(text);
   return text;
+}
+
+/** 解析 bashub 的 routes 响应：`{"host":"...","routes":[{"prefix":"/x","port":8080}]}`。 */
+HostRoutes[] parseDownloadedRoutes(string text) {
+  auto root = parseJSON(text);
+  enforce(root.type == JSONType.object, "downloaded routes must be an object");
+  enforce("host" in root.object && root["host"].type == JSONType.string,
+    "downloaded routes must contain host");
+  enforce("routes" in root.object && root["routes"].type == JSONType.array,
+    "downloaded routes must contain routes");
+  HostRoutes group;
+  group.host = normalizeRouteHost(root["host"].str);
+  Route[] routes;
+  foreach (item; root["routes"].array) {
+    enforce(item.type == JSONType.object, "downloaded route must be an object");
+    enforce("prefix" in item.object && item["prefix"].type == JSONType.string,
+      "downloaded route must contain prefix");
+    enforce("port" in item.object && item["port"].type == JSONType.integer,
+      "downloaded route must contain port");
+    Route route;
+    route.prefix = normalizeRoutePrefix(item["prefix"].str);
+    route.ports = [parsePort(item["port"].integer, "route port")];
+    routes ~= route;
+  }
+  group.routes = routes;
+  return [group];
 }
 
 /** 解析并校验远程清单。四个资源必须齐全，未知资源忽略，便于将来加字段。 */
@@ -163,8 +189,8 @@ RemoteManifest parseRemoteManifest(string text) {
   RemoteManifest manifest;
   manifest.schemaVersion = schemaVersion;
   foreach (name, value; res.object) {
-    enforce(name == manifestResourcePeers || name == manifestResourceProxy
-        || name == manifestResourceCertificate || name == manifestResourceCertificateKey,
+    enforce(name == manifestResourceProxy || name == manifestResourceCertificate
+        || name == manifestResourceCertificateKey,
       "downloaded setline manifest has unknown resource: " ~ name);
     enforce(value.type == JSONType.string,
       "downloaded setline manifest resource must be a string: " ~ name);
@@ -173,7 +199,7 @@ RemoteManifest parseRemoteManifest(string text) {
       "downloaded setline manifest resource is not a SHA-256: " ~ name);
     manifest.resources[name] = hash;
   }
-  foreach (name; [manifestResourcePeers, manifestResourceProxy, manifestResourceCertificate,
+  foreach (name; [manifestResourceProxy, manifestResourceCertificate,
       manifestResourceCertificateKey]) {
     enforce(name in manifest.resources, "downloaded setline manifest is missing " ~ name);
   }
@@ -256,21 +282,10 @@ bool installRemoteStage(string stageDir, RemoteInstallTargets targets) {
   }
 
   auto manifest = parseRemoteManifest(readText(manifestPath));
-  auto stagedPeersPath = buildPath(stageDir, stagedPeersName);
-  auto stagedControlPath = buildPath(stageDir, stagedControlName);
   auto stagedProxyPath = buildPath(stageDir, stagedProxyName);
   auto stagedCertPath = buildPath(stageDir, stagedCertificateName);
   auto stagedKeyPath = buildPath(stageDir, stagedCertificateKeyName);
   auto stagedEmptyPath = buildPath(stageDir, stagedCertificateEmptyName);
-
-  auto peersChanged = exists(stagedPeersPath);
-  enforce(peersChanged == exists(stagedControlPath),
-    "staged peers and setline.conf must be installed together");
-  string stagedControl;
-  if (peersChanged) {
-    verifyStagedHash(stagedPeersPath, manifest, manifestResourcePeers);
-    stagedControl = readText(stagedControlPath);
-  }
 
   auto proxyChanged = exists(stagedProxyPath);
   string proxy;
@@ -293,8 +308,6 @@ bool installRemoteStage(string stageDir, RemoteInstallTargets targets) {
     verifyStagedHash(stagedKeyPath, manifest, manifestResourceCertificateKey);
   }
 
-  if (peersChanged)
-    writeDownloaded(targets.controlPath, stagedControl);
   if (proxyChanged)
     writeDownloaded(targets.proxyPath, proxy);
   if (certificateChanged)
@@ -330,48 +343,6 @@ private bool isSha256(string text) {
   return true;
 }
 
-/** 解析 bashub 的 peers 响应：`{"peers":[{"name":"host01","url":"http://..."}]}`。 */
-PeerConfig[] parseDownloadedPeers(string text) {
-  enforce(text.strip.length > 0, "downloaded peers config is empty");
-  auto root = parseJSON(text);
-  enforce(root.type == JSONType.object, "downloaded peers config must be a JSON object");
-  enforce("peers" in root.object, "downloaded peers config must contain peers");
-  auto value = root["peers"];
-  enforce(value.type == JSONType.array, "downloaded peers must be an array");
-
-  PeerConfig[] peers;
-  bool[string] urls;
-  foreach (item; value.array) {
-    enforce(item.type == JSONType.object, "downloaded peer must be an object");
-    foreach (key, _; item.object)
-      enforce(key == "name" || key == "url", "downloaded peer has unknown field: " ~ key);
-    enforce("name" in item.object && item["name"].type == JSONType.string,
-      "downloaded peer.name is required");
-    enforce("url" in item.object && item["url"].type == JSONType.string,
-      "downloaded peer.url is required");
-    PeerConfig peer;
-    peer.name = item["name"].str.strip;
-    peer.url = item["url"].str.strip;
-    enforce(peer.name.length > 0, "downloaded peer.name must not be empty");
-    enforce(peer.name.indexOf(',') < 0 && peer.name.indexOf(' ') < 0
-        && peer.name.indexOf('\t') < 0,
-      "downloaded peer.name must not contain a comma or whitespace: " ~ peer.name);
-    enforce(peer.url.startsWith("http://") || peer.url.startsWith("https://"),
-      "downloaded peer.url must start with http:// or https://: " ~ peer.url);
-    enforce(peer.url.indexOf(',') < 0 && peer.url.indexOf(' ') < 0
-        && peer.url.indexOf('\t') < 0 && peer.url.indexOf('?') < 0
-        && peer.url.indexOf('#') < 0,
-      "downloaded peer.url must be a base URL without whitespace, comma, query or fragment: " ~
-      peer.url);
-    peerAddress(peer);
-    enforce(peer.url !in urls, "downloaded peers contains a duplicate url: " ~ peer.url);
-    urls[peer.url] = true;
-    peers ~= peer;
-  }
-  return peers;
-}
-
-/** 证书目录下的固定文件名。 */
 string certificatePath(string dir, string name) {
   return buildPath(dir, name);
 }
@@ -417,89 +388,6 @@ private string normalizePem(string text) {
     return "";
   result ~= "\n";
   return result;
-}
-
-/** 把下载到的 peers 写回 `setline.conf` 的 `[agent] peers`，其余配置原样保留。 */
-string rewriteAgentPeers(string text, const PeerConfig[] peers) {
-  auto value = renderAgentPeers(peers);
-  auto lines = text.splitLines();
-
-  bool hasAgentSection;
-  bool hasPeersLine;
-  string section;
-  foreach (raw; lines) {
-    auto line = strip(raw);
-    if (line.length == 0 || line[0] == '#' || line[0] == ';')
-      continue;
-    if (line[0] == '[') {
-      auto close = line.indexOf(']');
-      if (close > 0) {
-        section = toLowerAscii(strip(line[1 .. close]));
-        if (section == "agent")
-          hasAgentSection = true;
-      }
-      continue;
-    }
-    if (section != "agent")
-      continue;
-    auto equals = line.indexOf('=');
-    if (equals > 0 && toLowerAscii(strip(line[0 .. equals])) == "peers")
-      hasPeersLine = true;
-  }
-
-  auto out_ = appender!string();
-  section = "";
-  bool inAgent;
-  bool replaced;
-  bool inserted;
-  foreach (raw; lines) {
-    auto line = strip(raw);
-    if (line.length > 0 && line[0] == '[' && line.indexOf(']') > 0) {
-      if (inAgent && !hasPeersLine && !inserted) {
-        out_.put("peers = ");
-        out_.put(value);
-        out_.put('\n');
-        inserted = true;
-      }
-      auto close = line.indexOf(']');
-      section = toLowerAscii(strip(line[1 .. close]));
-      inAgent = section == "agent";
-      out_.put(raw);
-      out_.put('\n');
-      continue;
-    }
-    if (inAgent) {
-      auto equals = line.indexOf('=');
-      if (equals > 0 && toLowerAscii(strip(line[0 .. equals])) == "peers") {
-        if (!replaced) {
-          out_.put("peers = ");
-          out_.put(value);
-          out_.put('\n');
-          replaced = true;
-        }
-        continue;
-      }
-    }
-    out_.put(raw);
-    out_.put('\n');
-  }
-  if (inAgent && !hasPeersLine && !inserted) {
-    out_.put("peers = ");
-    out_.put(value);
-    out_.put('\n');
-  }
-  if (!hasAgentSection) {
-    if (out_.data.length > 0) {
-      if (out_.data[$ - 1] != '\n')
-        out_.put('\n');
-      if (out_.data.length < 2 || out_.data[$ - 2] != '\n')
-        out_.put('\n');
-    }
-    out_.put("[agent]\npeers = ");
-    out_.put(value);
-    out_.put('\n');
-  }
-  return out_.data;
 }
 
 /** 原子写出下载结果；内容未变化时不触碰原文件，返回是否发生写入。 */

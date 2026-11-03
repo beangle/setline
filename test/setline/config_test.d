@@ -133,8 +133,7 @@ import setline.model;
 @("config saves routes while preserving other fields") unittest {
   auto path = "/tmp/setline-config-save-routes-test.json";
   write(path,
-    `{"listen":"127.0.0.1:8080","peerReaders":["10.0.1.7"],` ~
-    `"routes":{"local.example.com":{"/old":9000}}}`);
+    `{"listen":"127.0.0.1:8080","routes":{"local.example.com":{"/old":9000}}}`);
   scope (exit) remove(path);
 
   saveRoutes(path, [
@@ -148,7 +147,6 @@ import setline.model;
   ]);
 
   auto config = loadConfig(path);
-  assert(config.peerReaders == ["10.0.1.7"]);
   assert(config.routes.length == 1);
   assert(config.routes[0].host == "local.example.com");
   assert(config.routes[0].routes[0].prefix == "/api/edu");
@@ -158,7 +156,6 @@ import setline.model;
   // 路径不转义成 `\/api\/edu`。读回来能对上只说明 JSON 合法，证明不了这几点。
   auto text = readText(path);
   assert(text.canFind("\n  \"listen\": \"127.0.0.1:8080\",\n"), text);
-  assert(text.canFind("\n  \"peerReaders\": [\n    \"10.0.1.7\"\n  ],\n"), text);
   assert(text.canFind("\n      \"/api/edu\": [\n        9002,\n        9003\n      ]\n"), text);
   assert(!text.canFind(`\/`), text);
 }
@@ -195,49 +192,6 @@ import setline.model;
   assert(normalizeRequestHost("LOCAL1.EXAMPLE.COM:8080") == "local1.example.com");
   assert(normalizeRequestHost("") == "*");
   assertThrown!Exception(normalizeRouteHost("local1.example.com:8080"));
-}
-
-@("config parses the peer readers allowed to read the route table") unittest {
-  auto path = "/tmp/setline-config-peerreaders-test.json";
-  scope (exit) remove(path);
-
-  write(path, `{"listen":"*:8080","peerReaders":["10.0.1.7"," ::FFFF:10.0.1.8 ","fe80::1"],` ~
-    `"routes":{}}`);
-  auto config = loadConfig(path);
-  // 写法归一化：去空白、转小写、去掉 IPv4-mapped 前缀，之后按文本比较。
-  assert(config.peerReaders == ["10.0.1.7", "10.0.1.8", "fe80::1"]);
-
-  write(path, `{"listen":"*:8080","routes":{}}`);
-  assert(loadConfig(path).peerReaders.length == 0);
-}
-
-@("config rejects unusable peer readers") unittest {
-  auto path = "/tmp/setline-config-peerreaders-bad-test.json";
-  scope (exit) remove(path);
-
-  // 主机名：配置解析会变成一次 DNS 查询，解析出来的地址和 TCP 对端也未必是同一个。
-  write(path, `{"listen":"*:8080","peerReaders":["app1.internal"],"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-
-  // CIDR：要按位比较，规则就不再是「一行地址」。
-  write(path, `{"listen":"*:8080","peerReaders":["10.0.1.0/24"],"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-
-  // 回环：本机来源本来就放行，列上它只会让经本机代理转发的请求也变成读方。
-  write(path, `{"listen":"*:8080","peerReaders":["127.0.0.1"],"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-  write(path, `{"listen":"*:8080","peerReaders":["::1"],"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-
-  write(path, `{"listen":"*:8080","peerReaders":[],"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-  write(path, `{"listen":"*:8080","peerReaders":"10.0.1.7","routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-  write(path, `{"listen":"*:8080","peerReaders":[7000],"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-
-  write(path, `{"listen":"*:8080","peerReaders":["app1.internal","10.0.1.7"],"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
 }
 
 @("config rejects agent parameters in the topology file") unittest {
@@ -335,8 +289,6 @@ import setline.model;
   scope (exit) remove(path);
 
   // 顶层未知键既不报错也不生效；agent 已经从 setline.json 移除并在解析时明确拒绝。
-  write(path, `{"listen":"127.0.0.1:8080","adminToken":"secret","peerReaders":["10.0.1.7"],` ~
-    `"routes":{}}`);
+  write(path, `{"listen":"127.0.0.1:8080","adminToken":"secret","routes":{}}`);
   auto config = loadConfig(path);
-  assert(config.peerReaders == ["10.0.1.7"]);
 }

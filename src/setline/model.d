@@ -70,37 +70,20 @@ struct HealthConfig {
   int healthyThreshold = 1;
 }
 
-/** 一台被聚合的远端 setline 实例。
 
-    agent 读取它的 `GET /_setline/routes` 路由表，把 `url` 里的主机和每条路由自带的
-    本机端口拼成 `<主机>:<port>`，再和其他实例的同前缀路由合并成一份边缘代理配置。
-
-    - `url` 同时决定读端和数据面：`http://10.0.1.10:8080` 表示去 `10.0.1.10:8080` 读
-      路由表，边缘代理回源的目标主机也是 `10.0.1.10`（URL 端口只是管理入口，业务端口
-      由每条路由自带）。因此 `url` 必须带主机，`file://` 这类没有主机的来源不能当 peer。
-    - `name` 只用于日志和报错里称呼这台机器，不参与配置里的后端标识（后端标识由
-      host 分组名加路径前缀决定）；留空就用 `url`。
-    - 这条链路上没有凭据：读方按来源地址放行（见 `Config.peerReaders`），所以
-      peer 配置里只有地址。
-*/
-struct PeerConfig {
-  string name;
-  string url;
-}
 
 /** 边缘代理渲染配置。
 
-    数据来源：`[routes]` 预定义本地路由总是参与；`peers` 再聚合远端 setline 的路由表。
-    两者都没有时写出空片段；交给 setline-agent 渲染，此时必须有 `output`。
+    数据来源：setline-agent 从 bashub 下载的 routes 缓存。没有路由时写出空片段；
+    交给 setline-agent 渲染，此时必须有 `output`。
 
-    `[routes]` 和 `peers` 都只影响 setline-agent 的 render 数据源。常驻的 setline.service
+    常驻的 setline.service
     只读 setline.json，与 agent 互不依赖；周期渲染由包里的 `setline-agent.timer` 驱动，
     进程里不带自己的调度循环——节奏统一由 systemd 管，`systemctl status`/`journalctl`
     里看得见。
 
     曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）
-    与配套的 `agent.workDir`：集中打包发布听起来好用，实际与 `peers` 提供的「从运行中的
-    实例现拉路由表」是两套冗余来源，维护成本翻倍，已一并取消（数据来源的收敛见
+    与配套的 `agent.workDir`：集中打包发布听起来好用，已取消（数据来源的收敛见
     docs/project-constraints.md 的 External Proxy Integration Decision）。
 
     片段固定只出规则和后端定义，**从不写监听段**：`bind` / `listen` 归代理主配置，
@@ -118,15 +101,7 @@ struct AgentConfig {
   */
   string output;
   /** 被聚合的远端 setline 实例。 */
-  PeerConfig[] peers;
-  /** `setline.conf` 的 `[routes]` 预定义路由。
 
-      这些路由和 `setline.json` 的顶层 `routes` 同构（host -> path prefix ->
-      port(s)），但后端固定为 `127.0.0.1`：它们描述这台 agent 所在机器上的
-      本地服务，而不是远端实例。无论是否配置 `peers` 都会参与渲染；同
-      host + prefix 与 peer 路由命中时，两边实例合并。
-  */
-  HostRoutes[] routes;
 }
 
 /** 完整运行配置。
@@ -134,7 +109,7 @@ struct AgentConfig {
     配置描述监听地址、可读来源和路由表。代理行为本身保持固定：按 URL 找路由、连接
     本机后端、透明透传请求和响应，不提供缓存、URL 改写或复杂负载均衡策略。
 
-    setline 不持有任何凭据：管理接口的准入完全由**来源地址**决定（见 {@link peerReaders}），
+    setline 不持有任何凭据：管理接口的准入完全由**来源地址**决定（仅本机），
     与写接口同一条判据。
 */
 struct Config {
@@ -147,23 +122,13 @@ struct Config {
         本机能改路由」是 TCP 层事实，不依赖请求头判定（那是纵深防御，可被代理改写 `Host`
         绕过）。跨机改路由不是需求，真要做也只能先把管理口显式放开。
       - **读**（`GET` 路由表、状态页、`status.json`）同时挂在数据面 `listen` 和管理口上，
-        准入只看来源：本机来源，或地址写在 {@link peerReaders} 里的读方。外界只需要知道
+        准入只看来源：本机来源。外界只需要知道
         业务端口就能读，不必知道管理口在哪。
 
       要把管理口的读放开给同网段的采集机，就显式绑定（例如 `*:8081`）并把那台机器写进
-      {@link peerReaders}；缺省绑回环是因为读已经能从 `listen` 走，管理口不需要暴露在网络上。
+      读取只允许本机来源；管理口缺省绑回环。
   */
   ListenAddress adminListen = ListenAddress("127.0.0.1", defaultAdminPort);
-  /** 允许跨机读取路由表与状态页的来源地址（读写都只看地址，没有凭据）。
-
-      本机来源本来就免凭据（见 `isLocalAdminRequest`），这里写的是**远端读方**的地址，
-      典型场景就是边缘机上的 `setline-agent`：它按 `[agent] peers` 的 url 读各实例的
-      `GET /_setline/routes`，而 peer url 只是地址，不带任何凭据。
-
-      写数值地址（`10.0.1.7`、`fe80::1`），不支持主机名和 CIDR；列出回环地址会报错——
-      本机来源本来就放行，写上去是个空操作，容易让人以为它还有别的含义。
-  */
-  string[] peerReaders;
   int connectTimeoutMillis = 3000;
   /** 单次上游读取的不活动超时；超时后回收连接并在最终响应未开始时返回 504。 */
   int readTimeoutMillis = 15000;

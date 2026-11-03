@@ -37,7 +37,7 @@ import setline.http;
 import setline.model;
 import setline.proxy;
 import setline.state;
-import setline.util : adminPrefix, peerRoutesPath;
+import setline.util : adminPrefix, routesPath;
 
 /** `serve()` 持有的监听句柄，drain 任务要能一次停掉全部监听。 */
 private struct ServerListeners {
@@ -99,7 +99,7 @@ void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
   // 两个监听都绑上了才报地址：先打印、后绑定的话，绑失败时日志会声称一个不存在的监听。
   stdout.writefln("setline listening on http://%s:%s", listenAddress.host, listenAddress.port);
   stdout.writefln("setline admin listening on http://%s:%s", adminAddress.host, adminAddress.port);
-  reportAdminReachability(adminAddress, peerReaders());
+  reportAdminReachability(adminAddress);
   // stdout 在 systemd/重定向下是块缓冲的，不刷就一直留在缓冲区里——而管理口地址只有这行和
   // 状态页 HTML 两个来源，日志晚一步等于没有。
   stdout.flush();
@@ -117,16 +117,8 @@ void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
   runEventLoop();
 }
 
-/** 打印读写两侧的有效准入规则：读按来源地址，写只认本机。
-
-    缺省的 `adminListen` 是回环（`127.0.0.1:8081`），所以这里只在显式放开时才说明管理口
-    的可达范围——它是状态说明，不是故障告警。路由表的跨机读方写在 `peerReaders` 里，启动时
-    打出来是为了排错：名单写错地址的表现是读方拿到 403，而 403 本身看不出名单是什么。
-*/
-private void reportAdminReachability(ListenAddress admin, const(string)[] readers) {
-  if (readers.length > 0) {
-    stdout.writefln("setline peer readers: %s", readers);
-  }
+/** 打印管理口可达范围；路由读只认本机，管理口只用于人工排错。 */
+private void reportAdminReachability(ListenAddress admin) {
   if (isLoopbackHostName(admin.host)) {
     return;
   }
@@ -410,14 +402,14 @@ bool handleRequest(TCPConnection client, UpstreamLease lease) {
 
   auto path = request.path;
 
-  // 数据面 `listen` 上只承接 peer 协议这一个端点（`GET /_setline/routes`）：只认得业务端口
+  // 数据面 `listen` 上只承接本机路由读取这一个端点（`GET /_setline/routes`）：只认得业务端口
   // 的机器读路由表就够了，状态页和 `status.json` 没有跨机消费者，挂在这里只会白白放大暴露面
   // （它们含监听地址、超时、计数器和整张路由表）；写更是只在管理口上。其余 `/_setline/*`
   // ——包括非 GET 的 `/routes`——一律回 404，连路由表都不查（配置校验也不允许路由以
-  // _setline 开头）。来源是否放行由 handleAdmin 判定（本机，或 peerReaders 里的地址），
+  // _setline 开头）。来源是否放行由 handleAdmin 判定（仅本机），
   // 不在此处区分，免得同一个判据出现两份。
   if (path.startsWith(adminPrefix)) {
-    if (request.method == "GET" && path == peerRoutesPath) {
+    if (request.method == "GET" && path == routesPath) {
       string fullRequest;
       if (readAdminRequestBody(client, request, fullRequest)) {
         handleAdmin(client, request.method, request.target, fullRequest);

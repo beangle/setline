@@ -27,15 +27,15 @@ import setline.control :
   ControlConfig, defaultCertificateDir, defaultControlPath, loadControlConfig, renderApplyShell,
   validateRemoteConfig, writeControlConfigTemplate;
 import setline.download : DownloadKind, RemoteManifest, clearRemoteStage, downloadConfig,
-  manifestResourceCertificate, manifestResourceCertificateKey, manifestResourcePeers,
-  manifestResourceProxy, parseDownloadedPeers, parseRemoteManifest, readRemoteManifest,
+  manifestResourceCertificate, manifestResourceCertificateKey,
+  manifestResourceProxy, parseDownloadedRoutes, parseRemoteManifest, readRemoteManifest,
   installRemoteStage, RemoteInstallTargets, remoteStagePath, remoteStatePath, resourceChanged,
-  rewriteAgentPeers, sha256Hex, stagedCertificateEmptyName, stagedCertificateKeyName,
-  stagedCertificateName, stagedControlName, stagedManifestName, stagedPeersName, stagedProxyName,
+  sha256Hex, stagedCertificateEmptyName, stagedCertificateKeyName,
+  stagedCertificateName, stagedManifestName, stagedProxyName,
   writeCertificatePair, writeDownloaded, writeRemoteManifest;
 import setline.mapsync : syncMap;
-import setline.model : AgentConfig;
-import setline.peer : renderAgentSnippets, writeSnippets;
+import setline.model : AgentConfig, HostRoutes;
+import setline.render : renderAgentSnippets, writeSnippets;
 import setline.util : rejectsRootUser, rootRunRefusalMessage;
 
 /** setline-agent 入口：只读取 setline.conf，负责渲染、下载与配置自省。 */
@@ -65,7 +65,6 @@ int main(string[] args) {
 private int runDefault(string[] args) {
   string confPath = defaultControlPath;
   bool agentType;
-  bool agentPeers;
   bool applyConfig;
   bool check;
   bool help;
@@ -73,7 +72,6 @@ private int runDefault(string[] args) {
   auto helpInfo = getopt(args,
     "config", "Path to setline.conf", &confPath,
     "agent-type", "Print [agent] type from setline.conf and exit", &agentType,
-    "agent-peers", "Print [agent] peer count from setline.conf and exit", &agentPeers,
     "apply-config", "Print setline-apply settings as shell assignments and exit", &applyConfig,
     "sync-map", "Sync a HAProxy map file into the running instance via its admin socket",
       &syncMapSocket,
@@ -82,7 +80,7 @@ private int runDefault(string[] args) {
 
   if (help) {
     defaultGetoptPrinter("Usage: setline-agent [--config setline.conf] " ~
-      "[--agent-type] [--agent-peers] [--apply-config] [-c]\n" ~
+      "[--agent-type] [--apply-config] [-c]\n" ~
       "       setline-agent render [--config setline.conf]\n" ~
       "       setline-agent pull [--check [--stage] | --install] [--config setline.conf]\n" ~
       "       setline-agent init [--config setline.conf]\n" ~
@@ -114,10 +112,6 @@ private int runDefault(string[] args) {
     // 让 shell 侧不必自己解析 INI。
     if (agentType) {
       stdout.writefln("%s", control.agent.type);
-      return 0;
-    }
-    if (agentPeers) {
-      stdout.writefln("%s", control.agent.peers.length);
       return 0;
     }
     if (applyConfig) {
@@ -157,7 +151,7 @@ private int runRender(string[] args) {
 
   try {
     auto control = commandControl(confPath);
-    // 渲染会解析 peer 的 HTTP/JSON，不能继承 root。
+    // 渲染会处理远端 JSON/文件，不能继承 root。
     if (rejectsRootUser(geteuid())) {
       stderr.writefln("%s", rootRunRefusalMessage());
       return 2;
@@ -188,9 +182,6 @@ private string fetchVerified(const ControlConfig control, const RemoteManifest m
   final switch (kind) {
   case DownloadKind.manifest:
     throw new Exception("setline manifest cannot be fetched as a resource");
-  case DownloadKind.peers:
-    name = manifestResourcePeers;
-    break;
   case DownloadKind.proxy:
     name = manifestResourceProxy;
     break;
@@ -204,7 +195,7 @@ private string fetchVerified(const ControlConfig control, const RemoteManifest m
   auto expected = manifest.resources.get(name, "");
   if (expected == sha256Hex(""))
     return "";
-  auto text = downloadConfig(control.remote.url, control.remote.profile, control.remote.token, kind);
+  auto text = downloadConfig(control.remote.url, control.remote.project, control.remote.token, kind, control.remote.ip);
   auto actual = sha256Hex(text);
   if (actual != expected)
     throw new Exception("downloaded " ~ name ~ " hash mismatch: expected " ~ expected ~
@@ -214,17 +205,25 @@ private string fetchVerified(const ControlConfig control, const RemoteManifest m
 
 /** 按清单同步远程资源。`changedOnly` 时只下载 SHA-256 与上次成功状态不同的资源。
  *  `stageOnly` 时写入 `remote-stage/`，最终安装由 root 的 `pull --install` 完成。
- *  返回 proxy 主配置或证书是否变化；peers 变化会由正常 render/apply 发现。 */
+ *  返回 proxy 主配置或证书是否变化。 */
 private bool pullRemote(ControlConfig control, string confPath, bool changedOnly, bool stageOnly) {
   if (stageOnly)
     clearRemoteStage(control.agent.output);
-  auto manifest = parseRemoteManifest(downloadConfig(control.remote.url, control.remote.profile,
-      control.remote.token, DownloadKind.manifest));
+  auto manifest = parseRemoteManifest(downloadConfig(control.remote.url, control.remote.project,
+      control.remote.token, DownloadKind.manifest, control.remote.ip));
   auto statePath = remoteStatePath(control.agent.output);
   auto previous = changedOnly ? readRemoteManifest(statePath) : RemoteManifest.init;
+  // routes 是运行事实，不参与代理清单哈希；每次 pull 都刷新，失败保留上次缓存。
+  try {
+    auto routeText = downloadConfig(control.remote.url, control.remote.project,
+        control.remote.token, DownloadKind.routes, control.remote.ip);
+    parseDownloadedRoutes(routeText);
+    writeDownloaded(buildPath(control.agent.output, "routes.json"), routeText);
+  } catch (Exception e) {
+    stderr.writefln("setline-agent: route refresh failed, keeping cache: %s", e.msg);
+  }
 
-  auto peersChanged = !changedOnly
-      || resourceChanged(previous, manifest, manifestResourcePeers);
+
   auto proxyManaged = control.proxyPath.length > 0;
   auto proxyChanged = proxyManaged
       && (!changedOnly || resourceChanged(previous, manifest, manifestResourceProxy));
@@ -234,7 +233,7 @@ private bool pullRemote(ControlConfig control, string confPath, bool changedOnly
       || resourceChanged(previous, manifest, manifestResourceCertificateKey);
   auto pairChanged = certificateChanged || keyChanged;
 
-  if (changedOnly && !peersChanged && !proxyChanged && !pairChanged) {
+  if (changedOnly && !proxyChanged && !pairChanged) {
     if (previous.schemaVersion != manifest.schemaVersion)
       writeRemoteManifest(statePath, manifest);
     return false;
@@ -247,13 +246,10 @@ private bool pullRemote(ControlConfig control, string confPath, bool changedOnly
   if (certificateEmpty != keyEmpty)
     throw new Exception("setline manifest certificate and certificate-key must be both present or both empty");
 
-  string peersText;
   string proxy;
   string cert;
   string key;
   // 先把变化的资源全部取回并验哈希，再触碰磁盘。
-  if (peersChanged)
-    peersText = fetchVerified(control, manifest, DownloadKind.peers);
   if (proxyChanged) {
     proxy = fetchVerified(control, manifest, DownloadKind.proxy);
     if (proxy.length == 0)
@@ -270,12 +266,6 @@ private bool pullRemote(ControlConfig control, string confPath, bool changedOnly
     auto stageDir = remoteStagePath(control.agent.output);
     mkdirRecurse(stageDir);
     setAttributes(stageDir, octal!700);
-    if (peersChanged) {
-      writeDownloaded(buildPath(stageDir, stagedPeersName), peersText);
-      auto peers = parseDownloadedPeers(peersText);
-      auto updatedControl = rewriteAgentPeers(readText(confPath), peers);
-      writeDownloaded(buildPath(stageDir, stagedControlName), updatedControl);
-    }
     if (proxyChanged)
       writeDownloaded(buildPath(stageDir, stagedProxyName), proxy);
     if (pairChanged) {
@@ -291,13 +281,6 @@ private bool pullRemote(ControlConfig control, string confPath, bool changedOnly
     return proxyChanged || pairChanged;
   }
 
-  if (peersChanged) {
-    auto peers = parseDownloadedPeers(peersText);
-    auto updatedControl = rewriteAgentPeers(readText(confPath), peers);
-    auto changed = writeDownloaded(confPath, updatedControl);
-    stdout.writefln("setline-agent updated peers in %s (%s)", confPath,
-      changed ? "updated" : "unchanged");
-  }
   if (proxyChanged) {
     auto changed = writeDownloaded(control.proxyPath, proxy);
     stdout.writefln("setline-agent downloaded proxy config %s (%s)", control.proxyPath,
@@ -312,7 +295,7 @@ private bool pullRemote(ControlConfig control, string confPath, bool changedOnly
   return proxyChanged || pairChanged;
 }
 
-/** `setline-agent pull`：按 `[remote]` 下载 peers、代理主配置和证书。 */
+/** `setline-agent pull`：按 `[remote]` 下载代理主配置和证书。 */
 private int runPull(string[] args) {
   string confPath = defaultControlPath;
   bool check;
@@ -404,5 +387,9 @@ private void renderAgentOnce(AgentConfig agent) {
     stdout.writefln("setline-agent type is empty, nothing to render");
     return;
   }
-  writeSnippets(renderAgentSnippets(agent), agent.output);
+  HostRoutes[] routes;
+  auto routePath = buildPath(agent.output, "routes.json");
+  if (exists(routePath))
+    routes = parseDownloadedRoutes(readText(routePath));
+  writeSnippets(renderAgentSnippets(agent, routes), agent.output);
 }

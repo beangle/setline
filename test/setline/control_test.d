@@ -26,7 +26,7 @@ import setline.control;
     "# full local control plane\n" ~
     "[remote]\n" ~
     "url = https://hub.example.com/base\n" ~
-    "profile = \"openurp.prod\"\n" ~
+    "project = \"openurp.prod\"\n" ~
     "token = secret\n" ~
     "\n" ~
     "[proxy]\n" ~
@@ -35,11 +35,7 @@ import setline.control;
     "[agent]\n" ~
     "type = HAPROXY\n" ~
     "output = /srv/setline/fragments\n" ~
-    "peers = app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080\n" ~
     "\n" ~
-    "[routes]\n" ~
-    "local1.example.com = {\"/api\": 9001, \"/api/edu\": [9002, 9003]}\n" ~
-    "* = {\"/\": 9090}\n" ~
     "\n" ~
     "[apply]\n" ~
     "configs = /etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /srv/setline/fragments\n" ~
@@ -50,20 +46,11 @@ import setline.control;
     "owner = setline:beangle\n");
 
   assert(config.remote.url == "https://hub.example.com/base");
-  assert(config.remote.profile == "openurp.prod");
+  assert(config.remote.project == "openurp.prod");
   assert(config.remote.token == "secret");
   assert(config.proxyPath == "/etc/haproxy/haproxy.cfg");
   assert(config.agent.type == "haproxy");
   assert(config.agent.output == "/srv/setline/fragments");
-  assert(config.agent.peers.length == 2);
-  assert(config.agent.peers[0].name == "app1");
-  assert(config.agent.peers[0].url == "http://10.0.1.10:8080");
-  assert(config.agent.peers[1].name == "app2");
-  assert(config.agent.routes.length == 2);
-  assert(config.agent.routes[0].host == "local1.example.com");
-  assert(config.agent.routes[0].routes[0].prefix == "/api/edu");
-  assert(config.agent.routes[0].routes[0].ports == [9002, 9003]);
-  assert(config.agent.routes[1].host == "*");
   assert(config.apply.type == "haproxy");
   assert(config.apply.configs ==
     "/etc/haproxy/haproxy.cfg /etc/haproxy/conf.d /srv/setline/fragments");
@@ -72,17 +59,6 @@ import setline.control;
   assert(config.apply.quietSeconds == 3);
   assert(config.apply.runtimeDir == "/run/setline");
   assert(config.apply.owner == "setline:beangle");
-}
-
-@("control parses and renders agent peers") unittest {
-  auto config = parseControlConfig("[agent]\npeers = app1=http://10.0.1.10:8080,app2=http://10.0.1.11:8080\n");
-  assert(config.agent.peers.length == 2);
-  assert(renderAgentPeers(config.agent.peers) ==
-    "app1=http://10.0.1.10:8080, app2=http://10.0.1.11:8080");
-
-  auto empty = parseControlConfig("[agent]\npeers =\n");
-  assert(empty.agent.peers.length == 0);
-  assert(renderAgentPeers(empty.agent.peers).length == 0);
 }
 
 @("control derives proxy defaults from the agent type") unittest {
@@ -121,22 +97,6 @@ import setline.control;
   assert(noType.proxyPath.length == 0);
 }
 
-@("control parses predefined routes with the same shape as setline.json") unittest {
-  auto config = parseControlConfig(
-    "[routes]\n" ~
-    "Local.Example.COM = {\"/api/\": 9001}\n" ~
-    "* = {\"/\": [9090, 9091]}\n");
-  assert(config.agent.routes.length == 2);
-  assert(config.agent.routes[0].host == "local.example.com");
-  assert(config.agent.routes[0].routes[0].prefix == "/api");
-  assert(config.agent.routes[0].routes[0].ports == [9001]);
-  assert(config.agent.routes[1].host == "*");
-  assert(config.agent.routes[1].routes[0].ports == [9090, 9091]);
-
-  auto empty = parseControlConfig("[routes]\n");
-  assert(empty.agent.routes.length == 0);
-}
-
 @("control renders apply settings as shell assignments") unittest {
   ControlConfig config;
   config.apply.type = "haproxy";
@@ -165,31 +125,18 @@ import setline.control;
   assertThrown!Exception(parseControlConfig("[apply]\nquietSeconds = -1\n"));
   assertThrown!Exception(parseControlConfig("[apply]\nconfigs = /etc/haproxy bad\n"));
   assertThrown!Exception(parseControlConfig("[remote]\nurl = hub.example.com\n"));
-  assertThrown!Exception(parseControlConfig("[remote]\nprofile = ../bad\n"));
+  assertThrown!Exception(parseControlConfig("[remote]\nproject = ../bad\n"));
   assertThrown!Exception(parseControlConfig("[agent\n"));
   assertThrown!Exception(parseControlConfig("type = haproxy\n"));
-  assertThrown!Exception(parseControlConfig("[agent]\npeers = app1\n"));
-  assertThrown!Exception(parseControlConfig("[agent]\npeers = app1=file:///tmp/routes\n"));
-  assertThrown!Exception(parseControlConfig(
-    "[agent]\npeers = app1=http://10.0.1.10:8080, http://10.0.1.11:8080\n"));
-  assertThrown!Exception(parseControlConfig("[routes]\nlocal.example.com = not-json\n"));
-  assertThrown!Exception(parseControlConfig("[routes]\nlocal.example.com = {\"/api\": 0}\n"));
-  assertThrown!Exception(parseControlConfig("[routes]\nlocal.example.com = []\n"));
-  assertThrown!Exception(parseControlConfig(
-    "[routes]\nlocal.example.com = {\"/api\": 9001}\n" ~
-    "local.example.com = {\"/api\": 9002}\n"));
-  assertThrown!Exception(parseControlConfig(
-    "[routes]\nlocal.example.com = {\"/api\": 9001}\n" ~
-    "Local.Example.COM = {\"/api\": 9002}\n"));
 }
 
 @("control requires a complete remote block before downloads") unittest {
   assertThrown!Exception(validateRemoteConfig(RemoteConfig.init, "setline.conf"));
-  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "", "secret"),
+  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "", "", "secret"),
     "setline.conf"));
-  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", ""),
+  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", "", ""),
     "setline.conf"));
-  validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", "secret"), "setline.conf");
+  validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", "", "secret"), "setline.conf");
 }
 
 @("control init writes once and never replaces an existing file") unittest {
