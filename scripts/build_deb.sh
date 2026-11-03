@@ -77,8 +77,6 @@ cp -f "$SETLINE_HOME/CHANGELOG.md" usr/share/doc/setline/CHANGELOG.md
 cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
 cp -f "$SETLINE_HOME/scripts/package/setline-agent-run" usr/lib/setline/setline-agent-run
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
-cp -f "$SETLINE_HOME/scripts/package/setline-agent.service" usr/lib/systemd/system/setline-agent.service
-cp -f "$SETLINE_HOME/scripts/package/setline-agent.timer" usr/lib/systemd/system/setline-agent.timer
 
 # Debian Policy 12.5 要求 /usr/share/doc/<pkg>/copyright，缺失是 lintian 的
 # no-copyright-file 错误，不是可选装饰。
@@ -106,7 +104,7 @@ DEBCOPYRIGHT
 
 chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/setline usr/lib/systemd usr/lib/systemd/system
 chmod 0755 usr/bin/setline usr/bin/setline-agent usr/lib/setline/setline-apply usr/lib/setline/setline-agent-run
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service usr/lib/systemd/system/setline-agent.service usr/lib/systemd/system/setline-agent.timer
+chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service
 
 mkdir -p DEBIAN
 
@@ -161,49 +159,15 @@ chown -R setline:beangle /var/lib/setline /var/log/setline
 chmod 2775 /var/lib/setline /var/log/setline
 chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
 if command -v systemctl >/dev/null 2>&1; then
-  # 旧版把远端检查和周期渲染拆成两个 unit；中间版本还用过模板实例。
-  # 新布局只有 static 的 setline-agent.service，由 timer 调用并做条件 manifest 检查。
-  # 先记录 timer 状态，停掉旧实例和 timer，迁移完再恢复 timer。
-  timer_was_active=0
-  systemctl is-active --quiet setline-agent.timer 2>/dev/null && timer_was_active=1
-  [ "$timer_was_active" = 0 ] || systemctl stop setline-agent.timer 2>/dev/null || true
-  for unit in setline-agent.service setline-agent-interval.service setline-agent@remote.service setline-agent@interval.service; do
-    systemctl stop "$unit" 2>/dev/null || true
-  done
-  for link in /etc/systemd/system/multi-user.target.wants/setline-agent.service /etc/systemd/system/multi-user.target.wants/setline-agent-interval.service /etc/systemd/system/multi-user.target.wants/setline-agent@remote.service /etc/systemd/system/multi-user.target.wants/setline-agent@interval.service; do
-    rm -f "$link"
-  done
-
-  # 旧版把渲染和 apply 拆成两个 timer。升级时清掉它们的 enable 链接；
-  # 如果其中任何一个原本启用，就把启用意图迁移到新的合并 timer。
-  migrated=0
-  was_active=0
-  for unit in setline-render.timer setline-apply.timer; do
-    link="/etc/systemd/system/timers.target.wants/$unit"
-    if [ -L "$link" ]; then
-      migrated=1
-      systemctl is-active --quiet "$unit" && was_active=1
-      systemctl stop "$unit" || true
-      rm -f "$link"
-    fi
-  done
-  if [ "$migrated" = 1 ] && [ -f /usr/lib/systemd/system/setline-agent.timer ]; then
-    systemctl enable setline-agent.timer || true
-    # 旧 timer 原本在跑时，新 timer 也要立刻接上，不能等到下次重启。
-    [ "$was_active" = 0 ] || systemctl start setline-agent.timer || true
-  fi
-  for link in /etc/systemd/system/timers.target.wants/setline-apply@*.timer; do
-    [ -e "$link" ] || continue
-    rm -f "$link"
-  done
-  systemctl daemon-reload || true
-
-  # setline-agent.service 是 static unit，不迁移旧 service 的 enable 链接。
-  # 原本在跑的 timer 继续负责调度；先补跑一轮拓扑渲染，再恢复 timer。
-  if [ "$timer_was_active" = 1 ]; then
-    systemctl start setline-agent.service 2>/dev/null || true
-    systemctl start setline-agent.timer 2>/dev/null || true
-  fi
+  # setline-agent 已改为手工执行：不再安装 service/timer。
+for unit in setline-agent.timer setline-agent.service setline-agent-interval.service setline-agent@remote.service setline-agent@interval.service setline-render.timer setline-apply.timer; do
+  systemctl stop "$unit" 2>/dev/null || true
+  systemctl disable "$unit" 2>/dev/null || true
+done
+for link in /etc/systemd/system/timers.target.wants/setline-agent.timer /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer /etc/systemd/system/multi-user.target.wants/setline-agent@remote.service /etc/systemd/system/multi-user.target.wants/setline-agent@interval.service /etc/systemd/system/multi-user.target.wants/setline-agent.service /etc/systemd/system/multi-user.target.wants/setline-agent-interval.service; do
+  rm -f "$link"
+done
+systemctl daemon-reload 2>/dev/null || true
 fi
 POSTINST
 

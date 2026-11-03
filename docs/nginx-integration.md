@@ -200,8 +200,7 @@ location 的路径**不会**落到 `*`，而是走这个 server 自己的 `root`
 
 ## 校验与热加载
 
-片段落盘后由 root 的 `setline-apply` 负责（`setline-agent.timer` 周期驱动 setline-agent.service，
-自动按
+片段落盘后由 root 的 `setline-apply` 负责（手工执行 `setline-agent-run` 时由 `setline-apply` 自动按
 `[agent] type` 选中 nginx；手工排查时可显式跑 `/usr/lib/setline/setline-apply nginx`）：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；
@@ -214,8 +213,7 @@ location 的路径**不会**落到 `*`，而是走这个 server 自己的 `root`
 6. 任一步失败就把整个片段目录回滚到 last-known-good。
 
 退出码：`1` 片段不合法（已回滚），`3` 接线错误（片段留在磁盘，等修接线），`2` 用法错误。
-**timer 装完不会自动启用**，要 `sudo systemctl enable --now setline-agent.timer`；手工
-执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
+没有 timer，需要刷新时手工执行 `sudo setline-agent-run`；详见 `docs/agent-reload.md`。
 reload 有没有发生（master PID 不变、worker PID 换掉、日志里的 `reconfiguring`）见
 `docs/agent-reload.md` 的「如何确认 reload 真的发生」。
 

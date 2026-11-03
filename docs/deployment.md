@@ -39,8 +39,6 @@ The binary package installs:
 - `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
 - `/usr/lib/setline/setline-agent-run` (root render/apply orchestrator)
 - `/usr/lib/systemd/system/setline.service`
-- `/usr/lib/systemd/system/setline-agent.service` (static timer worker)
-- `/usr/lib/systemd/system/setline-agent.timer`
 - `/etc/setline/setline.conf` and `/etc/setline/setline.json` (created on first install)
 
 `scripts/build_srpm.sh` produces the same package from source on the target
@@ -50,35 +48,27 @@ does not quietly give you a package with fewer files. The generated specs only
 use section names at the start of a line, which is what older `rpmbuild` (the
 rpm 4.11 on CentOS 7) needs.
 
-The packages install the units but never enable them. A machine whose config
-has an `[agent] type` needs
+The packages install `setline.service` but never enable it. A machine whose
+config has an `[agent] type` refreshes and renders manually:
 
 ```bash
-sudo systemctl enable --now setline.service       # listen and proxy (setline.json)
-sudo systemctl enable --now setline-agent.timer   # remote check + periodic render/apply
+sudo setline-agent-run
 ```
 
-otherwise the generated fragment is never rendered, validated or reloaded. How
-to run it by hand, its exit codes and the `[apply]` settings in `setline.conf`
-are in `docs/agent-reload.md`. `setline.service` always remains the resident
-listener; it reads only `setline.json` and is independent of `setline.conf`.
-Every 30s `setline-agent.timer` runs the static `setline-agent.service`, which
-executes `setline-agent render` as the unprivileged `setline` user and then applies
-the result as root. Before that it does a conditional manifest GET; a 304 exits without rendering. `render` uses `<agent.output>/routes.json`.
-Remote configuration is refreshed by the timer via a conditional manifest check, or explicitly with `setline-agent pull`. The static service has no `[Install]` section, so
-enabling `setline-agent.timer` is the only scheduling switch.
+This one command performs the conditional manifest check, downloads changed
+resources, renders fragments and applies them. There is no agent timer and no
+systemd scheduling; run it again whenever configuration or routes should be
+refreshed.
 
-The systemd service runs:
+`setline.service` is independent: it reads only `setline.json` and is enabled
+separately when the data plane is needed:
 
-```text
-/usr/bin/setline -f /etc/setline/setline.json
+```bash
+sudo systemctl enable --now setline.service
 ```
 
-The agent service runs as root but only orchestrates: it drops to the `setline`
-user for `setline-agent render`, then calls `setline-apply --now` as root.
-Manual remote downloads are staged by the unprivileged user; root only installs
-the verified staging. Drop a `/etc/systemd/system/setline-agent.service.d/*.conf`
-with an `ExecStart=` override if `setline.conf` lives elsewhere.
+`setline-agent-run` drops to the `setline` user for downloads and rendering,
+then calls `setline-apply --now` as root. See `docs/agent-reload.md`.
 
 Runtime route updates rewrite `/etc/setline/setline.json`, so package install
 scripts make it writable by the `setline` service user. `setline.conf` stays

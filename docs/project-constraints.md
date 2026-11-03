@@ -91,7 +91,7 @@ These are intentionally out of scope unless the project goal changes:
   is not gated, and neither are the exits it invokes as root
   (`setline-agent --agent-type`, `--agent-peers`, `--sync-map`) or
   `-c` and `--help`.
-- Privileged work belongs to the short-lived static `setline-agent.service`,
+- Privileged work belongs to the short-lived manual `setline-agent-run`,
   the explicit manual sync helper, and the root helper `setline-apply`. They only
   orchestrate: manual sync drops to the `setline` user with `runuser` for the
   remote manifest check and staging download, installs that local staging as
@@ -261,12 +261,10 @@ Nginx fragment, written atomically under the `[agent] output` root directory
 (`<root>/{haproxy,nginx}/setline.{cfg,conf}`), and never merged into the
 proxy's own main config file: the fragment is included (Nginx) or concatenated
 (HAProxy, which has no `include`) by deployment tooling. The process renders
-exactly one round and exits; the cadence is external
-(`setline-agent.timer` in the package), so there is no in-process scheduler and no
-`sync` config. Each interval round runs `setline-agent render` as the `setline` user,
-then applies the result as root through `setline-apply`. The timer does not
-contact bashub. Remote sync is never scheduled by systemd; an operator runs
-`setline-agent pull` or `setline-agent-run --remote` when a refresh is needed.
+exactly one round and exits; there is no timer, no in-process scheduler and no
+`sync` config. An operator runs `setline-agent-run` when a refresh is needed;
+it does the conditional manifest check, runs `setline-agent render` as the
+`setline` user, then applies the result as root through `setline-apply`.
 The resident
 `setline.service` keeps listening and proxying at the same time.
 

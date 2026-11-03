@@ -7,9 +7,8 @@
 
 [remote]
 # bashub root URL. Do not append /api or the Project name.
-# Used only by an explicit `setline-agent pull` (or `setline-agent-run --remote`).
-# The timer-driven setline-agent.service never contacts this URL.
-# The download runs unprivileged, and root installs the verified staging.
+# Used by explicit `setline-agent pull` or one-shot `setline-agent-run`.
+# The download runs unprivileged; root installs the verified staging.
 url = http://127.0.0.1:8082
 # Project qualified name, e.g. openurp.prod.
 project = org.name

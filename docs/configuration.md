@@ -41,7 +41,7 @@ quietSeconds = 15
 
 | 段 | 键 | 默认值 | 说明 |
 |---|---|---|---|
-| `[remote]` | `url` | 无 | bashub 根地址，不带 `/api` 或 Project；仅显式 `pull` / `setline-agent-run --remote` 使用 |
+| `[remote]` | `url` | 无 | bashub 根地址，不带 `/api` 或 Project；仅显式 `pull` / `setline-agent-run` 使用 |
 | | `project` | 无 | `org.name` |
 | | `token` | 无 | Project.key，发送为 `Bearer <project>:<key>` |
 | `[proxy]` | `file` | 按代理类型推导 | `pull` 写入的代理主配置；仅非标准路径时填写 |
@@ -86,7 +86,7 @@ agent 先读 manifest，按 SHA-256 只下载变化资源到 `remote-stage`；ro
 setline-apply --now --force auto
 ```
 
-`setline-agent-run --remote` 会串起检查、安装、渲染、apply 和退出码 `10` 的处理。
+`setline-agent-run` 会串起条件检查、安装、渲染和 apply。
 
 ## setline.json
 

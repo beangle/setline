@@ -138,14 +138,13 @@ Nginx **fragment** from `<agent.output>/routes.json`, which is refreshed by
 `setline-agent pull`. It never rewrites the proxy's own config and never listens.
 The service and agent are independent: `setline.service` only sees
 `setline.json`; `setline-agent` only sees `setline.conf`.
-`setline-agent.timer` drives the static `setline-agent.service`: `setline-agent render` runs
-as the unprivileged `setline` user and `setline-apply --now` validates and
-reloads as root, hot-syncing a routes-only map change without a reload when a
-HAProxy admin socket is available. Timer rounds perform a conditional manifest GET; a 304 skips download and render.
-Remote configuration is also available explicitly through `setline-agent pull`
-(or the one-shot `setline-agent-run --remote` helper). The download runs as the `setline` user, root only
-verifies the staged hashes and installs the managed files, and a remote outage
-keeps the last successfully installed files.
+`setline-agent` is manual: no timer and no systemd scheduling. Run
+`setline-agent-run` as root when configuration or routes need refreshing. It does
+a conditional manifest GET, downloads changed resources, renders as the
+unprivileged `setline` user, and calls `setline-apply --now` as root. A 304 skips
+download and render. The download runs as the `setline` user; root only verifies
+the staged hashes and installs the managed files. A remote outage keeps the last
+successfully installed files.
 
 Fields and examples: `docs/configuration.md`. Wiring: `docs/haproxy-integration.md`
 and `docs/nginx-integration.md`. Applying and reloading: `docs/agent-reload.md`.
@@ -176,10 +175,9 @@ Run the stage command as the unprivileged `setline` user, then run
 `pull --install` as root. The install phase does not access the network: it
 re-verifies every staged body against the local manifest before replacing any
 managed file. Downloaded bodies are therefore never parsed by the root agent.
-The timer-driven `setline-agent.service` does not call either command. Remote
-refresh is an explicit operator action; no unit triggers it on start, boot or
-reload. `setline-agent-run --remote` wraps the same staged pull and render/apply
-sequence when a one-shot command is more convenient.
+There is no timer: remote refresh is always an explicit operator action.
+`setline-agent-run` wraps the staged pull and render/apply sequence in one
+manual command.
 The command exits `10` when the proxy main config or certificate pair changed,
 so an operator can force one validation/reload with
 `setline-apply --now --force auto` even when the rendered fragments stayed
@@ -197,7 +195,7 @@ files instead of leaving an old key behind.
 - `docs/configuration.md` - every config field, defaults, validation errors, examples.
 - `docs/deployment.md` - where setline sits, the file descriptor budget, systemd units, packaging, shutdown.
 - `docs/haproxy-integration.md`, `docs/nginx-integration.md` - fragment layout and wiring.
-- `docs/agent-reload.md` - rendering, applying and reloading fragments (`setline-agent`, `setline-apply`, the timer, HAProxy map hot-sync).
+- `docs/agent-reload.md` - rendering, applying and reloading fragments (`setline-agent`, `setline-apply`, manual refresh, HAProxy map hot-sync).
 - `docs/runtime-routes-api.md` - runtime route API, credentials, the status page and `status.json`.
 - `docs/transparent-proxy-design.md` - the streaming and connection model, including the WebSocket tunnel.
 - `docs/project-constraints.md` - scope, the privilege model and the constraints behind them.

@@ -51,7 +51,7 @@ the start of a line.
 `/usr/bin/{setline,setline-agent}`; `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`;
 `/usr/share/doc/setline/*.md` (everything under `docs/`, plus the `CHANGELOG.md`);
 `/usr/lib/setline/{setline-agent-run,setline-apply}`;
-`/usr/lib/systemd/system/{setline.service,setline-agent.service,setline-agent.timer}`;
+`/usr/lib/systemd/system/setline.service`;
 `/etc/setline/{setline.conf,setline.json}`; `/var/lib/setline/{haproxy,nginx,apply}/`.
 
 The first install copies `setline.conf.default` and `setline.json.default` to
@@ -67,8 +67,8 @@ neither tracks nor removes either file.
 ## Fragment reload
 
 `setline-agent` writes fragments atomically to `/var/lib/setline/<proxy>/`; the
-root-owned `setline-apply` validates them and reloads (timer-driven, idempotent
-on a content hash, rolls the whole set back on failure). Rationale and
+root-owned `setline-apply` validates them and reloads (manual, idempotent on a content
+hash, rolls the whole set back on failure). Rationale and
 alternatives: `docs/agent-reload.md`.
 
 - Fragments only carry rules and backends; the listener stays with the proxy's
@@ -77,16 +77,12 @@ alternatives: `docs/agent-reload.md`.
   `server {}`. A routes-only change (`*.map`) is hot-synced without a reload;
   adding or removing a backend reloads.
 
-Enable it with one timer - `[agent] type` in `setline.conf` picks the proxy:
-`systemctl enable --now setline-agent.timer`. `setline.service` is independent and
-only reads `setline.json`; enable it separately when the data plane is needed.
-Every 30s the timer runs the static `setline-agent.service`: `setline-agent render`
-as the `setline` user followed by `setline-apply` as root. Peers only change the
-renderer's data source; `[routes]` always participates. The service never
-contacts bashub; remote refresh is an explicit `setline-agent pull`.
-`setline-agent` exits 0 when `[agent] type` is empty, so an idle timer on a
-plain proxy host is normal. Run
-`sudo /usr/lib/setline/setline-apply --now auto` to apply once by hand.
+There is no agent timer or service. Run `sudo setline-agent-run` when
+configuration or routes need refreshing; it does the conditional manifest
+check, downloads changed resources, renders as the `setline` user and applies as
+root. `setline.service` is independent and only reads `setline.json`; enable it
+separately when the data plane is needed. `setline-agent` exits 0 when
+`[agent] type` is empty.
 
 ## End-to-end regression and benchmarks
 

@@ -136,8 +136,6 @@ install -m 0644 CHANGELOG.md %{buildroot}/usr/share/doc/setline/CHANGELOG.md
 install -D -m 0755 scripts/package/setline-apply %{buildroot}/usr/lib/setline/setline-apply
 install -D -m 0755 scripts/package/setline-agent-run %{buildroot}/usr/lib/setline/setline-agent-run
 install -D -m 0644 scripts/package/setline.service %{buildroot}/usr/lib/systemd/system/setline.service
-install -D -m 0644 scripts/package/setline-agent.service %{buildroot}/usr/lib/systemd/system/setline-agent.service
-install -D -m 0644 scripts/package/setline-agent.timer %{buildroot}/usr/lib/systemd/system/setline-agent.timer
 EOF
 
 # 脚本段与 %files 来自共用片段，与 build_rpm.sh 的二进制包完全一致。

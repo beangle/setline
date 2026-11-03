@@ -285,8 +285,7 @@ backend 名是 `b_` 加上标识，标识 = host 分组名 + 路径前缀（`*` 
 
 ## 校验与热加载
 
-片段落盘后由 root 的 `setline-apply` 负责（`setline-agent.timer` 周期驱动 setline-agent.service，
-自动按
+片段落盘后由 root 的 `setline-apply` 负责（手工执行 `setline-agent-run` 时由 `setline-apply` 自动按
 `[agent] type` 选中 haproxy；手工排查时可显式跑 `/usr/lib/setline/setline-apply haproxy`）。它按顺序做：
 
 1. 静默窗口（默认 15s）内没有新写入才动手；
@@ -299,8 +298,7 @@ backend 名是 `b_` 加上标识，标识 = host 分组名 + 路径前缀（`*` 
 
 退出码：`1` 片段本身不合法（已回滚），`3` 接线错误（片段留在磁盘上，等修接线），
 `2` 用法错误。为什么用 `systemctl reload` 而不是 `-sf`/`-x`/`SIGHUP`，见
-`docs/agent-reload.md`。**timer 装完不会自动启用**，要 `sudo systemctl enable --now
-setline-agent.timer`；手工执行、日志与参数覆盖见 `docs/agent-reload.md` 的「启用与使用」。
+`docs/agent-reload.md`。没有 timer，需要刷新时手工执行 `sudo setline-agent-run`；详见 `docs/agent-reload.md`。
 reload 到底有没有发生（master PID 不变、worker PID 换掉、`show proc` 的 reload 计数）
 见 `docs/agent-reload.md` 的「如何确认 reload 真的发生」。
 

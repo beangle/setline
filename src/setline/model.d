@@ -78,9 +78,7 @@ struct HealthConfig {
     交给 setline-agent 渲染，此时必须有 `output`。
 
     常驻的 setline.service
-    只读 setline.json，与 agent 互不依赖；周期渲染由包里的 `setline-agent.timer` 驱动，
-    进程里不带自己的调度循环——节奏统一由 systemd 管，`systemctl status`/`journalctl`
-    里看得见。
+    只读 setline.json，与 agent 互不依赖；agent 由人工执行，不做定时调度。
 
     曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）
     与配套的 `agent.workDir`：集中打包发布听起来好用，已取消（数据来源的收敛见
