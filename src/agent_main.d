@@ -22,6 +22,7 @@ import std.file : exists, mkdirRecurse, readText, setAttributes;
 import std.getopt : GetOptException, defaultGetoptPrinter, getopt;
 import std.path : buildPath;
 import std.stdio : stderr, stdout;
+import std.string : strip;
 
 import setline.control :
   ControlConfig, defaultCertificateDir, defaultControlPath, loadControlConfig, renderApplyShell,
@@ -183,6 +184,8 @@ private string fetchVerified(const ControlConfig control, const RemoteManifest m
   final switch (kind) {
   case DownloadKind.manifest:
     throw new Exception("setline manifest cannot be fetched as a resource");
+  case DownloadKind.routes:
+    throw new Exception("setline routes cannot be fetched as a manifest resource");
   case DownloadKind.proxy:
     name = manifestResourceProxy;
     break;
