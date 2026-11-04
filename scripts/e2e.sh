@@ -173,7 +173,7 @@ CFG
   #
   # 这里直接打 setline 以保证信号只来自它，但不能用 `printf | nc`：管道结束会让 nc 半关闭
   # （FIN），而 setline 把 client 的 FIN 当作「放弃本次请求」
-  # （见 docs/transparent-proxy-design.md 的 Connection Lifetime），
+  # （连接生命周期由 docs/configuration.md 的超时配置控制），
   # 那样测到的就不是截断响应了。用 /dev/tcp 拿一个既能写又能读的 fd，不半关闭。
   exec 3<>"/dev/tcp/127.0.0.1/$SETLINE_PORT"
   printf 'GET /truncate HTTP/1.1\r\nHost: local.test\r\nConnection: close\r\n\r\n' >&3

@@ -196,10 +196,7 @@ files instead of leaving an old key behind.
 - `docs/haproxy-integration.md`, `docs/nginx-integration.md` - fragment layout and wiring.
 - `docs/agent-reload.md` - rendering, applying and reloading fragments (`setline-agent`, `setline-apply`, manual refresh, HAProxy map hot-sync).
 - `docs/runtime-routes-api.md` - runtime route API, credentials, the status page and `status.json`.
-- `docs/transparent-proxy-design.md` - the streaming and connection model, including the WebSocket tunnel.
 - `docs/project-constraints.md` - scope, the privilege model and the constraints behind them.
-- `docs/release-note-0.0.4.md` - the latest release: highlights, upgrade steps and verification.
-- `docs/d-style.md`, `docs/d-coding.md` - D code style and coding rules.
 - `scripts/README.md` - packaging, end-to-end and benchmark harnesses.
 
 ## Notes
