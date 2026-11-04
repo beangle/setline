@@ -23,7 +23,7 @@ import std.conv : to;
 import std.exception : enforce;
 import std.file : readText;
 import std.process : execute;
-import std.string : lastIndexOf, replace, startsWith, strip;
+import std.string : replace, startsWith, strip;
 
 /** 一个可被边缘代理访问的后端实例。 */
 struct BackendInstance {
@@ -65,35 +65,6 @@ string fetchText(string url, string[] headers = []) {
   auto result = execute(args);
   enforce(result.status == 0, "curl failed for " ~ url ~ ": " ~ result.output);
   return result.output;
-}
-
-/** 带 HTTP 状态码的文本读取，用于条件请求（manifest 304）。 */
-struct TextStatus {
-  int status;
-  string body;
-}
-
-TextStatus fetchTextStatus(string url, string[] headers = []) {
-  enforce(url.length > 0, "url must not be empty");
-  if (url.startsWith("file://"))
-    return TextStatus(200, readText(url["file://".length .. $]));
-  if (!url.canFind("://"))
-    return TextStatus(200, readText(url));
-
-  string[] args = ["curl", "-sS", "-w", "\n%{http_code}"];
-  foreach (header; headers) {
-    args ~= "-H";
-    args ~= header;
-  }
-  args ~= url;
-  auto result = execute(args);
-  enforce(result.status == 0, "curl failed for " ~ url ~ ": " ~ result.output);
-  auto text = result.output;
-  auto nl = text.lastIndexOf('\n');
-  enforce(nl >= 0, "curl returned no HTTP status for " ~ url);
-  auto code = text[nl + 1 .. $].strip;
-  auto status = code.length ? code.to!int : 0;
-  return TextStatus(status, text[0 .. nl]);
 }
 
 /** 只生成 HAProxy 的 `backend` 段；规则由 map 文件承载，监听段归主配置。

@@ -22,14 +22,13 @@ import std.file : exists, mkdirRecurse, readText, setAttributes;
 import std.getopt : GetOptException, defaultGetoptPrinter, getopt;
 import std.path : buildPath;
 import std.stdio : stderr, stdout;
-import std.string : strip;
 
 import setline.control :
   ControlConfig, defaultCertificateDir, defaultControlPath, loadControlConfig, renderApplyShell,
   validateRemoteConfig, writeControlConfigTemplate;
 import setline.download : DownloadKind, RemoteManifest, clearRemoteStage, downloadConfig,
-  downloadManifest, manifestResourceCertificate, manifestResourceCertificateKey,
-  manifestResourceProxy, manifestResourceRoutes, parseDownloadedRoutes, parseRemoteManifest,
+  manifestResourceCertificate, manifestResourceCertificateKey,
+  manifestResourceProxy, parseDownloadedRoutes, parseRemoteManifest,
   readRemoteManifest,
   installRemoteStage, RemoteInstallTargets, remoteStagePath, remoteStatePath, resourceChanged,
   sha256Hex, stagedCertificateEmptyName, stagedCertificateKeyName,
@@ -210,40 +209,22 @@ private string fetchVerified(const ControlConfig control, const RemoteManifest m
 /** 按清单同步远程资源。`changedOnly` 时只下载 SHA-256 与上次成功状态不同的资源。
  *  `stageOnly` 时写入 `remote-stage/`，最终安装由 root 的 `pull --install` 完成。
  *  返回 proxy 主配置或证书是否变化。 */
-private bool pullRemote(ControlConfig control, string confPath, bool changedOnly, bool stageOnly,
-    ref bool unchanged) {
+private bool pullRemote(ControlConfig control, string confPath, bool changedOnly, bool stageOnly) {
   if (stageOnly)
     clearRemoteStage(control.agent.output);
-  auto etagPath = buildPath(control.agent.output, "remote.etag");
-  auto knownEtag = changedOnly && exists(etagPath) ? readText(etagPath).strip : "";
-  bool notModified;
-  string etag;
-  auto manifestText = downloadManifest(control.remote.url, control.remote.project,
-      control.remote.token, control.remote.ip, knownEtag, notModified, etag);
-  if (notModified) {
-    unchanged = true;
-    return false;
-  }
-  auto manifest = parseRemoteManifest(manifestText);
+  auto manifest = parseRemoteManifest(downloadConfig(control.remote.url, control.remote.project,
+      control.remote.token, DownloadKind.manifest, control.remote.ip));
   auto statePath = remoteStatePath(control.agent.output);
   auto previous = changedOnly ? readRemoteManifest(statePath) : RemoteManifest.init;
-  // routes 只在 manifest 的 routes 哈希变化时刷新；失败保留上次缓存。
-  auto routesChanged = !changedOnly || resourceChanged(previous, manifest, manifestResourceRoutes);
-  bool routesOk = true;
-  if (routesChanged) {
-    try {
-      auto routeText = downloadConfig(control.remote.url, control.remote.project,
-          control.remote.token, DownloadKind.routes, control.remote.ip);
-      parseDownloadedRoutes(routeText);
-      writeDownloaded(buildPath(control.agent.output, "routes.json"), routeText);
-    } catch (Exception e) {
-      routesOk = false;
-      stderr.writefln("setline-agent: route refresh failed, keeping cache: %s", e.msg);
-    }
+  // 手工刷新总是重新取 routes；失败保留上次缓存。
+  try {
+    auto routeText = downloadConfig(control.remote.url, control.remote.project,
+        control.remote.token, DownloadKind.routes, control.remote.ip);
+    parseDownloadedRoutes(routeText);
+    writeDownloaded(buildPath(control.agent.output, "routes.json"), routeText);
+  } catch (Exception e) {
+    stderr.writefln("setline-agent: route refresh failed, keeping cache: %s", e.msg);
   }
-  // 路由没刷新成功时不要记下新 ETag，否则下一轮 304 会让旧 routes 永久留在缓存里。
-  if (routesOk)
-    writeDownloaded(etagPath, etag ~ "\n");
 
   auto proxyManaged = control.proxyPath.length > 0;
   auto proxyChanged = proxyManaged
@@ -366,10 +347,7 @@ private int runPull(string[] args) {
       return 0;
     }
     validateRemoteConfig(control.remote, confPath);
-    bool unchanged;
-    auto changed = pullRemote(control, confPath, check, stage, unchanged);
-    if (check && unchanged)
-      return 12;
+    auto changed = pullRemote(control, confPath, check, stage);
     // 10 只给 setline-agent-run：proxy 主配置/证书变化不一定改变片段哈希，
     // 需要它给 setline-apply 加 --force，确保验证并 reload 一次。
     return check && changed ? 10 : 0;

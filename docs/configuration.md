@@ -82,7 +82,7 @@ agent 先读 manifest，按 SHA-256 只下载变化资源到 `remote-stage`；ro
 setline-apply --force
 ```
 
-`setline-agent-run` 会串起条件检查、安装、渲染和 apply。
+`setline-agent-run` 会串起 manifest 检查、安装、渲染和 apply。
 
 ## setline.json
 

@@ -29,19 +29,15 @@ sudo setline-agent-run
 `setline-agent-run` 按 `setline.conf` 执行上面的 pull、render、apply，不带
 `--remote`，也不读取额外参数。
 
-## 条件 manifest
+## manifest
 
-`pull --check --stage` 会条件 GET：
+`pull --check --stage` 先 GET manifest，再按哈希下载变化的资源：
 
 ```text
 /api/bashub/config/{project}/setline-manifest
-If-None-Match: <本地 remote.etag>
 ```
 
-- `304`：退出码 `12`，不下载、不 render
-- `200`：按资源 hash 只下载变化项
-
-manifest 只包含 hash，不包含证书正文。证书只在证书 hash 变化时下载。
+manifest 只包含 proxy 和证书的 SHA-256；`routes` 在每次手工刷新时重新下载。
 
 ## 文件
 
@@ -52,7 +48,6 @@ manifest 只包含 hash，不包含证书正文。证书只在证书 hash 变化
 /etc/setline/setline.conf
 /etc/setline/certs/
 <agent.output>/routes.json
-<agent.output>/remote.etag
 <agent.output>/remote.manifest.json
 ```
 

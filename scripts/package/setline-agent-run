@@ -43,8 +43,7 @@ if [ -z "$agent_type" ]; then
   exit 0
 fi
 
-# Conditional manifest check, then refresh changed resources before rendering.
-# A 304 exits without rendering.
+# Read the manifest, refresh changed resources, then render.
 force_apply=0
 set +e
 runuser -u "$RUN_USER" -g "$RUN_GROUP" -- \
@@ -56,10 +55,6 @@ case "$pull_status" in
     ;;
   10)
     force_apply=1
-    ;;
-  12)
-    log "remote manifest unchanged"
-    exit 0
     ;;
   1)
     log "remote configuration check failed; keeping the last installed configuration"

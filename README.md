@@ -139,9 +139,9 @@ The service and agent are independent: `setline.service` only sees
 `setline.json`; `setline-agent` only sees `setline.conf`.
 `setline-agent` is manual: no timer and no systemd scheduling. Run
 `setline-agent-run` as root when configuration or routes need refreshing. It does
-a conditional manifest GET, downloads changed resources, renders as the
-unprivileged `setline` user, and calls `setline-apply` as root. A 304 skips
-download and render. The download runs as the `setline` user; root only verifies
+a manifest GET, downloads changed proxy/certificate resources and the current
+routes, renders as the unprivileged `setline` user, and calls `setline-apply` as
+root. The download runs as the `setline` user; root only verifies
 the staged hashes and installs the managed files. A remote outage keeps the last
 successfully installed files.
 
