@@ -26,6 +26,7 @@ import std.stdio : stderr, stdout;
 import setline.control :
   ControlConfig, defaultCertificateDir, defaultControlPath, loadControlConfig, renderApplyShell,
   validateRemoteConfig, writeControlConfigTemplate;
+import setline.localip : localIpForRemote;
 import setline.download : DownloadKind, RemoteManifest, clearRemoteStage, downloadConfig,
   manifestResourceCertificate, manifestResourceCertificateKey,
   manifestResourceProxy, parseDownloadedRoutes, parseRemoteManifest,
@@ -178,7 +179,7 @@ private ControlConfig commandControl(string confPath) {
 
 /** 下载一份资源并核对清单里的 SHA-256；空 Body 的哈希不产生网络请求。 */
 private string fetchVerified(const ControlConfig control, const RemoteManifest manifest,
-    DownloadKind kind) {
+    DownloadKind kind, string localIp) {
   string name;
   final switch (kind) {
   case DownloadKind.manifest:
@@ -198,7 +199,7 @@ private string fetchVerified(const ControlConfig control, const RemoteManifest m
   auto expected = manifest.resources.get(name, "");
   if (expected == sha256Hex(""))
     return "";
-  auto text = downloadConfig(control.remote.url, control.remote.project, control.remote.token, kind, control.remote.ip);
+  auto text = downloadConfig(control.remote.url, control.remote.project, control.remote.token, kind, localIp);
   auto actual = sha256Hex(text);
   if (actual != expected)
     throw new Exception("downloaded " ~ name ~ " hash mismatch: expected " ~ expected ~
@@ -212,14 +213,15 @@ private string fetchVerified(const ControlConfig control, const RemoteManifest m
 private bool pullRemote(ControlConfig control, string confPath, bool changedOnly, bool stageOnly) {
   if (stageOnly)
     clearRemoteStage(control.agent.output);
+  auto localIp = localIpForRemote(control.remote.url);
   auto manifest = parseRemoteManifest(downloadConfig(control.remote.url, control.remote.project,
-      control.remote.token, DownloadKind.manifest, control.remote.ip));
+      control.remote.token, DownloadKind.manifest, localIp));
   auto statePath = remoteStatePath(control.agent.output);
   auto previous = changedOnly ? readRemoteManifest(statePath) : RemoteManifest.init;
   // 手工刷新总是重新取 routes；失败保留上次缓存。
   try {
     auto routeText = downloadConfig(control.remote.url, control.remote.project,
-        control.remote.token, DownloadKind.routes, control.remote.ip);
+        control.remote.token, DownloadKind.routes, localIp);
     parseDownloadedRoutes(routeText);
     writeDownloaded(buildPath(control.agent.output, "routes.json"), routeText);
   } catch (Exception e) {
@@ -253,14 +255,14 @@ private bool pullRemote(ControlConfig control, string confPath, bool changedOnly
   string key;
   // 先把变化的资源全部取回并验哈希，再触碰磁盘。
   if (proxyChanged) {
-    proxy = fetchVerified(control, manifest, DownloadKind.proxy);
+    proxy = fetchVerified(control, manifest, DownloadKind.proxy, localIp);
     if (proxy.length == 0)
       throw new Exception("downloaded proxy config is empty");
   }
   if (pairChanged) {
     if (!certificateEmpty) {
-      cert = fetchVerified(control, manifest, DownloadKind.certificate);
-      key = fetchVerified(control, manifest, DownloadKind.certificateKey);
+      cert = fetchVerified(control, manifest, DownloadKind.certificate, localIp);
+      key = fetchVerified(control, manifest, DownloadKind.certificateKey, localIp);
     }
   }
 

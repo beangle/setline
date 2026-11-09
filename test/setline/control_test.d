@@ -25,8 +25,7 @@ import setline.control;
   auto config = parseControlConfig(
     "# full local control plane\n" ~
     "[remote]\n" ~
-    "url = https://hub.example.com/base\n" ~
-    "project = \"openurp.prod\"\n" ~
+    "principal = \"openurp.prod@https://hub.example.com/base\"\n" ~
     "token = secret\n" ~
     "\n" ~
     "[proxy]\n" ~
@@ -119,19 +118,21 @@ import setline.control;
   assertThrown!Exception(parseControlConfig("[agent]\ntype = apache\n"));
   assertThrown!Exception(parseControlConfig("[agent]\noutput = relative/path\n"));
   assertThrown!Exception(parseControlConfig("[apply]\nconfigs = /etc/haproxy bad\n"));
-  assertThrown!Exception(parseControlConfig("[remote]\nurl = hub.example.com\n"));
-  assertThrown!Exception(parseControlConfig("[remote]\nproject = ../bad\n"));
+  assertThrown!Exception(parseControlConfig("[remote]\nprincipal = hub.example.com\n"));
+  assertThrown!Exception(parseControlConfig("[remote]\nprincipal = ../bad@https://hub\n"));
+  assertThrown!Exception(parseControlConfig("[remote]\nurl = https://hub\n"));
+  assertThrown!Exception(parseControlConfig("[remote]\nip = 1.2.3.4\n"));
   assertThrown!Exception(parseControlConfig("[agent\n"));
   assertThrown!Exception(parseControlConfig("type = haproxy\n"));
 }
 
 @("control requires a complete remote block before downloads") unittest {
   assertThrown!Exception(validateRemoteConfig(RemoteConfig.init, "setline.conf"));
-  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "", "", "secret"),
+  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "", "secret"),
     "setline.conf"));
-  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", "", ""),
+  assertThrown!Exception(validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", ""),
     "setline.conf"));
-  validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", "", "secret"), "setline.conf");
+  validateRemoteConfig(RemoteConfig("https://hub", "openurp.prod", "secret"), "setline.conf");
 }
 
 @("control init writes once and never replaces an existing file") unittest {

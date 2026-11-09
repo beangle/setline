@@ -42,12 +42,10 @@ enum defaultCertificateDir = "/etc/setline/certs";
 enum defaultHaproxyConfig = "/etc/haproxy/haproxy.cfg";
 enum defaultNginxConfig = "/etc/nginx/nginx.conf";
 
-/** bashub 的远程连接信息，和 basctl 的 `[remote]` 保持同一形状。 */
+/** `[remote] principal` 是 `project@url`，token 是 Project key。 */
 struct RemoteConfig {
   string url;
   string project;
-  /** 本机内网 IP，用于向 bashub 查询该机器的 routes；空时由 bashub 按单实例选择。 */
-  string ip;
   string token;
 
   bool complete() const {
@@ -106,10 +104,16 @@ ControlConfig parseControlConfig(string text) {
     auto key = toLowerAscii(strip(line[0 .. equals]));
     auto value = unquote(line[equals + 1 .. $]);
     if (section == "remote") {
-      if (key == "url") result.remote.url = value;
-      else if (key == "project") result.remote.project = value;
-      else if (key == "ip") result.remote.ip = value.strip;
-      else if (key == "token") result.remote.token = value;
+      if (key == "principal") {
+        auto parsed = parsePrincipal(value);
+        result.remote.project = parsed[0];
+        result.remote.url = parsed[1];
+      } else if (key == "token") {
+        result.remote.token = value;
+      } else {
+        throw new Exception("unknown key in [remote]: " ~ key
+            ~ " (expected principal / token)");
+      }
     } else if (section == "proxy") {
       if (key == "file") result.proxyPath = value;
     } else if (section == "agent") {
@@ -167,15 +171,11 @@ private void applyDefaults(ref ControlConfig config) {
 void validateControlConfig(const ControlConfig config) {
   if (config.remote.url.length > 0) {
     enforce(config.remote.url.startsWith("http://") || config.remote.url.startsWith("https://"),
-      "remote.url must start with http:// or https://");
+      "remote.principal url must start with http:// or https://");
   }
   if (config.remote.project.length > 0)
     enforce(validProjectName(config.remote.project),
-      "remote.project must be org.name and must not contain path separators");
-  if (config.remote.ip.length > 0) {
-    foreach (ch; config.remote.ip)
-      enforce(ch > ' ' && ch != '/' && ch != ':', "remote.ip must be a plain IP address: " ~ config.remote.ip);
-  }
+      "remote.principal project must be org.name");
   if (config.remote.token.length > 0)
     enforce(config.remote.token.indexOf('\n') < 0 && config.remote.token.indexOf('\r') < 0,
       "remote.token must not contain a line break");
@@ -195,11 +195,23 @@ void validateControlConfig(const ControlConfig config) {
   }
 }
 
-/** 下载前要求 `[remote]` 三项齐全。 */
+/** 下载前要求 `[remote]` 的 principal/token 齐全。 */
 void validateRemoteConfig(const RemoteConfig remote, string path) {
-  enforce(remote.url.length > 0, "No remote.url in " ~ path);
-  enforce(remote.project.length > 0, "No remote.project in " ~ path);
+  enforce(remote.url.length > 0 && remote.project.length > 0,
+    "No remote.principal in " ~ path);
   enforce(remote.token.length > 0, "No remote.token in " ~ path);
+}
+
+/** 解析 `project@url`。 */
+private string[2] parsePrincipal(string value) {
+  auto text = value.strip;
+  auto at = text.indexOf('@');
+  enforce(at > 0 && at < text.length - 1, "remote.principal must be project@url");
+  auto project = text[0 .. at].strip;
+  auto url = text[at + 1 .. $].strip;
+  enforce(project.length > 0 && project.indexOf('/') < 0 && project.indexOf(' ') < 0,
+    "remote.principal project must be org.name");
+  return [project, url];
 }
 
 /** 把 `[apply]` 输出成可由 setline-apply `eval` 的 shell 赋值。 */
@@ -221,10 +233,7 @@ enum controlConfigTemplate =
   "# setline-agent control plane. setline.json belongs to the setline service.\n" ~
   "[remote]\n" ~
   "# Used by explicit `setline-agent pull` or one-shot `setline-agent-run`.\n" ~
-  "url = http://127.0.0.1:8082\n" ~
-  "project = org.name\n" ~
-  "# local IP used to select this machine's routes (optional).\n" ~
-  "#ip = 192.168.1.10\n" ~
+  "principal = org.name@http://127.0.0.1:8082\n" ~
   "token = change-me\n" ~
   "\n" ~
   "[proxy]\n" ~

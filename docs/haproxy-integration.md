@@ -130,9 +130,7 @@ setline-agent 从 bashub 下载本机 routes，写入 `<output>/routes.json`；`
 
 ```ini
 [remote]
-url = http://127.0.0.1:8082
-project = openurp.prod
-ip = 192.168.1.10
+principal = openurp.prod@http://127.0.0.1:8082
 token = <Project.key>
 
 [agent]

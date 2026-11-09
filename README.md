@@ -62,8 +62,7 @@ rendering, local backends and proxy reload settings. `setline.json` rejects an
 
 ```ini
 [remote]
-url = http://127.0.0.1:8082
-project = openurp.prod
+principal = openurp.prod@http://127.0.0.1:8082
 token = <Project.key>
 
 [proxy]
@@ -160,7 +159,7 @@ setline-agent pull --check --stage  # unprivileged download into <agent.output>/
 setline-agent pull --install        # root: verify and install the staging directory
 ```
 
-`[remote] url` is the bashub root (do not append `/api`). The downloader sends
+`[remote] principal` is `project@url`; url is the bashub root (do not append `/api`). The downloader sends
 `Authorization: Bearer <project>:<key>` and accepts the key already written in
 that form. Writes are atomic and left untouched when the content is unchanged.
 `setline-agent pull` fetches the machine's routes, the proxy config selected by

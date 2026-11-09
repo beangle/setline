@@ -27,8 +27,7 @@ INI 格式：
 
 ```ini
 [remote]
-url = http://127.0.0.1:8082
-project = openurp.prod
+principal = openurp.prod@http://127.0.0.1:8082
 token = <Project.key>
 
 [agent]
@@ -38,8 +37,7 @@ output = /var/lib/setline
 
 | 段 | 键 | 默认值 | 说明 |
 |---|---|---|---|
-| `[remote]` | `url` | 无 | bashub 根地址，不带 `/api` 或 Project；仅显式 `pull` / `setline-agent-run` 使用 |
-| | `project` | 无 | `org.name` |
+| `[remote]` | `principal` | 无 | `project@url`；project 是 `org.name`，url 是 bashub 根地址，不带 `/api` 或 Project；仅显式 `pull` / `setline-agent-run` 使用 |
 | | `token` | 无 | Project.key，发送为 `Bearer <project>:<key>` |
 | `[proxy]` | `file` | 按代理类型推导 | `pull` 写入的代理主配置；仅非标准路径时填写 |
 | `[agent]` | `type` | 空 | `haproxy` / `nginx`；空表示不渲染 |
@@ -60,8 +58,8 @@ certificate
 certificate-key
 ```
 
-`routes` 由 bashub 根据 basagent 的 `report:bas` 生成，缓存为 `<agent.output>/routes.json`。`[remote] ip` 可选，用于在多台
-agent 中选择本机；不写时要求该 project 只有一台在线 agent。
+`routes` 由 bashub 根据 basagent 的 `report:bas` 生成，缓存为 `<agent.output>/routes.json`。本地出口 IP 由 setline-agent 自动获取，用于在多台
+agent 中选择本机，不再写入配置。
 
 
 证书目录固定为 `/etc/setline/certs`，与 bashub 生成的 nginx/haproxy 配置一致。

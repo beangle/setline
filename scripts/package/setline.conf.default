@@ -6,14 +6,10 @@
 # package upgrades keep the existing file.
 
 [remote]
-# bashub root URL. Do not append /api or the Project name.
+# project@url. Do not append /api or the Project name.
 # Used by explicit `setline-agent pull` or one-shot `setline-agent-run`.
 # The download runs unprivileged; root installs the verified staging.
-url = http://127.0.0.1:8082
-# Project qualified name, e.g. openurp.prod.
-project = org.name
-# Optional local IP used by bashub to select this machine's routes.
-#ip = 192.168.1.10
+principal = org.name@http://127.0.0.1:8082
 # Project.key. Sent as `Authorization: Bearer <project>:<key>`.
 token = change-me
 
