@@ -54,8 +54,8 @@ int main(string[] args) {
       return 0;
     }
 
-    // setline 是面向网络的数据平面，必须保持非 root；特权留给短命的
-    // setline-agent-run / setline-apply。退出码 2 对上 unit 的 RestartPreventExitStatus=2。
+    // setline 是面向网络的数据平面，必须保持非 root。
+    // 退出码 2 对上 unit 的 RestartPreventExitStatus=2。
     if (rejectsRootUser(geteuid())) {
       stderr.writefln("%s", rootRunRefusalMessage());
       return 2;

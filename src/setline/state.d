@@ -287,8 +287,8 @@ bool hasRoute(string host, string path) {
 
 /** 判断一个端口是否仍然是该 host/path 上可选的健康端口。
 
-    客户端连接亲和会跨请求保留上游连接，但路由表可能在两次请求之间被改掉（管理接口或
-    `--sync-map`），端口也可能被健康检查摘掉，所以复用之前要按当前路由复核一次。
+    客户端连接亲和会跨请求保留上游连接，但路由表可能在两次请求之间被改掉（管理接口），
+    端口也可能被健康检查摘掉，所以复用之前要按当前路由复核一次。
 */
 bool isRoutedPort(string host, string path, ushort port) {
   return selectPortForHost(host, path, delegate bool(ushort candidate) {

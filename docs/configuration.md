@@ -1,86 +1,15 @@
 # 配置文件参考
 
-setline 使用两份互不读取的配置：
-
-| 程序 | 文件 | 职责 | 默认路径 |
-|---|---|---|---|
-| `setline` | `setline.json` | 数据面：监听、超时、运行时路由 | `/etc/setline/setline.json` |
-| `setline-agent` | `setline.conf` | 控制面：远端下载、片段渲染、reload 参数 | `/etc/setline/setline.conf` |
-
-`setline` 不读 `setline.conf`；`setline-agent` 不读 `setline.json`。`setline.json` 中出现
-`agent` 字段会被拒绝。
+setline 只读一份配置：`setline.json`（默认 `/etc/setline/setline.json`）。
+它描述本地数据面：监听地址、超时、健康检查和运行时路由。
 
 ```bash
 setline -f /etc/setline/setline.json
-setline -c -f /etc/setline/setline.json
-
-setline-agent --config /etc/setline/setline.conf
-setline-agent render --config /etc/setline/setline.conf
-setline-agent pull --check --stage --config /etc/setline/setline.conf
-setline-agent -c --config /etc/setline/setline.conf
-setline-agent init --config /etc/setline/setline.conf
+setline -c -f /etc/setline/setline.json     # 只校验配置
 ```
 
-## setline.conf
-
-INI 格式：
-
-```ini
-[remote]
-principal = openurp.prod@http://127.0.0.1:8082
-token = <Project.key>
-
-[agent]
-type = haproxy
-output = /var/lib/setline
-```
-
-| 段 | 键 | 默认值 | 说明 |
-|---|---|---|---|
-| `[remote]` | `principal` | 无 | `project@url`；project 是 `org.name`，url 是 bashub 根地址，不带 `/api` 或 Project；仅显式 `pull` / `setline-agent-run` 使用 |
-| | `token` | 无 | Project.key，发送为 `Bearer <project>:<key>` |
-| `[proxy]` | `file` | 按代理类型推导 | `pull` 写入的代理主配置；仅非标准路径时填写 |
-| `[agent]` | `type` | 空 | `haproxy` / `nginx`；空表示不渲染 |
-| | `output` | `/var/lib/setline` | 片段根目录 |
-| `[apply]` | `type` | 取 `[agent] type` | reload 的代理类型 |
-| | `configs` | 按类型推导 | 代理主配置和片段目录列表 |
-| | `fragmentDir` | `<output>/<type>` | 片段目录 |
-| | `service` | 按类型推导 | `systemctl reload` 的服务名 |
-| | `runtimeDir` | `/run` | 锁文件目录 |
-| | `owner` | `setline:beangle` | 片段目录属主 |
-
-`[apply]` 可省略，标准部署从 `[agent] type` 推导。没有 peers、peerReaders、本地路由配置。`setline-agent` 从 bashub 下载：
-
-```text
-routes
-proxy
-certificate
-certificate-key
-```
-
-`routes` 由 bashub 根据 basagent 的 `report:bas` 生成，缓存为 `<agent.output>/routes.json`。本地出口 IP 由 setline-agent 自动获取，用于在多台
-agent 中选择本机，不再写入配置。
-
-
-证书目录固定为 `/etc/setline/certs`，与 bashub 生成的 nginx/haproxy 配置一致。
-
-### 远端刷新
-
-```bash
-setline-agent pull --check --stage --config /etc/setline/setline.conf
-setline-agent pull --install --config /etc/setline/setline.conf
-```
-
-agent 先读 manifest，按 SHA-256 只下载变化资源到 `remote-stage`；root 安装前再次核对哈希。
-网络失败或安装失败时保留上次成功的文件。
-
-`pull --check` 返回 `10` 表示代理主配置或证书变化，需要：
-
-```bash
-setline-apply --force
-```
-
-`setline-agent-run` 会串起 manifest 检查、安装、渲染和 apply。
+配置不存在时启动会打印提示并使用空路由表，之后可以通过管理接口动态增加路由；
+`-c` 校验则要求文件必须存在。
 
 ## setline.json
 
@@ -125,6 +54,8 @@ setline-apply --force
 | `maxConnections` | `65535` | 并发客户端连接上限 |
 | `healthCheck` | 见上 | 后端 TCP 健康检查 |
 | `routes` | `{}` | host → 路径前缀 → 端口或端口数组 |
+
+未知的顶层键既不报错也不生效。历史版本里的 `agent` 字段不再有含义，新部署不要写。
 
 ### listen
 
@@ -176,9 +107,9 @@ location ^~ /_setline { return 404; }
 ```
 
 - host 小写化；前缀去掉尾部 `/`。
+- host 不能带端口；`*` 是 fallback 命名空间。
 - 前缀不能以 `/_setline` 开头。
-- `*` 是 fallback。
-- 端口必须在本机监听。
+- 端口必须在本机监听，统一映射为 `127.0.0.1:<port>`。
 
 ### healthCheck
 
@@ -195,8 +126,8 @@ TCP connect 到 `127.0.0.1:<port>`，只维护在线状态，不探测 HTTP 路�
 
 | 错误 | 原因 |
 |---|---|
-| `setline.json must not contain agent` | `agent` 只能写进 `setline.conf` |
+| `listen must be port or host:port` | `listen` 写了 `true` / `false` 或非法字符串 |
 | `adminListen must differ from listen` | 两个监听地址冲突 |
 | `route prefix must not start with /_setline` | 管理路径不能作为业务路由前缀 |
-| `control config not found` | `setline.conf` 路径不存在 |
-| `[agent] type is required` | 需要渲染但没有代理类型 |
+| `route host must not include port` | 路由 host 带端口 |
+| `route port must be 1..65535` | 端口越界 |

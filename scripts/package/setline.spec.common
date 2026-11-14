@@ -16,66 +16,33 @@ if ! getent passwd setline >/dev/null 2>&1; then
 else
   usermod -g beangle setline 2>/dev/null || :
 fi
-mkdir -p /var/lib/setline /var/log/setline /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
+mkdir -p /var/lib/setline /var/log/setline
 
 %post
 mkdir -p /etc/setline
 if [ ! -f /etc/setline/setline.json ]; then
   cp -f /usr/share/setline/setline.json.default /etc/setline/setline.json
 fi
-if [ ! -f /etc/setline/setline.conf ]; then
-  cp -f /usr/share/setline/setline.conf.default /etc/setline/setline.conf
-fi
 chown setline:beangle /etc/setline/setline.json
 chmod 0664 /etc/setline/setline.json
-chown root:beangle /etc/setline/setline.conf
-chmod 0640 /etc/setline/setline.conf
 chown setline:beangle /etc/setline
 chmod 2775 /etc/setline
 chown -R setline:beangle /var/lib/setline /var/log/setline
 chmod 2775 /var/lib/setline /var/log/setline
-chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
-# setline-agent 已改为手工执行：不再安装 service/timer。
-# 升级时停掉并移除旧版 timer/service 的 enable 链接。
-for unit in setline-agent.timer setline-agent.service setline-agent-interval.service setline-agent@remote.service setline-agent@interval.service setline-render.timer setline-apply.timer; do
-  systemctl stop "$unit" 2>/dev/null || :
-  systemctl disable "$unit" 2>/dev/null || :
-done
-for link in /etc/systemd/system/timers.target.wants/setline-agent.timer /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer /etc/systemd/system/multi-user.target.wants/setline-agent@remote.service /etc/systemd/system/multi-user.target.wants/setline-agent@interval.service /etc/systemd/system/multi-user.target.wants/setline-agent.service /etc/systemd/system/multi-user.target.wants/setline-agent-interval.service; do
-  rm -f "$link"
-done
-systemctl daemon-reload 2>/dev/null || :
 
 %preun
 if [ "$1" = 0 ]; then
   systemctl stop setline 2>/dev/null || :
   systemctl disable setline 2>/dev/null || :
-  systemctl disable --now setline-agent.timer 2>/dev/null || :
-  # 当前 static service、模板实例与旧版 unit 都要清理。
-  for unit in setline-agent@remote.service setline-agent@interval.service setline-agent.service setline-agent-interval.service; do
-    systemctl stop "$unit" 2>/dev/null || :
-    systemctl disable "$unit" 2>/dev/null || :
-  done
-  # setline-render/setline-apply 和 setline-apply@*.timer 是旧版单元，
-  # 从这里升级上来的机器可能还留着 enable 链接。
-  for unit in /etc/systemd/system/timers.target.wants/setline-agent.timer /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer /etc/systemd/system/multi-user.target.wants/setline-agent@remote.service /etc/systemd/system/multi-user.target.wants/setline-agent@interval.service /etc/systemd/system/multi-user.target.wants/setline-agent.service /etc/systemd/system/multi-user.target.wants/setline-agent-interval.service; do
-    [ -e "$unit" ] || continue
-    rm -f "$unit"
-  done
 fi
 
 %postun
 systemctl daemon-reload 2>/dev/null || :
 
-# /etc/setline/setline.conf and setline.json are created by the post scriptlet
-# and kept out of the file list, so package removal preserves local config.
+# /etc/setline/setline.json is created by the post scriptlet and kept out of the
+# file list, so package removal preserves local config.
 %files
 %attr(0755,root,root) /usr/bin/setline
-%attr(0755,root,root) /usr/bin/setline-agent
 %attr(0644,root,root) /usr/share/setline/setline.json.default
-%attr(0644,root,root) /usr/share/setline/setline.conf.default
-%attr(0644,root,root) /usr/share/setline/haproxy-setline-cfgdir.conf.example
 %attr(0644,root,root) /usr/share/doc/setline/*.md
-%attr(0755,root,root) /usr/lib/setline/setline-apply
-%attr(0755,root,root) /usr/lib/setline/setline-agent-run
 %attr(0644,root,root) /usr/lib/systemd/system/setline.service

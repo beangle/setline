@@ -173,7 +173,7 @@ Config parseConfigFile(string path) {
   if ("listen" in root.object) {
     auto listen = root["listen"];
     enforce(listen.type != JSONType.true_ && listen.type != JSONType.false_,
-      "listen must be port or host:port; setline always listens, rendering belongs to setline-agent");
+      "listen must be port or host:port; setline always listens and proxies");
     config.listen = parseListen(listen);
   }
   if ("adminListen" in root.object) {
@@ -213,8 +213,6 @@ Config parseConfigFile(string path) {
   if ("healthCheck" in root.object) {
     config.healthCheck = parseHealthConfig(root["healthCheck"]);
   }
-  enforce(!("agent" in root.object),
-    "setline.json must not contain agent; put [agent] type/output in setline-agent's setline.conf");
   if ("routes" in root.object) {
     config.routes = parseHostRoutes(root["routes"]);
   }

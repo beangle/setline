@@ -1,233 +1,144 @@
 # Nginx 集成
 
-本文交代 setline agent 生成的 Nginx 片段怎么接到 Nginx 上：生成什么、不生成什么、
-文件布局、一次性接线步骤，以及校验/热加载和排错。
+本文交代怎样让 Nginx 把流量交给 setline：setline 部署在 Nginx 之后，按
+Host + 路径前缀把请求转发到本机后端端口。setline 不生成、不修改、也不 reload
+Nginx 的配置；Nginx 的主配置始终由部署方持有。
 
-> **定位**：setline 永远部署在 haproxy/nginx **之后**，不是用户访问的第一站。推荐形态是
-> nginx 直接回源业务端口、setline 只渲染片段（本文就是这套）；也可以让 setline 作为
-> nginx 的下级代理承接数据面，但那样必须先满足 `docs/project-constraints.md` 的两个前提
-> （`listen` 只绑回环、前置代理拒掉 `/_setline`）。两种形态下 setline 都不面对不可信
-> 客户端。
+> **定位**：setline 永远部署在 haproxy/nginx **之后**，不是用户访问的第一站。
+> 它只承接前置代理转发来的请求，TLS、限流、访问日志、客户端超时都由前置代理负责。
+## 数据面与控制面
 
-## 生成范围：部分生成，不接管主配置
+setline 有两个监听：
 
-setline **只生成片段**，不生成也不改动 `/etc/nginx/nginx.conf`：
+- `listen`：数据面，按请求的 `Host` 和路径前缀在本机端口之间转发；同时提供
+  `GET /_setline/routes` 路由表读取。
+- `adminListen`（缺省 `127.0.0.1:8081`）：状态页、`status.json` 与
+  `PUT` / `DELETE /_setline/routes*` 写接口的唯一入口。
 
-| 生成 | 不生成（始终归主配置） |
-|---|---|
-| `upstream` 段（后端 server 列表） | `events`、`http` 全局块、日志、`gzip`、调优 |
-| `location` 段（含 `proxy_pass` 和 `proxy_set_header`） | TLS 证书/`listen 443 ssl`、`http2`、`ssl_*` |
-| | 整个 `server` 段（含 `listen`/`server_name`）、其它与 setline 无关的 `server`/`location` |
+Nginx 的 `proxy_pass` 应该指向 `listen`（缺省 `127.0.0.1:8080`）；不要指向
+`adminListen`。setline 再按自己的路由表把请求分发到业务端口。
 
-理由：
+## 接线示例
 
-- `listen`、TLS、证书、HSTS 这些是部署方自定义内容，生成器替你决定只会制造冲突；
-- 校验强度不变：`nginx -t` 校验的是**整份**配置（含所有 include），片段模式不降低把关；
-- 真正"全量生成"应该在外层用模板/配置管理渲染 `nginx.conf`，而不是让 setline 覆盖主文件。
-
-## 文件布局
-
-```
-<output>/nginx/setline.conf                 # 只有 upstream，在 http {} 里 include
-<output>/nginx/setline.<host>.conf          # 该 host 的 location，在对应 server {} 里 include
-<output>/nginx/setline.default.conf         # host 为 * 的回退路由，放进默认 server
-```
-
-片段**永远不含 `server` / `listen`**：监听和 `server_name` 归你自己的主配置（曾经有个
-`agent.bind` 开关让片段自带 `server`，已取消）。
-
-`[agent] output` 是**根目录**，`nginx/` 子目录与文件名都由 setline 决定（不开放配置，
-`setline-apply` 的 `[apply] fragmentDir` 与 nginx 的 `include` 按这套固定路径接线）。
-例如 `output=/var/lib/setline` 会写出 `/var/lib/setline/nginx/setline.conf`（upstream）、
-`/var/lib/setline/nginx/setline.app.example.com.conf` 与 `.../setline.default.conf`，
-目录不存在时自动创建。
-
-为什么规则模式必须拆成两个文件：`upstream` 只能出现在 `http` 上下文，`location` 只能出现
-在 `server` 上下文，实测把 `upstream` 放进 `server` 会直接
-`"upstream" directive is not allowed here`。所以"不写 `listen`、由你的 server 持有监听"
-就只能拆开 include。
-
-## 数据面与控制面：nginx 直接回源后端
-
-setline **不在业务流量的路径上**。片段里的 upstream server 写的就是业务端口：
-
-```
-# 单机部署：回源主机固定 127.0.0.1
-upstream app_example_com_api_edu {
-  server 127.0.0.1:9002;
-}
-upstream app_example_com_api_edu {
-  server 10.0.1.10:9002;
-}
-```
-
-upstream 名与 haproxy 的 backend 名是同一个标识：host 分组名加路径前缀（`*` 分组写作
-`default`，根路径 `/` 不占一段），与后端来自本机还是某个 peer 无关。
-
-两个入口职责不同：
-
-- `listen`：数据面，也是 peer 协议（`GET /_setline/routes`）的入口。`curl -H
-  'Host: app.example.com' http://127.0.0.1:8080/<path>` 能直接调试本机解析和转发结果，
-  路由表读也认它；nginx 的 `proxy_pass` 正常情况下**不要**指到这里——白白多一跳，还丢掉
-  nginx 自己的负载均衡与健康检查。
-- `adminListen`（缺省 `127.0.0.1:8081`）：**写**接口的唯一入口，也是状态页和
-  `status.json` 的唯一入口。basctl 用 `PUT` / `DELETE /_setline/routes*` 登记本机路由；
-  它缺省绑回环，所以改路由是纯本机操作。
-
-所以 `listen` 平时绑回环（`"127.0.0.1:8080"`）就够；跨机采集走 `listen` 上的路由表读，
-读接口只允许本机；不需要 peerReaders。
-
-真的要把 setline 当下级代理（客户端 → nginx → setline）时，**server 块必须自己拒掉管理
-路径**：路由表读搭在 `listen` 上，而读只看来源地址——经 nginx 转发的请求来源是回环，
-不拒的话任何能过 nginx 的客户端都能读到路由表。写和状态页不用担心：`PUT` 和
-`status.json` 只挂在管理口上，转发过来也只有 `404`。接线：
+最小形态：Nginx 接收入站请求，只把请求转给 setline。
 
 ```nginx
 server {
-  ...
-  location ^~ /_setline { return 404; }   # 放在其它 location 之前
-  location / { proxy_pass http://127.0.0.1:8080; }
+  listen 80;
+  server_name _;
+
+  # setline 只按 TCP 对端判断「本机」，代理转发来的请求对端是回环。前置代理必须
+  # 自己拒掉管理路径，否则任何能过 Nginx 的客户端都能读路由表。
+  location ^~ /_setline { return 404; }
+
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Connection "";
+  }
 }
+
+# WebSocket 与长连接：按业务路径单独放宽读超时
 ```
 
-`^~` 让这条前缀匹配优先于正则 location，被挡的请求连 setline 都不会连到。要放采集机进来
-就把这条换成按源地址限制（`allow 10.0.1.0/24; deny all;`），而不是整条放行；也可以把
-`location` 收成精确匹配（`location = /_setline/routes`），只放采集机真正要用的那一个端点。
-
-读写分挂在两个监听上（`adminListen` 缺省 `127.0.0.1:8081`，见 `docs/configuration.md`
-的「adminListen」一节）：nginx 的 `proxy_pass` 只该指向 `listen`，写请求留在本机。
-
-落盘后一眼自检：
-
-```bash
-grep -n '^  server ' /var/lib/setline/nginx/setline.conf
-```
-
-每行都应是 `127.0.0.1:<业务端口>`。出现
-`<某主机>:8080` 就是配错了，8080 是 setline 的管理端口，不是业务端口。
-
-## setline-agent 配置
-
-setline-agent 从 bashub 下载本机 routes，写入 `<output>/routes.json`；`render` 只读
-这个缓存，不再从 `setline.conf [routes]` 或其它 setline 取路由。
-
-```ini
-[remote]
-principal = openurp.prod@http://127.0.0.1:8082
-token = <Project.key>
-
-[agent]
-type = nginx
-output = /var/lib/setline
-```
-
-`routes.json` 由 `setline-agent pull` 更新，例如：
+对应的 `setline.json`：
 
 ```json
 {
-  "host": "app.example.com",
-  "routes": [
-    { "prefix": "/api/edu", "port": 9002 },
-    { "prefix": "/api/edu", "port": 9003 }
-  ]
+  "listen": "127.0.0.1:8080",
+  "adminListen": "127.0.0.1:8081",
+  "routes": {
+    "app.example.com": {
+      "/api/edu": [9002, 9003],
+      "/api": 9001
+    },
+    "*": {
+      "/": 9090
+    }
+  }
 }
 ```
 
-同一个 host + 前缀的多个端口会合并成同一个 backend/upstream，回源固定
-`127.0.0.1:<port>`。不需要 `setline.json`，也不需要启动 `setline.service`。
+- setline 从请求 `Host` 头取 host（去端口、转小写），再在该 host 下按最长路径前缀
+  匹配；`*` 是没有精确命中时的 fallback。
+- 每个端口都固定映射到 `127.0.0.1:<port>`，setline 只代理本机后端。
+- `proxy_set_header Host $host;` 保证 setline 拿到原始主机名（`$host` 已去掉端口）；
+  不要改写成 setline 的监听地址，否则 host 路由会全部落到 `*`。
+- `proxy_http_version 1.1` 让 Nginx 用 HTTP/1.1 连 setline；setline 只支持 HTTP/1.x。
+- `proxy_set_header Connection "";` 避免把客户端的 `Connection` 头原样传给 setline；
+  setline 自己会处理 framing 和 keep-alive。
 
-## 接线（一次性）
+也可以让 Nginx 只把部分路径交给 setline，其余路径直接回源：
 
-### 1. 找到主配置
+```nginx
+server {
+  listen 80;
+  server_name app.example.com;
 
-nginx 的 include 要加进**服务实际加载的那个**配置文件，先确认是哪个：
+  location ^~ /_setline { return 404; }
+
+  location /api/ {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Connection "";
+  }
+
+  location / {
+    proxy_pass http://127.0.0.1:9001;
+  }
+}
+```
+
+## 管理路径必须由前置代理拒绝
+
+`GET /_setline/routes` 同时挂在 `listen` 和 `adminListen` 上，读准入只看来源地址。
+经本机 Nginx 转发的请求来源就是 `127.0.0.1`，所以前置代理不拒绝的话，任何能过
+Nginx 的客户端都能读到路由表：
+
+```nginx
+location ^~ /_setline { return 404; }
+```
+
+`^~` 让这条前缀匹配优先于正则 location，被挡的请求连 setline 都不会连到。要放采集机
+进来就把这条换成按源地址限制（`allow 10.0.1.0/24; deny all;`），而不是整条放行；
+也可以把 `location` 收成精确匹配（`location = /_setline/routes`），只放采集机真正要
+用的那一个端点。
+
+写接口和状态页只挂在 `adminListen` 上，经 Nginx 转发过来也只有 `404`。
+
+## 校验与 reload
+
+Nginx 的配置由部署方维护，setline 不参与。改完配置后照常：
 
 ```bash
-systemctl cat nginx | grep -E 'ExecStart|ExecReload'   # 单元有没有用 -c 指定路径
-nginx -V 2>&1 | tr ' ' '\n' | grep -- --conf-path=     # 编译进去的默认路径
+nginx -t -c /etc/nginx/nginx.conf    # 需要能读到实际加载的全部 include
+systemctl reload nginx
 ```
 
-多数发行版不带 `-c`，用编译进去的默认值（通常是 `/etc/nginx/nginx.conf`，也就是
-`setline.conf` 里 `[apply] configs` 的默认值）。单元自己指定了 `-c` 时以单元为准，
-`[apply] configs` 也要跟着改（见 `docs/agent-reload.md` 的「启用与使用」）。
-
-### 2. 加 include
-
-在它的 `http {}` 里：
-
-```nginx
-http {
-  # upstream 定义
-  include /var/lib/setline/nginx/setline.conf;
-
-  # 每个 vhost 里 include 自己那份 location
-  server {
-    listen 443 ssl;
-    server_name app.example.com;          # listen/TLS 都由你决定
-    include /var/lib/setline/nginx/setline.app.example.com.conf;
-  }
-
-  # * 回退路由放进默认 server
-  server {
-    listen 443 ssl default_server;
-    server_name _;
-    include /var/lib/setline/nginx/setline.default.conf;
-  }
-}
-```
-
-不要用 `include /var/lib/setline/nginx/*.conf;` 这种通配：规则模式下 location 文件也会被
-匹配到，在 `http` 上下文里 include 一个含 `location` 的文件会直接加载失败。按文件名
-include，和上面示例一致。
-
-`*` 回退在 nginx 里是 **server 级**的：nginx 只把「Host 没匹配上任何 `server_name`」的
-请求交给默认 server，所以在有 `server_name app.example.com` 的 vhost 里，该 host 下没命中
-location 的路径**不会**落到 `*`，而是走这个 server 自己的 `root` / `location /`（通常
-404）。要与 haproxy 和 setline 自己匹配时一致（精确 host 没有该 path 的 location 才回退
-`*`），把 `setline.default.conf` **也 include 进每个 vhost 的 server 块**——location 之间
-按最长前缀匹配，`/api` 仍然优先于 `/`：
-
-```nginx
-  server {
-    listen 443 ssl;
-    server_name app.example.com;
-    include /var/lib/setline/nginx/setline.app.example.com.conf;
-    include /var/lib/setline/nginx/setline.default.conf;   # 该 host 未命中的路径回退到 *
-  }
-```
-
-## 校验与热加载
-
-片段落盘后由 root 的 `setline-apply` 负责（手工执行 `setline-agent-run` 时由 `setline-apply` 自动按
-`[agent] type` 选中 nginx；手工排查时可直接执行 `/usr/lib/setline/setline-apply`）：
-
-1. 静默窗口（默认 15s）内没有新写入才动手；
-2. 片段目录整体内容哈希没变就直接退出（幂等）；
-3. `nginx -t -c <主配置>` 校验（**必须 root**：非 root 会因打不开
-   `/run/nginx.pid`、`/var/lib/nginx/tmp` 直接 permission denied）；
-4. **接线检查**：用 `nginx -T` 的输出了解实际加载了哪些文件，片段目录里每个文件都必须
-   出现，否则说明有文件没被 include；
-5. `systemctl reload nginx`；
-6. 任一步失败就把整个片段目录回滚到 last-known-good。
-
-退出码：`1` 片段不合法（已回滚），`3` 接线错误（片段留在磁盘，等修接线），`2` 用法错误。
-没有 timer，需要刷新时手工执行 `sudo setline-agent-run`；详见 `docs/agent-reload.md`。
-reload 有没有发生（master PID 不变、worker PID 换掉、日志里的 `reconfiguring`）见
-`docs/agent-reload.md` 的「如何确认 reload 真的发生」。
+`nginx -t` 校验的是整份配置；接线错误会在这里报出来。WebSocket 路径需要单独放宽
+`proxy_read_timeout` 并显式转发 `Upgrade` / `Connection` 头，这部分由业务 server
+决定，setline 只透传升级后的连接。
 
 ## 权限
 
-- `setline-agent render` 以 `setline` 用户运行，只写 `/var/lib/setline/nginx/`，不碰
-  `/etc/nginx`；常驻 `setline` 只负责数据面；
-- `setline-apply` 以 root 运行；nginx 的 reload 与 `nginx -t` 都需要 root；
-- 片段目录保持 `0755`、文件 `0644`，nginx worker（非 root）能读即可。
+- 常驻 `setline` 以 `setline` 用户运行（`setline.service` 的 `User=setline`），
+  只负责数据面；
+- Nginx 的 master 以 root 启动后降权，连接 `127.0.0.1:8080` 不需要额外权限；
+- setline 不以 root 运行是硬性要求，见 `docs/project-constraints.md` 的
+  Privilege Model。需要绑定 1024 以下端口时用
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE`。
 
 ## 排错
 
 | 现象 | 原因 |
 |---|---|
-| `wiring error: ... does not include <file>` | 主配置漏了某个 include（规则模式最容易漏 location 文件） |
-| `nginx: [emerg] "upstream" directive is not allowed here` | 在 `server`/`include` 里引入了 upstream 文件，或用了 `*.conf` 通配把 location 文件 include 到了 `http` |
-| `nginx -t` 报 `permission denied` | 用非 root 跑了校验；交给 `setline-apply`（root） |
-| 请求落到别的 vhost | 有多个 `server` 抢同一个 `server_name` + 端口：检查主配置里的 `default_server` 与 `server_name` |
-| 改了路由但流量没变 | 片段没写出（agent 未同步）、静默窗口未过，或有片段文件没被 include |
+| Nginx 返回 `502`，setline 日志无请求 | `proxy_pass` 没连上 `127.0.0.1:8080`：检查 setline 是否启动、`listen` 地址是否一致 |
+| 所有请求走成 `*` 路由 | `Host` 头被改写，或 setline 的 `routes` 里没有对应 host |
+| 请求命中了错误的 host | 检查 `proxy_set_header Host`；`$host` 是去端口后的原始主机名 |
+| 能读到 `/_setline/routes` | 前置代理漏了 `location ^~ /_setline { return 404; }` |
+| `PUT /_setline/routes` 经 Nginx 返回 `404` | 正常：写接口只挂在 `adminListen` 上 |
+| `PUT /_setline/routes` 直连管理口却被拒 | 写要求回环 TCP 对端 **且** Host 是回环名；用 `127.0.0.1` / `localhost` 访问 |
+| WebSocket 升级失败 | 业务 server 没转发 `Upgrade` / `Connection`，或 `proxy_read_timeout` 太短 |
+| 响应被缓冲、流式输出延迟 | 检查 `proxy_buffering`；setline 本身不缓存，只做流式透传 |

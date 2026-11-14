@@ -69,42 +69,9 @@ struct HealthConfig {
   int unhealthyThreshold = 2;
   int healthyThreshold = 1;
 }
-
-
-
-/** 边缘代理渲染配置。
-
-    数据来源：setline-agent 从 bashub 下载的 routes 缓存。没有路由时写出空片段；
-    交给 setline-agent 渲染，此时必须有 `output`。
-
-    常驻的 setline.service
-    只读 setline.json，与 agent 互不依赖；agent 由人工执行，不做定时调度。
-
-    曾经还有一种 `agent.remote`（下载 registry manifest / bundle 再渲染 `backends.json`）
-    与配套的 `agent.workDir`：集中打包发布听起来好用，已取消（数据来源的收敛见
-    docs/project-constraints.md 的 External Proxy Integration Decision）。
-
-    片段固定只出规则和后端定义，**从不写监听段**：`bind` / `listen` 归代理主配置，
-    setline-agent 不去碰别人持有的监听（曾经有个 `agent.bind` 开关，已取消，见
-    docs/configuration.md 的 agent 一节）。
-*/
-struct AgentConfig {
-  string type;
-  /** 生成片段的落盘**根目录**；为空时写到标准输出。
-
-      目录名与文件名都由 setline-agent 决定（见 `layoutSnippets`）：按 `type` 落到
-      `<output>/haproxy/` 或 `<output>/nginx/`，文件名固定为 `setline.cfg`
-      （haproxy）/ `setline.conf`（nginx），规则模式再派生 `.map` 或按 host 分文件。
-      运维只负责给一个可写目录，不开放文件粒度配置。
-  */
-  string output;
-  /** 被聚合的远端 setline 实例。 */
-
-}
-
 /** 完整运行配置。
 
-    配置描述监听地址、可读来源和路由表。代理行为本身保持固定：按 URL 找路由、连接
+    配置描述监听地址、超时、健康检查和路由表。代理行为本身保持固定：按 URL 找路由、连接
     本机后端、透明透传请求和响应，不提供缓存、URL 改写或复杂负载均衡策略。
 
     setline 不持有任何凭据：管理接口的准入完全由**来源地址**决定（仅本机），
@@ -123,8 +90,7 @@ struct Config {
         准入只看来源：本机来源。外界只需要知道
         业务端口就能读，不必知道管理口在哪。
 
-      要把管理口的读放开给同网段的采集机，就显式绑定（例如 `*:8081`）并把那台机器写进
-      读取只允许本机来源；管理口缺省绑回环。
+      管理口缺省绑回环；读只允许本机来源，不是可配置的读方名单。
   */
   ListenAddress adminListen = ListenAddress("127.0.0.1", defaultAdminPort);
   int connectTimeoutMillis = 3000;

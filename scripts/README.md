@@ -48,41 +48,22 @@ the start of a line.
 
 ## Install layout
 
-`/usr/bin/{setline,setline-agent}`; `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`;
+`/usr/bin/setline`; `/usr/share/setline/setline.json.default`;
 `/usr/share/doc/setline/*.md` (everything under `docs/`, plus the `CHANGELOG.md`);
-`/usr/lib/setline/{setline-agent-run,setline-apply}`;
 `/usr/lib/systemd/system/setline.service`;
-`/etc/setline/{setline.conf,setline.json}`; `/var/lib/setline/{haproxy,nginx,apply}/`.
+`/etc/setline/setline.json`; `/var/lib/setline/`, `/var/log/setline/`.
 
-The first install copies `setline.conf.default` and `setline.json.default` to
-`/etc/setline/` and never overwrites either on upgrade. Runtime route updates
-write `setline.json`, so it is owned by `setline:beangle` and group-writable.
-`setline.conf` holds the Profile key and stays `root:beangle 0640`. The package
-neither tracks nor removes either file.
+The first install copies `setline.json.default` to `/etc/setline/` and never
+overwrites it on upgrade. Runtime route updates write `setline.json`, so it is
+owned by `setline:beangle` and group-writable. The package neither tracks nor
+removes it.
 
-> **Never add `/etc/setline/setline.conf` or `setline.json` to `%files`/`conffiles`,
-> and never `rm` them in pre/post scripts.** They are user data (the Profile key and
-> runtime routes); uninstall, reinstall and upgrade must leave both files untouched.
+> **Never add `/etc/setline/setline.json` to `%files`/`conffiles`, and never `rm`
+> it in pre/post scripts.** It is user data (runtime routes); uninstall,
+> reinstall and upgrade must leave it untouched.
 
-## Fragment reload
-
-`setline-agent` writes fragments atomically to `/var/lib/setline/<proxy>/`; the
-root-owned `setline-apply` validates them and reloads (manual, idempotent on a content
-hash, rolls the whole set back on failure). Rationale and
-alternatives: `docs/agent-reload.md`.
-
-- Fragments only carry rules and backends; the listener stays with the proxy's
-  main config. HAProxy needs the four `map_beg()` lines in its frontend; nginx
-  needs the upstream include in `http {}` and the per-host locations in each
-  `server {}`. A routes-only change (`*.map`) is hot-synced without a reload;
-  adding or removing a backend reloads.
-
-There is no agent timer or service. Run `sudo setline-agent-run` when
-configuration or routes need refreshing; it does the conditional manifest
-check, downloads changed resources, renders as the `setline` user and applies as
-root. `setline.service` is independent and only reads `setline.json`; enable it
-separately when the data plane is needed. `setline-agent` exits 0 when
-`[agent] type` is empty.
+Remote proxy configuration (including certificates and downloaded bundles) is
+owned by `basctl proxy`; setline only runs the local proxy.
 
 ## End-to-end regression and benchmarks
 
@@ -91,9 +72,8 @@ machine (2.0+; `HAPROXY_BINARIES=/path/to/haproxy`, comma-separated, runs one
 round each). It fails with that hint when none is installed rather than
 downloading one. Covered: 1xx intermediates, `Expect: 100-continue`, HTTP/1.0,
 close-delimited bodies, HEAD/204/304, request framing, upstream reuse, upstream
-read timeout, client abort, `status.json`, `setline-agent` rendering predefined
-`[routes]`, WebSocket echo/idle/one-way, SIGTERM shutdown (exit status 0)
-and how `/_setline` is split between the two listeners: the peer-protocol
+read timeout, client abort, `status.json`, WebSocket echo/idle/one-way, SIGTERM
+shutdown (exit status 0) and how `/_setline` is split between the two listeners:
 `GET /_setline/routes` rides both the admin listener (its own port, default
 `127.0.0.1:8081`) and the data plane, while status reads and writes stay on the
 admin listener alone. Upstream affinity has its own case: 8 keep-alive

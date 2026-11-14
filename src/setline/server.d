@@ -52,7 +52,7 @@ private struct ServerListeners {
     request body、响应体和 WebSocket 升级后的字节透传。
 
     再开一个管理监听（`adminListen`，缺省 `127.0.0.1:8081`）：它服务完整的 `_setline`
-    接口。数据面那一侧只承接 peer 协议一个端点（见 {@link handleRequest}）。
+    接口。数据面那一侧只承接 `GET /_setline/routes` 一个端点（见 {@link handleRequest}）。
 */
 void serve(ListenAddress listenAddress, ListenAddress adminAddress) {
   auto options = TCPListenOptions.defaults;
@@ -348,8 +348,8 @@ private bool readAdminRequestBody(TCPConnection client, ref HttpHead request, ou
 }
 /** 选择本次请求的上游端口：优先本客户端连接已经连上的那个。
 
-    亲和端口在两次请求之间可能已经不在路由表里（管理接口改了路由、`--sync-map` 同步了新
-    映射）或者被健康检查摘掉，所以要按当前路由复核一次；不可用就回落到常规的按路由选择。
+    亲和端口在两次请求之间可能已经不在路由表里（管理接口改了路由）或者被健康检查摘掉，
+    所以要按当前路由复核一次；不可用就回落到常规的按路由选择。
     已经失败过的端口不再重试，交给下面的失败重试循环换端口。
 */
 private ushort selectRequestPort(string host, string path, ushort[] tried, UpstreamLease lease) {

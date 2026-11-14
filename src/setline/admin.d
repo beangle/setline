@@ -44,7 +44,7 @@ import setline.util : adminPrefix, escapeHtml, isLoopbackAddress, routesPath, to
       本来就要靠代理侧的 deny 关掉（见 docs/haproxy-integration.md）。
 
     哪些读走哪个监听由 `setline.server` 决定：数据面 `listen` 只把 `GET /_setline/routes`
-    （peer 协议，`setline.util.routesPath`）转发到这里，状态页与 `status.json` 只在管理口
+    （`setline.util.routesPath`）转发到这里，状态页与 `status.json` 只在管理口
     上——它们没有跨机消费者，含监听地址、超时和计数器，挂在数据面上只会放大暴露面。
 
     **写的「本机」= TCP 对端是回环，且请求的 Host 也是回环名**（见 {@link isLocalAdminRequest}）。

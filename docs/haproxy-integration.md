@@ -1,323 +1,143 @@
 # HAProxy 集成
 
-本文交代 setline agent 生成的 HAProxy 片段怎么接到 HAProxy 上：生成什么、不生成什么、
-文件布局、一次性接线步骤，以及校验/热加载和排错。
+本文交代怎样让 HAProxy 把流量交给 setline：setline 部署在 HAProxy 之后，按
+Host + 路径前缀把请求转发到本机后端端口。setline 不生成、不修改、也不 reload
+HAProxy 的配置；HAProxy 的主配置始终由部署方持有。
 
-> **定位**：setline 永远部署在 haproxy/nginx **之后**，不是用户访问的第一站。推荐形态是
-> haproxy 直接回源业务端口、setline 只渲染片段（本文就是这套）；也可以让 setline 作为
-> haproxy 的下级代理承接数据面，但那样必须先满足 `docs/project-constraints.md` 的两个
-> 前提（`listen` 只绑回环、前置代理拒掉 `/_setline`）。两种形态下 setline 都不面对不可信
-> 客户端。
-
+> **定位**：setline 永远部署在 haproxy/nginx **之后**，不是用户访问的第一站。
+> 它只承接前置代理转发来的请求，TLS、限流、访问日志、客户端超时都由前置代理负责。
 ## 版本要求
 
-**最低要求 HAProxy ≥ 2.0**，2.0 以上任意版本都能跑（本仓库在 2.0.33、2.2.9、3.0.25 上
-实测过）。低于 2.0 的版本（CentOS 7 自带的 1.5.18 就是）不在支持范围内。先跑
-`haproxy -v` 对一下。下面这些门槛来自官方手册和源码（不是经验值），低版本会以各种
-「配置打不开 / 未知关键字」的面目失败：
+本项目的 HAProxy 基线是 **HAProxy ≥ 2.0**（在 2.0.33、2.2.9、3.0.25 上实测过）。
+低于 2.0 的版本（例如 CentOS 7 自带的 1.5.18）不在支持范围内，先跑 `haproxy -v`
+确认。
 
-| 能力 | 需要 | 依据 |
-|---|---|---|
-| `-f <目录>`（加载片段目录） | ≥ 1.7，本项目基线取 2.0 | 1.6 手册写 `-f <cfgfile>`，1.7 起写 `-f <cfgfile\|cfgdir>`；1.8.30 源码即 `cfgfiles_expand_directories()` |
-| `-W` / `-Ws`（master-worker，`kill -USR2` 重载） | ≥ 1.8 | 1.6 手册没有 `-W`，1.8 起才有 |
-| **规则模式**的四行 map（`set-var` + `concat` + `map_beg`） | ≥ 2.0 | `set-var`、`concat`、`map_beg` 都是老指令和转换器，没有新关键字；已在 2.0.33、2.2.9、3.0.25 实测 |
+## 数据面与控制面
 
-所以门槛就是 **HAProxy ≥ 2.0**：片段只用 2.0 起就有的老指令，不需要 2.6+，也不需要
-为不同版本准备两套写法。老平台要么升 haproxy，要么换 nginx。
+setline 有两个监听：
 
-CentOS 7 上还有两个坑，报错时很容易误判成「配置写错」：
+- `listen`：数据面，按请求的 `Host` 和路径前缀在本机端口之间转发；同时提供
+  `GET /_setline/routes` 路由表读取。
+- `adminListen`（缺省 `127.0.0.1:8081`）：状态页、`status.json` 与
+  `PUT` / `DELETE /_setline/routes*` 写接口的唯一入口。
 
-- CentOS 7 **没有** `/etc/haproxy/conf.d`（那是 Fedora/RHEL 更新的单元才有的 `CFGDIR`），
-  照抄本文的 `-f` 列表会直接报
-  `[ALERT] ... Could not open configuration file /etc/haproxy/conf.d : No such file or directory`；
-- CentOS 7 自带的 **1.5.18 也不认目录**，把目录传给 `-f` 同样是上面那句（1.5 把它当普通
-  文件打开）。它低于最低要求，要么升 haproxy，要么直接换 nginx。
+HAProxy 的 backend 应该指向 `listen`（缺省 `127.0.0.1:8080`）；不要指向
+`adminListen`。setline 再按自己的路由表把请求分发到业务端口。
 
-## 生成范围：部分生成，不接管主配置
+## 接线示例
 
-setline **只生成片段**，不生成也不改动 `/etc/haproxy/haproxy.cfg`：
+最小形态：HAProxy 接收入站请求，只把请求转给 setline。
 
-| 生成 | 不生成（始终归主配置） |
-|---|---|
-| `backend` 段（`server` + TCP `check`；**从不**生成 `option httpchk`） | `global`、`defaults`、日志、`stats socket` |
-| 路由规则：一份 map 文件（主配置的 frontend 用它查 backend） | TLS 证书/`bind ssl`、`crt-list`、超时、调优、`frontend` 的 `bind` |
-| | 其它与 setline 无关的 `frontend`/`backend` |
+```haproxy
+global
+  maxconn 4096
+  # 其余 global 设置保持部署方原有内容
 
-理由：
+defaults
+  mode http
+  timeout connect 2s
+  timeout client 30s
+  timeout server 30s
 
-- HAProxy 的 `global`/`defaults` 和 TLS、证书、日志、统计页都是部署方自定义内容，
-  生成器无法替它们做决定；片段 + `-f <dir>` 已经能覆盖路由与后端这两件事。
-- 校验成本不变：`haproxy -c` 永远校验**整份**配置（含片段），片段模式并不会降低把关强度。
-- 健康检查固定只做 TCP `check`（端口能连上就算健康），和 setline 自己的 `healthCheck`
-  口径一致，**永远不发 `option httpchk`**。HTTP 检查按响应状态码判健康，应用根路径返回
-  404/401 太常见，只会把本来能用的后端判成 DOWN；要按业务路径探活请在主配置里自己写。
-- 真要"全量生成"，正确做法是在外层用模板/配置管理工具渲染 `haproxy.cfg`，再把 setline
-  片段作为其中一段拼进去；让 setline 覆盖主文件与"保留自定义内容"的目标冲突，所以不做。
-
-## 数据面与控制面：haproxy 直接回源后端
-
-setline **不在业务流量的路径上**。片段里的 `server` 写的就是业务端口：
-
-```
-# 单机部署：回源主机固定 127.0.0.1
-server app_example_com_api_edu_0 127.0.0.1:9002 check
-server app_example_com_api_edu_0 10.0.1.10:9002 check
-```
-
-两个入口职责不同：
-
-- `listen`：数据面，也是 peer 协议（`GET /_setline/routes`）的入口。`curl -H
-  'Host: app.example.com' http://127.0.0.1:8080/<path>` 能直接调试本机解析和转发结果，
-  路由表读也认它；haproxy 的 backend 正常情况下**不要**指到这里——白白多一跳，还丢掉
-  haproxy 自己的负载均衡与健康检查。
-- `adminListen`（缺省 `127.0.0.1:8081`）：**写**接口的唯一入口，也是状态页和
-  `status.json` 的唯一入口。basctl 用 `PUT` / `DELETE /_setline/routes*` 登记本机路由；
-  它缺省绑回环，所以改路由是纯本机操作。
-
-所以 `listen` 平时绑回环（`"127.0.0.1:8080"`）就够；跨机采集走 `listen` 上的路由表读，
-读接口只允许本机；不需要 peerReaders。
-
-真的要把 setline 当下级代理（客户端 → haproxy → setline）时，**frontend 必须自己拒掉
-管理路径**：路由表读搭在 `listen` 上，而读只看来源地址——经 haproxy 转发的请求来源是回环，
-不拒的话任何能过 haproxy 的客户端都能读到路由表。写和状态页不用担心：`PUT` 和
-`status.json` 只挂在管理口上，转发过来也只有 `404`。接线：
-
-```
 frontend http_in
   bind *:80
+  # setline 只按 TCP 对端判断「本机」，代理转发来的请求对端是回环。前置代理必须
+  # 自己拒掉管理路径，否则任何能过 HAProxy 的客户端都能读路由表。
   http-request deny if { path_beg /_setline }
+  default_backend setline
+
+backend setline
+  server s1 127.0.0.1:8080 check
 ```
 
-haproxy 的 `http-request deny` 在转发前生效，被挡的请求连 setline 都不会连到。要放采集机
-进来就按源地址开一条更窄的规则（`http-request deny if { path_beg /_setline } !{ src 10.0.1.0/24 }`），
-而不是整条放行；也可以把规则收成精确匹配 `{ path /_setline/routes }`，只放采集机真正要用的
-那一个端点。
-
-读写分挂在两个监听上（`adminListen` 缺省 `127.0.0.1:8081`，见 `docs/configuration.md`
-的「adminListen」一节）：haproxy 的 backend 只该指向 `listen`，写请求留在本机。
-
-落盘后一眼自检：
-
-```bash
-grep -n '^  server ' /var/lib/setline/haproxy/setline.cfg
-```
-
-每行都应是 `127.0.0.1:<业务端口>`。出现
-`<某主机>:8080` 就是配错了，8080 是 setline 的管理端口，不是业务端口。
-
-## 文件布局
-
-```
-<output>/haproxy/setline.cfg     # 只有 backend 段（必须是 *.cfg，见下）
-<output>/haproxy/setline.map     # 路由表：host~path → backend 名
-```
-
-`setline.map` 只包含路由数据，不写注释；frontend 的四行 `set-var` / `concat` / `map_beg`
-接线属于主配置，维护在本文的接线步骤里。
-
-片段**永远不含 `frontend` / `bind`**：监听归你自己的主配置（曾经有个 `agent.bind`
-开关让片段自带监听，已取消）。
-
-`[agent] output` 是**根目录**，`haproxy/` 子目录与两个文件名都由 setline 决定（不开放
-配置，`setline-apply` 与 `-f <dir>` 按这套固定路径接线）。例如
-`output=/var/lib/setline` 会写出 `/var/lib/setline/haproxy/setline.cfg` 和
-`/var/lib/setline/haproxy/setline.map`，目录不存在时自动创建。
-
-## setline-agent 配置
-
-setline-agent 从 bashub 下载本机 routes，写入 `<output>/routes.json`；`render` 只读
-这个缓存，不再从 `setline.conf [routes]` 或其它 setline 取路由。
-
-```ini
-[remote]
-principal = openurp.prod@http://127.0.0.1:8082
-token = <Project.key>
-
-[agent]
-type = haproxy
-output = /var/lib/setline
-```
-
-`routes.json` 由 `setline-agent pull` 更新，例如：
+对应的 `setline.json`：
 
 ```json
 {
-  "host": "app.example.com",
-  "routes": [
-    { "prefix": "/api/edu", "port": 9002 },
-    { "prefix": "/api/edu", "port": 9003 }
-  ]
+  "listen": "127.0.0.1:8080",
+  "adminListen": "127.0.0.1:8081",
+  "routes": {
+    "app.example.com": {
+      "/api/edu": [9002, 9003],
+      "/api": 9001
+    },
+    "*": {
+      "/": 9090
+    }
+  }
 }
 ```
 
-同一个 host + 前缀的多个端口会合并成同一个 backend/upstream，回源固定
-`127.0.0.1:<port>`。不需要 `setline.json`，也不需要启动 `setline.service`。
+- setline 从请求 `Host` 头取 host（去端口、转小写），再在该 host 下按最长路径前缀
+  匹配；`*` 是没有精确命中时的 fallback。
+- 每个端口都固定映射到 `127.0.0.1:<port>`，setline 只代理本机后端。
+- HAProxy 默认原样转发 `Host` 头，setline 的 host 路由才能生效；不要在中间改写
+  Host 或路径。
+- 同一个 host + 前缀的多个端口会随机选择，setline 不做加权。
 
-## 接线（一次性）
+也可以让 HAProxy 只把部分路径交给 setline，其余路径直接回源：
 
-### 1. 让 haproxy 加载片段目录
-
-HAProxy 没有 `include`，只能用额外的 `-f`。先看清发行版单元长什么样，别凭印象
-（RHEL/Fedora、Debian、容器镜像都不一样）：
-
-```bash
-systemctl cat haproxy                                  # 主文件 + 所有 drop-in，每段前有 # 路径
-systemctl show -p FragmentPath -p DropInPaths haproxy  # 只要路径
-systemctl status haproxy | head -3                     # Loaded: 行也会带路径
-rpm -ql haproxy | grep /systemd/system/                # rpm 系（deb 系换 dpkg -L haproxy）
-```
-
-`FragmentPath` 就是那个「systemd 的 haproxy 文件」：RHEL/Fedora 上是
-`/usr/lib/systemd/system/haproxy.service`，Debian 上是
-`/lib/systemd/system/haproxy.service`。**不要直接改它**——包升级会覆盖，`rpm -V` 也会
-一直报文件被改动。要改就在 `/etc/systemd/system/haproxy.service.d/` 放 drop-in，
-它优先于发行版文件，升级不动。
-
-为什么必须整段覆盖 `ExecStart`/`ExecReload`：单元里的 `-f $CFGDIR` 只能带**一个**目录，
-`Environment=CFGDIR="a b"` 只会被 systemd 拆成 `-f a b`，haproxy 把 `b` 当多余参数报错
-（实测 exit 1）。所以只能把两个 `-f` 都写进命令行。包里的模板
-`/usr/share/setline/haproxy-setline-cfgdir.conf.example` 就是给这一步用的：
-
-```bash
-sudo install -d /etc/systemd/system/haproxy.service.d
-sudo cp /usr/share/setline/haproxy-setline-cfgdir.conf.example \
-        /etc/systemd/system/haproxy.service.d/setline.conf
-sudo systemctl daemon-reload && sudo systemctl restart haproxy
-```
-
-等价的手工写法是 `sudo systemctl edit haproxy`（默认落到
-`/etc/systemd/system/haproxy.service.d/override.conf`，可以和上面的 `setline.conf` 并存），
-把下面两段贴进去。注意**先写空的 `ExecStart=` / `ExecReload=`**（空行就是把发行版那份
-清掉），漏了就变成一条命令写两次，systemd 直接拒绝：
-`Service has more than one ExecStart= setting, which is only allowed for Type=oneshot
-services. Refusing.`
-
-```ini
-[Service]
-ExecStart=
-ExecStart=/usr/sbin/haproxy -Ws -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d -f /var/lib/setline/haproxy -p /run/haproxy.pid $OPTIONS
-ExecReload=
-ExecReload=/usr/sbin/haproxy -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d -f /var/lib/setline/haproxy -c -q $OPTIONS
-ExecReload=/bin/kill -USR2 $MAINPID
-```
-
-**照抄发行版单元**：上面这几行要以 `systemctl cat haproxy` 输出的原行为准（`-Ws`、
-`-p <pidfile>`、`$OPTIONS` 一个都不能少；`$CONFIG`/`$PIDFILE`/`$CFGDIR`/`$OPTIONS` 由
-单元自己定义，照抄变量名即可），只在中间插一个 `-f <片段目录>`。
-发行版升级后如果原行变了，`setline-apply` 的接线自检会以退出码 3 提醒（见「校验与
-热加载」）。
-
-改完验证两件事：
-
-```bash
-systemctl cat haproxy | grep setline                       # drop-in 被读到了
-systemctl show -p ExecStart -p ExecReload haproxy | grep -F /var/lib/setline/haproxy
-```
-
-第二条正是 `setline-apply` 接线自检做的事（它 grep `systemctl show -p ExecStart -p
-Environment`），命令能搜到就说明自检能过。
-
-RHEL/Fedora 的单元把额外参数交给 `/etc/sysconfig/haproxy` 的 `OPTIONS`（Debian 是
-`/etc/default/haproxy` 的 `EXTRAOPTS`），写 `OPTIONS="-f /var/lib/setline/haproxy"`
-haproxy 也会接受；但那来自 `EnvironmentFile`，不出现在 `systemctl show` 的
-`Environment`/`ExecStart` 里，接线自检看不见它会误报 wiring error，所以本文统一用
-drop-in。
-
-`-f <目录>` **只加载 `*.cfg`**，所以 backend 片段必须叫 `*.cfg`；同目录的 `.map` 是数据
-文件，不会被当成配置解析，两者可以放在一起。
-
-### 2. 规则模式：在主配置的 frontend 里加四行
-
-规则模式不生成 frontend，路由靠 map 查询。在你自己持有 `bind` 的 frontend 里加：
-
-```
+```haproxy
 frontend http_in
   bind *:80
-  http-request set-var(txn.setline_path) path
-  http-request set-var(txn.setline_route) req.hdr(host),lower,field(1,:),concat(~,txn.setline_path)
-  use_backend %[var(txn.setline_route),map_beg(/var/lib/setline/haproxy/setline.map)] if { var(txn.setline_route),map_beg(/var/lib/setline/haproxy/setline.map) -m found }
-  use_backend %[path,map_beg(/var/lib/setline/haproxy/setline.map)] if { path,map_beg(/var/lib/setline/haproxy/setline.map) -m found }
+  http-request deny if { path_beg /_setline }
+  acl is_api path_beg /api
+  use_backend setline if is_api
+  default_backend app_direct
+
+backend app_direct
+  server app1 127.0.0.1:9001 check
 ```
 
-- 前两行把 host 和 path 拼成 `host~path` 作为 map 的查询键，存进事务变量：
-  `req.hdr(host)` 原样保留大小写，所以先 `lower`；`field(1,:)` 去掉 Host 里的端口
-  （浏览器/curl 访问
-  `http://localhost:8080/...` 时 Host 是 `localhost:8080`，不剥就永远对不上 map 里的
-  `localhost`——setline 自己匹配时也剥端口，这里必须一致）；`path` 是大小写敏感的，
-  不能跟着一起 lower。
-- 第三行处理精确 host 的路由（map_beg 取最长前缀匹配）。
-- 第四行处理 `*` 回退路由：setline 的 `*` 命名空间落到这里，所以它必须排在第三行之后。
-  代价是 host 命中后就不会再看 `*`：`a.com` 只有 `/`、`*` 有 `/api` 时，`a.com/api` 走
-  `a.com` 的 `/`——与 setline 自己匹配时的口径一致（见 `docs/configuration.md` 的
-  「匹配规则」）。
-- 四行中的路径就是上面那份 `.map`，setline 也会把这几行以注释形式写在 map 文件头部，
-  方便直接复制。
-- **为什么用 `set-var` + `concat` 而不是 `set-header`**：`set-header` 会往请求里加一个
-  内部头，跟请求一起到达应用，你还得记得在自己的 backend 里 `del-header`；`set-var`
-  把查找键存在事务变量里，请求原样透传给后端，应用看不到任何 setline 的痕迹。拼字符串
-  只能落在 `concat` 上，因为 `set-var` 接收的是 sample、**不吃 log-format**
-  （`set-var(txn.x) %[...]~%[...]` 在 2.0/2.2/3.0 上都会报 `unknown fetch method`）。
-- **为什么不用 `set-var-fmt`**：它是 2.6 才加的动作，2.0–2.5 上会以
-  `invalid variable 'set-var-fmt(txn.hp)'` 直接拒绝启动。`set-var` + `concat` +
-  `map_beg` + 动态 `use_backend` 这套组合 2.0 起就通用（已在 2.0.33、2.2.9、3.0.25
-  实测），所以规则模式只保留这一种写法。Map 查询、`*` 回退、host 大小写三条语义都不变。
+两种形态下 setline 都只看到 HAProxy 转来的请求，不直接面对客户端。
 
-**路由表变化不必 reload。** 只是 `*.map` 的内容变了（backend 片段没变）时，
-`setline-apply` 会自动通过 haproxy 的 admin socket 就地热同步，不打断连接；只有
-新增/删除 backend 才需要 reload。socket 路径是自动探测的（配置文件里的
-`stats socket`、单元的 `-S`、以及几个默认位置），探不到就老老实实回退 reload，
-**不需要任何配置**。细节与怎么确认走了哪条路见 `docs/agent-reload.md`。
+## 管理路径必须由前置代理拒绝
 
-setline-agent 生成的 map 形如：
+`GET /_setline/routes` 同时挂在 `listen` 和 `adminListen` 上，读准入只看来源地址。
+经本机 HAProxy 转发的请求来源就是 `127.0.0.1`，所以前置代理不拒绝的话，任何能过
+HAProxy 的客户端都能读到路由表：
 
-```
-app.example.com~/api/edu b_app_example_com_api_edu
-/ b_default
+```haproxy
+http-request deny if { path_beg /_setline }
 ```
 
-backend 名是 `b_` 加上标识，标识 = host 分组名 + 路径前缀（`*` 分组写作 `default`，
-根路径 `/` 不单独占一段），例如 `b_app_example_com_api_edu`、`b_default`；名字里的
-非字母数字都变成下划线并折叠。它与后端来自哪台机器无关——同一 host + 前缀无论来自
-几个 peer 都合并成同一个 backend。不要手写 backend 段；map 文件与 backend 片段由
-`setline-agent` 一起生成、一起原子替换。
+`http-request deny` 在转发前生效，被挡的请求连 setline 都不会连到。要放采集机进来
+就按源地址开一条更窄的规则（`http-request deny if { path_beg /_setline } !{ src 10.0.1.0/24 }`），
+而不是整条放行；也可以把规则收成精确匹配 `{ path /_setline/routes }`，只放采集机真正
+要用的那一个端点。
 
-## 校验与热加载
+写接口和状态页只挂在 `adminListen` 上，经 HAProxy 转发过来也只有 `404`。
 
-片段落盘后由 root 的 `setline-apply` 负责（手工执行 `setline-agent-run` 时由 `setline-apply` 自动按
-`[agent] type` 选中 haproxy；手工排查时可直接执行 `/usr/lib/setline/setline-apply`）。它按顺序做：
+## 校验与 reload
 
-1. 静默窗口（默认 15s）内没有新写入才动手；
-2. 片段目录整体内容哈希没变就直接退出（幂等）；
-3. `haproxy -f ... -c -q` 校验整份配置；
-4. **接线检查**：单元确实加载了片段目录；规则模式下每个 `*.map` 都被主配置引用（否则
-   配置合法但路由静默失效）；
-5. `systemctl reload haproxy`；
-6. 任一步失败就把整个片段目录回滚到 last-known-good。
+HAProxy 的配置由部署方维护，setline 不参与。改完配置后照常：
 
-退出码：`1` 片段本身不合法（已回滚），`3` 接线错误（片段留在磁盘上，等修接线），
-`2` 用法错误。为什么用 `systemctl reload` 而不是 `-sf`/`-x`/`SIGHUP`，见
-`docs/agent-reload.md`。没有 timer，需要刷新时手工执行 `sudo setline-agent-run`；详见 `docs/agent-reload.md`。
-reload 到底有没有发生（master PID 不变、worker PID 换掉、`show proc` 的 reload 计数）
-见 `docs/agent-reload.md` 的「如何确认 reload 真的发生」。
+```bash
+haproxy -c -f /etc/haproxy/haproxy.cfg
+systemctl reload haproxy
+```
+
+用 `systemctl reload`（或发行版单元里的 `-sf`/`-x`）让新 worker 接流量，不要直接
+kill 主进程。`haproxy -c` 校验的是整份配置，接线错误会在这里报出来。
 
 ## 权限
 
-- `setline-agent render` 以 `setline` 用户运行，只写 `/var/lib/setline/haproxy/`，不碰
-  `/etc/haproxy`；常驻 `setline` 只负责数据面；
-- `setline-apply` 以 root 运行（`nginx -t`、`haproxy` reload 都要 root）；
-- haproxy 以 root 启动后降权，读 `-f <dir>` 里的片段没有问题，目录保持 `0755` 即可。
+- 常驻 `setline` 以 `setline` 用户运行（`setline.service` 的 `User=setline`），
+  只负责数据面；
+- HAProxy 以 root 启动后降权，连接 `127.0.0.1:8080` 不需要额外权限；
+- setline 不以 root 运行是硬性要求，见 `docs/project-constraints.md` 的
+  Privilege Model。需要绑定 1024 以下端口时用
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE`。
 
 ## 排错
 
 | 现象 | 原因 |
 |---|---|
-| `wiring error: ... does not load <片段目录>` | 单元没给 `-f` 片段目录（见「接线（一次性）」），或 `[apply] configs` 与实际单元不一致 |
-| `wiring error: .../setline.map is not referenced` | 主配置 frontend 缺 `map_beg(...)` 那几行（规则模式） |
-| `Configuration file has no error but will not start (no listener)` | 主配置里没有任何 `bind`；setline 的片段不含监听段（监听归主配置） |
-| `Could not open configuration file <目录>` | 目录不存在（老发行版没有 `conf.d`），或 HAProxy < 1.7 根本不认 `-f <目录>`（本项目最低要求 2.0，见「版本要求」） |
-| `invalid variable 'set-var-fmt(...)'` / `unknown fetch method` | 用了 2.6+ 的 `set-var-fmt`，或拿 log-format 去喂 `set-var`；换成上面的 `set-var` + `concat` 四行（2.0 起通用） |
-| `/api/xxx` 返回 503 且日志无异常 | map 命中了 backend，但 backend 里 `server` 健康检查失败（对端不可达） |
-| `Server b_xxx/... is DOWN, reason: Layer7 wrong status, code: 404` | 主配置（`defaults` 或你自己的 backend）里有 `option httpchk`：setline 片段只发 TCP `check`，不会产生这条例；把该 HTTP 检查挪走或换一个返回 2xx 的路径 |
-| WebSocket 升级请求回 `400 Bad request` | haproxy 自己就要求带 `Upgrade: websocket` 的请求有合法的 `Sec-WebSocket-Key` 头；缺了它连 setline 都不会看到 |
-| WebSocket 握手回 `502 Bad Gateway`（消息是 *invalid or incomplete response*） | 后端的 101 缺 `Sec-WebSocket-Accept`，或者算错。haproxy 3.0 起会校验它，setline 只是原样透传后端响应，所以问题在业务后端而不是代理 |
-| 改了路由但流量没变 | 片段没写出（agent 未运行/未同步）、静默窗口还没过，或 `*.map` 未被引用 |
+| HAProxy 返回 `503`，setline 日志无请求 | HAProxy backend 没连上 `127.0.0.1:8080`：检查 setline 是否启动、`listen` 地址是否一致、健康检查是否通过 |
+| 所有请求走成 `*` 路由 | `Host` 头在中途被改写，或 setline 的 `routes` 里没有对应 host |
+| 请求命中了错误的 host | 检查 HAProxy 是否设置了会覆盖 Host 的规则；setline 只认请求里的 `Host` |
+| 能读到 `/_setline/routes` | 前置代理漏了 `http-request deny if { path_beg /_setline }` |
+| `PUT /_setline/routes` 经 HAProxy 返回 `404` | 正常：写接口只挂在 `adminListen` 上 |
+| `PUT /_setline/routes` 直连管理口却被拒 | 写要求回环 TCP 对端 **且** Host 是回环名；用 `127.0.0.1` / `localhost` 访问 |
+| `502 Bad Gateway` | 后端端口没在监听，或应用主动断开；setline 只做本机端口转发 |
+| WebSocket 握手失败 | 检查前置代理和应用后端；setline 只透传升级后的字节流 |

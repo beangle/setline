@@ -118,23 +118,16 @@ It routes by host and URL path prefix to local backend ports.
 %build
 dub fetch
 dub build --build=release-nobounds --compiler=ldc2
-dub build --build=release-nobounds --compiler=ldc2 --config=agent
 
 %install
 rm -rf %{buildroot}
 install -D -m 0755 target/setline %{buildroot}/usr/bin/setline
-install -D -m 0755 target/setline-agent %{buildroot}/usr/bin/setline-agent
 strip --strip-unneeded %{buildroot}/usr/bin/setline
-strip --strip-unneeded %{buildroot}/usr/bin/setline-agent
 install -D -m 0644 scripts/package/setline.json %{buildroot}/usr/share/setline/setline.json.default
-install -D -m 0644 scripts/package/setline.conf.default %{buildroot}/usr/share/setline/setline.conf.default
-install -D -m 0644 scripts/package/haproxy-setline-cfgdir.conf.example %{buildroot}/usr/share/setline/haproxy-setline-cfgdir.conf.example
 # 用户文档整目录安装：与 build_rpm.sh 同一份清单，docs 全篇加上 CHANGELOG。
 install -d -m 0755 %{buildroot}/usr/share/doc/setline
 install -m 0644 docs/*.md %{buildroot}/usr/share/doc/setline/
 install -m 0644 CHANGELOG.md %{buildroot}/usr/share/doc/setline/CHANGELOG.md
-install -D -m 0755 scripts/package/setline-apply %{buildroot}/usr/lib/setline/setline-apply
-install -D -m 0755 scripts/package/setline-agent-run %{buildroot}/usr/lib/setline/setline-agent-run
 install -D -m 0644 scripts/package/setline.service %{buildroot}/usr/lib/systemd/system/setline.service
 EOF
 

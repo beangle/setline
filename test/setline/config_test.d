@@ -194,22 +194,11 @@ import setline.model;
   assertThrown!Exception(normalizeRouteHost("local1.example.com:8080"));
 }
 
-@("config rejects agent parameters in the topology file") unittest {
-  auto path = "/tmp/setline-config-agent-local-bad-test.json";
-  scope (exit) remove(path);
-
-  // agent 只存在于 setline.conf；setline.json 里出现任何 agent 都必须报错。
-  write(path, `{"agent":{"peers":[]},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-  write(path, `{"agent":{},"routes":{}}`);
-  assertThrown!Exception(loadConfig(path));
-}
-
 @("config rejects listen false in the service config") unittest {
   auto path = "/tmp/setline-config-listen-false-test.json";
   scope (exit) remove(path);
 
-  // 纯渲染入口已经属于 setline-agent，setline 服务始终需要监听地址。
+  // setline 是常驻代理，始终需要监听地址。
   write(path, `{"listen":false,"routes":{"app.example.com":{"/":9001}}}`);
   assertThrown!Exception(loadConfig(path));
 
@@ -260,7 +249,7 @@ import setline.model;
   write(path, `{"listen":"127.0.0.1:8080","adminListen":false,"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
 
-  // listen:false 已从服务拓扑移除：纯渲染由 setline-agent 负责。
+  // listen:false 不是合法值：setline 始终监听并代理。
   write(path, `{"listen":false,"adminListen":"127.0.0.1:8081",` ~
     `"routes":{}}`);
   assertThrown!Exception(loadConfig(path));
@@ -288,7 +277,7 @@ import setline.model;
   auto path = "/tmp/setline-config-unknown-keys-test.json";
   scope (exit) remove(path);
 
-  // 顶层未知键既不报错也不生效；agent 已经从 setline.json 移除并在解析时明确拒绝。
+  // 顶层未知键既不报错也不生效。
   write(path, `{"listen":"127.0.0.1:8080","adminToken":"secret","routes":{}}`);
   auto config = loadConfig(path);
 }

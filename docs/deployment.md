@@ -10,14 +10,12 @@ Use a release build for load testing or long-running deployment:
 
 ```bash
 dub build --compiler=ldc2 --build=release
-dub build --compiler=ldc2 --build=release --config=agent
 ```
 
 Optionally strip the binary after building:
 
 ```bash
 strip target/setline
-strip target/setline-agent
 ```
 
 ## Linux Packages
@@ -33,255 +31,10 @@ scripts/build_srpm.sh
 The binary package installs:
 
 - `/usr/bin/setline`
-- `/usr/bin/setline-agent`
-- `/usr/share/setline/{setline.conf.default,setline.json.default,haproxy-setline-cfgdir.conf.example}`
+- `/usr/share/setline/setline.json.default`
 - `/usr/share/doc/setline/*.md` (all of `docs/`, plus `CHANGELOG.md`)
-- `/usr/lib/setline/setline-apply` (fragment validate/reload helper)
-- `/usr/lib/setline/setline-agent-run` (root render/apply orchestrator)
 - `/usr/lib/systemd/system/setline.service`
-- `/etc/setline/setline.conf` and `/etc/setline/setline.json` (created on first install)
-
-`scripts/build_srpm.sh` produces the same package from source on the target
-host: the binary and source specs share the file list and the scriptlets
-(`scripts/package/setline.spec.common`), so `rpmbuild --rebuild setline-*.src.rpm`
-does not quietly give you a package with fewer files. The generated specs only
-use section names at the start of a line, which is what older `rpmbuild` (the
-rpm 4.11 on CentOS 7) needs.
-
-The packages install `setline.service` but never enable it. A machine whose
-config has an `[agent] type` refreshes and renders manually:
-
-```bash
-sudo setline-agent-run
-```
-
-This one command performs the conditional manifest check, downloads changed
-resources, renders fragments and applies them. There is no agent timer and no
-systemd scheduling; run it again whenever configuration or routes should be
-refreshed.
-
-`setline.service` is independent: it reads only `setline.json` and is enabled
-separately when the data plane is needed:
-
-```bash
-sudo systemctl enable --now setline.service
-```
-
-`setline-agent-run` drops to the `setline` user for downloads and rendering,
-then calls `setline-apply` as root. See `docs/agent-reload.md`.
-
-Runtime route updates rewrite `/etc/setline/setline.json`, so package install
-scripts make it writable by the `setline` service user. `setline.conf` stays
-root-owned and readable by the `beangle` group, because it contains the Profile
-key and is read only by `setline-agent`. Both files are generated on first
-install and are not tracked as package files, so removing the package preserves
-them.
-
-### systemd 版本兼容
-
-unit 里的启动限流写成 `[Service]` 段的旧拼写 `StartLimitInterval=` / `StartLimitBurst=`
-（没有 `Sec` 后缀），这是为了同时兼容两端：
-
-- CentOS 7 / RHEL 7 带的是 systemd 219，只认这种写法；`StartLimitIntervalSec=`（`[Unit]`
-  段）是 systemd 229 才加的，219 上会打
-  `Unknown lvalue 'StartLimitIntervalSec' in section 'Service'` 并把它忽略掉；
-- 旧拼写在 systemd ≥ 229 里**依然生效**（`systemctl show -p StartLimitIntervalUSec <unit>`
-  能读到配置值，只是不再写进 `systemd.service(5)`），不产生告警。
-
-所以一份 unit 在 219 和 259 上都不报警、限流都真的生效。unit 里其余设置的最低版本都在
-219 之前（`RestartPreventExitStatus=` 189、`AccuracySec=` 197、`OnUnitInactiveSec=` 212，
-`StartLimitIntervalSec=` 229 是唯一越界的），没有别的 CentOS 7 兼容问题。
-
-不过 haproxy 这一侧有独立的最低版本要求：**HAProxy ≥ 2.0**（`-f <目录>` 从 1.7 起才有，
-本项目基线取 2.0；片段只用 2.0 起就有的老指令，已在 2.0.33、2.2.9、3.0.25
-实测）。CentOS 7 自带的 **1.5.18 低于这个门槛**（它不认 `-f <目录>`，CentOS 7 也没有
-`/etc/haproxy/conf.d`），要在这类机器上用 haproxy 集成得先升级，或换用 nginx。版本门槛
-和替代方案见 `docs/haproxy-integration.md` 的「版本要求」。nginx 集成不受影响（接线自检
-用 `nginx -T`，那是 nginx 1.9.3 就有的开关，CentOS 7 能装到的 nginx 都满足）。
-
-### 启动即失败（status=1）怎么查
-
-`systemctl status`/`journalctl` 里那几行 `main process exited, code=exited,
-status=1/FAILURE`、`start request repeated too quickly` 都不是原因：前者是 systemd 对
-**退出码**的转述，后者只是重启限流挡下了第 6 次尝试。真正的原因在进程自己写进 journal 的
-**上一行** stderr 里，`-o cat` 可以滤掉 systemd 的 `-- Subject:` 样板：
-
-```bash
-journalctl -u setline -b -o cat | tail -20
-systemctl status setline -l --no-pager        # 也会带出最后几行 stderr
-```
-
-那行只有两种形态：
-
-1. `Config /etc/setline/setline.json is invalid: <原因>` —— JSON 语法或字段问题（未知字段、
-   `routes` 结构不对、写了已取消的字段……）。用 `-c` 单独校验，
-   不需要起服务、不需要 root：
-
-   ```bash
-   setline -c
-   ```
-
-2. 监听失败也走同一个 catch-all，所以端口被占、无权限绑低端口会伪装成
-   `Config ... is invalid: <bind 的错误>`。`listen` 写 `*:8080` 时先看端口是不是被占了
-   （`ss -ltnp | grep 8080`）；要绑 1024 以下端口用
-   `AmbientCapabilities=CAP_NET_BIND_SERVICE`——**不要**为了绑低端口让服务以
-   root 运行（硬性要求，见 `docs/project-constraints.md` 的 Privilege Model）。
-
-3. `refusing to run as root: ...` —— 手工 `sudo setline ...` 起服务时最常见。代理和
-   渲染 agent 都要求非 root；`setline-apply` 以 root 调用的
-   `setline-agent --agent-type` / `--sync-map` 出口、以及 `-c`
-   校验不受影响。这条以退出码 `2` 结束，unit 里的
-   `RestartPreventExitStatus=2` 会直接停住，不会重启五次。
-
-前台手工复现最直接，注意用服务账号，才和 unit 里的权限一致：
-
-```bash
-sudo -u setline /usr/bin/setline -f /etc/setline/setline.json
-```
-
-修好之后必须清掉限流计数，否则 systemd 还在「repeated too quickly」状态里拒绝启动：
-
-```bash
-sudo systemctl reset-failed setline && sudo systemctl start setline
-```
-
-注意 setline 对配置与监听类失败统一返回 `1`，所以 unit 里的
-`RestartPreventExitStatus=2` 挡不住它们，只会重启 5 次后停在 failed —— 看到的就是上面
-那串日志。唯一的 `2` 是第 3 条（以 root 运行）：那是重启也没用的失败，本就不该重试。
-
-如果 journal 里出现的是 `error while loading shared libraries` 或 `GLIBC_2.xx not found`，
-那是二进制与发行版不匹配（例如在 Fedora 上打的包拿到 CentOS 7 上装），跟配置无关。
-
-## Application Config
-
-Use `connectTimeoutMillis` to limit how long setline waits when opening a TCP
-connection to a backend:
-
-```json
-{
-  "listen": "127.0.0.1:8080",
-  "connectTimeoutMillis": 3000,
-  "readTimeoutMillis": 15000,
-  "maxConnections": 65535
-}
-```
-
-A shorter timeout prevents an unavailable backend from occupying too many
-vibe-core tasks and file descriptors. For local development backends, 1000-3000
-ms is usually enough. For slower startup or remote-like test environments, use a
-larger value.
-
-`readTimeoutMillis` protects the segment setline cannot otherwise recover on its
-own: a local backend that accepts the connection and then stops producing the
-next response byte. Before the final response begins, timeout is reported as
-`504` and both connections are recycled. After response bytes have been sent,
-setline can only recycle the connection because the client already received the
-start of a response.
-
-`maxConnections` limits concurrent client connections. The default is
-intentionally large so most deployments do not need to change it; it acts as a
-last-resort fuse to prevent the process from exhausting file descriptors or
-memory under abnormal load. When the limit is reached, setline returns
-`503 Service Unavailable` before reading the proxied request. It counts
-connections, not requests: a connection keeps its slot from `accept` to `close`,
-so an idle keep-alive connection counts too.
-
-Each of those connections also holds one upstream socket for most of its life,
-so the process needs open files according to:
-
-```text
-required open files = 2 * maxConnections + 64
-```
-
-The two terms, what the fixed 64 covers, and how to raise the limit for a shell
-or a systemd unit are in "File Descriptors" below.
-
-### Upstream connection affinity
-
-setline gives every client connection one dedicated upstream connection and keeps
-it across the requests on that connection, as long as the request still routes to
-the same backend port. The front proxy already serializes requests on a connection
-(`http-reuse` in haproxy), so this is the same granularity the proxy works at.
-
-Why not a shared pool sized to fit: the pool only helps when its capacity is at
-least the concurrency, and every connection the pool drops is a connection
-setline has to open again on the next request. Those closed connections leave a
-`TIME_WAIT` entry on this host, so churn scales with request rate and can eat the
-ephemeral port range under load. With affinity, steady state is "one upstream
-connection per client connection, created once": closing happens when the client
-connection goes away, which is the rate the front proxy chooses, not the request
-rate. A small pool still sits behind it as a recycling bin for connections left
-over from closed client connections, sized from recent concurrency (4..32 per
-port). A dedicated janitor task trims that pool once a second and lets the
-capacity follow real time — the high-water mark halves after every 30s without a
-new peak — so pool behaviour does not depend on `healthCheck.intervalMillis`,
-which only controls how often backends are probed.
-
-`upstreamIdleTimeoutMillis` (default 30s) bounds how long a connection may sit
-idle. A client connection that stops sending requests releases its upstream
-connection back to the pool; the pool itself expires idle connections on the same
-timeout.
-
-### The admin plane
-
-The data plane (`listen`) has one non-proxy endpoint, `GET /_setline/routes`.
-The status endpoint, `status.json` and all writes live on `adminListen`
-(`127.0.0.1:8081` by default). Both listeners accept reads only from localhost.
-
-```json
-{
-  "listen": "127.0.0.1:8080",
-  "adminListen": "127.0.0.1:8081",
-  "routes": {}
-}
-```
-
-Keep `/_setline` denied at the front proxy:
-
-```haproxy
-http-request deny if { path_beg /_setline }
-```
-
-```nginx
-location ^~ /_setline { return 404; }
-```
-
-Writes require a loopback TCP peer and a loopback request host. Bind
-`adminListen` to `*` only when a local collector cannot use the proxy.
-
-## Runtime Route Updates
-
-Route updates through the admin API update memory and rewrite the top-level
-`routes` field in the configured JSON file. On restart, setline keeps the last
-runtime route changes because they have already been written to that file.
-
-Supported runtime operations are:
-
-- add or replace one route
-- delete one route
-- clear routes for one host
-- replace routes for one host
-
-All route-changing calls must come from localhost and must specify the target
-route host. There is no credential: the localhost check is the whole access
-control for writes. Keep these endpoints bound to trusted local automation such
-as service startup scripts or deployment hooks.
-
-Reads are local-only: `GET /_setline/routes` is served on `listen` and
-`adminListen`; status pages only on `adminListen`. There is no cross-machine
-route read and no `peerReaders` setting.
-
-`setline-agent` obtains the routes for its machine from bashub and writes
-`<agent.output>/routes.json`; `render` uses that cache. It no longer reads
-routes from another setline or from `setline.conf [routes]`.
-
-Reloading is separate and privileged. `setline-agent render` runs as the unprivileged
-`setline` user and only writes the fragment; `setline-agent-run` (root, oneshot)
-orchestrates that render through `runuser`, then `setline-apply` (root helper)
-validates the result, runs `systemctl reload`, and rolls the fragment directory
-back if either step fails. Running the proxy daemon as root is a hard requirement
-to avoid, not a tuning choice: see the Privilege Model in
-`docs/project-constraints.md`. See `docs/agent-reload.md` for the reload flow.
+- `/etc/setline/setline.json` (created on first install)
 
 When routes change, setline rebuilds the next host route trees, writes the new
 `routes` field to disk, and then swaps it into runtime state. Port health
@@ -313,9 +66,9 @@ required open files = 2 * maxConnections + 64
   closes the client connection.
 - `64` — overhead that does not scale with traffic: the data listener and the
   admin listener (`adminListen`), eventcore's epoll/eventfd/timerfd handles, the
-  health probes (one connection at a time), the `--sync-map` admin socket, and
-  the idle upstream pool that recycling leaves behind (at most 32 connections per
-  backend port; the pool ceiling is 4..32, see "Upstream connection affinity").
+  health probes (one connection at a time), and the idle upstream pool that
+  recycling leaves behind (at most 32 connections per backend port; the pool
+  ceiling is 4..32, see "Upstream connection affinity").
 
 The margin is a flat 64, so a host that spreads traffic over many backend ports
 can hold more than 64 idle pool descriptors (up to 32 per port, all idle at the

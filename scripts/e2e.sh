@@ -107,17 +107,17 @@ CFG
   HAPROXY_PID=$!
   wait_for_port "$HAPROXY_PORT" 50 || fail "$label haproxy did not listen"
 
-  # 管理路径必须由前置代理挡掉（peer 协议读也挂在数据面上，所以这是入口唯一的一道）：
+  # 管理路径必须由前置代理挡掉（路由表读也挂在数据面上，所以这是入口唯一的一道）：
   # 数据面只承接 `GET /_setline/routes`，写和 status 都只在管理口上。
   local proxy_admin data_read data_status data_write direct_admin
   proxy_admin="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HAPROXY_PORT/_setline/routes")"
   [ "$proxy_admin" = "403" ] ||
     fail "$label frontend did not deny /_setline (got $proxy_admin)"
-  # 读搭在数据面上：只认得业务端口的机器也能读路由表。
+  # 读搭在数据面上：本机只认得业务端口的调用方也能读路由表。
   data_read="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: local.test' \
     "http://127.0.0.1:$SETLINE_PORT/_setline/routes")"
   [ "$data_read" = "200" ] ||
-    fail "$label data plane does not serve the peer routes endpoint (got $data_read)"
+    fail "$label data plane does not serve the routes endpoint (got $data_read)"
   # 状态页/status.json 只在管理口上，数据面一律 404。
   data_status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: local.test' \
     "http://127.0.0.1:$SETLINE_PORT/_setline/status.json")"
@@ -132,7 +132,7 @@ CFG
     "http://127.0.0.1:$SETLINE_ADMIN_PORT/_setline/routes")"
   [ "$direct_admin" = "200" ] ||
     fail "$label local admin read broke (got $direct_admin)"
-  echo "PASS[$label] peer routes ride the data plane; status and writes stay on the admin listener"
+  echo "PASS[$label] route reads ride the data plane; status and writes stay on the admin listener"
 
   local expect_body
   expect_body="$(curl -fsS --max-time 5 \
@@ -274,7 +274,6 @@ CFG
 
 cd "$ROOT"
 dub build --build=release-nobounds --compiler=ldc2
-dub build --build=release-nobounds --compiler=ldc2 --config=agent
 
 check_cli_flags() {
   local status
@@ -284,13 +283,7 @@ check_cli_flags() {
   set -e
   [ "$status" = 2 ] ||
     fail "setline accepted --config; expected the service to use -f only"
-  set +e
-  "$ROOT/target/setline-agent" -f "$WORK/missing.conf" >"$WORK/agent-wrong-flag.log" 2>&1
-  status=$?
-  set -e
-  [ "$status" = 2 ] ||
-    fail "setline-agent accepted -f; expected the agent to use --config only"
-  echo "PASS setline uses -f and setline-agent uses --config"
+  echo "PASS setline uses -f"
 }
 check_cli_flags
 
@@ -309,31 +302,6 @@ JSON
 "$ROOT/target/setline" -f "$WORK/setline.json" >"$WORK/setline.log" 2>&1 &
 SETLINE_PID=$!
 wait_for_port "$SETLINE_PORT" 50 || fail "setline did not listen"
-
-# setline-agent：读取 bashub 下载的 routes.json 渲染片段，不绑任何监听，渲染完立即退出。
-check_render_only() {
-  local dir="$WORK/render-only"
-  mkdir -p "$dir"
-  cat >"$dir/routes.json" <<JSON
-{"host":"local.test","routes":[{"prefix":"/","port":$BACKEND_PORT}]}
-JSON
-  cat >"$WORK/render-only.conf" <<CONF
-[agent]
-type = haproxy
-output = $dir
-CONF
-  if ! "$ROOT/target/setline-agent" render --config "$WORK/render-only.conf" \
-      >"$WORK/render-only.log" 2>&1; then
-    fail "setline-agent renderer exited non-zero: $(cat "$WORK/render-only.log")"
-  fi
-  # output 是根目录：程序按 type 自己建 haproxy/ 子目录并写固定文件名。
-  [ -s "$dir/haproxy/setline.cfg" ] || fail "setline-agent did not write the backend fragment"
-  [ -s "$dir/haproxy/setline.map" ] || fail "setline-agent did not write the routing map"
-  grep -q 'local.test' "$dir/haproxy/setline.map" ||
-    fail "setline-agent map is missing the downloaded routes entry"
-  echo "PASS setline-agent renders downloaded routes and exits"
-}
-check_render_only
 
 # 管理接口只该为控制面读取有界的 body：给一个超过 4 MiB 防御性上限的 PUT，必须回 413。
 check_admin_body_limit() {
@@ -356,7 +324,7 @@ raw_admin_put() {
 }
 
 # 写接口的「本机」= 回环对端 + 回环 Host：经本机代理转发的远端请求带着公开主机名，
-# 不再被当成本机（原因见 docs/configuration.md 的 peerReaders 一节）。
+# 不再被当成本机。
 check_admin_write_gate() {
   local body='{"/evil":[9999]}' out
   out="$(raw_admin_put "127.0.0.1:$SETLINE_ADMIN_PORT" "" "$body" |
@@ -611,7 +579,7 @@ local_addresses() {
 }
 
 # 管理接口的**写**只在独立监听上；**读**同时挂在数据面和管理口上，准入只看来源地址
-# （本机，或 peerReaders 里列出的读方），全程没有凭据。
+# （仅本机），全程没有凭据。
 check_admin_listen() {
   local label="admin-listen"
   cat >"$WORK/split.json" <<JSON
@@ -634,7 +602,7 @@ JSON
   done
   [ "$ok" = 0 ] || fail "$label split setline did not listen: $(cat "$WORK/split.log")"
 
-  # 数据面只承接 peer 协议一个端点：本机来源直接读得到（没有任何凭据），status.json 这类
+  # 数据面只承接路由表读一个端点：本机来源直接读得到（没有任何凭据），status.json 这类
   # 没有跨机消费者的读则是 404。
   local data_read data_status data_write admin_root admin_status data_root
   data_read="$(curl -s -o /dev/null -w '%{http_code}' \

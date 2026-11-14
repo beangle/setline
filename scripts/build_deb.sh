@@ -15,7 +15,6 @@ ferror() {
 }
 
 dub build --build=release-nobounds --compiler=ldc2
-dub build --build=release-nobounds --compiler=ldc2 --config=agent
 
 E=0
 LIST=""
@@ -61,21 +60,15 @@ rm -rf "$PKGDIR"
 mkdir -p "$PKGDIR"
 pushd "$PKGDIR" >/dev/null
 
-mkdir -p usr/bin usr/share/setline usr/share/doc/setline usr/lib/setline usr/lib/systemd/system
+mkdir -p usr/bin usr/share/setline usr/share/doc/setline usr/lib/systemd/system
 cp -f "$SETLINE_HOME/target/setline" usr/bin/setline
 strip --strip-unneeded usr/bin/setline
-cp -f "$SETLINE_HOME/target/setline-agent" usr/bin/setline-agent
-strip --strip-unneeded usr/bin/setline-agent
 cp -f "$SETLINE_HOME/scripts/package/setline.json" usr/share/setline/setline.json.default
-cp -f "$SETLINE_HOME/scripts/package/setline.conf.default" usr/share/setline/setline.conf.default
-cp -f "$SETLINE_HOME/scripts/package/haproxy-setline-cfgdir.conf.example" usr/share/setline/haproxy-setline-cfgdir.conf.example
 # 用户文档整目录安装：配置参考、reload 设计、部署、API 说明与发布说明都在 docs 里，
 # 只装其中一篇会让包内的 Documentation= 指向一份孤零零的文档。
 cp -f "$SETLINE_HOME"/docs/*.md usr/share/doc/setline/
 # 变更历史随包安装：升级前想知道「这一版动了什么」不该先去找仓库。
 cp -f "$SETLINE_HOME/CHANGELOG.md" usr/share/doc/setline/CHANGELOG.md
-cp -f "$SETLINE_HOME/scripts/package/setline-apply" usr/lib/setline/setline-apply
-cp -f "$SETLINE_HOME/scripts/package/setline-agent-run" usr/lib/setline/setline-agent-run
 cp -f "$SETLINE_HOME/scripts/package/setline.service" usr/lib/systemd/system/setline.service
 
 # Debian Policy 12.5 要求 /usr/share/doc/<pkg>/copyright，缺失是 lintian 的
@@ -102,9 +95,9 @@ License: GPL-3.0-or-later
  version 3 can be found in "/usr/share/common-licenses/GPL-3".
 DEBCOPYRIGHT
 
-chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/setline usr/lib/systemd usr/lib/systemd/system
-chmod 0755 usr/bin/setline usr/bin/setline-agent usr/lib/setline/setline-apply usr/lib/setline/setline-agent-run
-chmod 0644 usr/share/setline/setline.json.default usr/share/setline/setline.conf.default usr/share/setline/haproxy-setline-cfgdir.conf.example usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service
+chmod 0755 usr usr/bin usr/share usr/share/setline usr/share/doc usr/share/doc/setline usr/lib usr/lib/systemd usr/lib/systemd/system
+chmod 0755 usr/bin/setline
+chmod 0644 usr/share/setline/setline.json.default usr/share/doc/setline/*.md usr/share/doc/setline/copyright usr/lib/systemd/system/setline.service
 
 mkdir -p DEBIAN
 
@@ -136,7 +129,7 @@ if ! getent passwd setline >/dev/null 2>&1; then
 else
   usermod -g beangle setline 2>/dev/null || true
 fi
-mkdir -p /var/lib/setline /var/log/setline /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
+mkdir -p /var/lib/setline /var/log/setline
 PREINST
 
 cat >DEBIAN/postinst <<'POSTINST'
@@ -146,29 +139,12 @@ mkdir -p /etc/setline
 if [ ! -f /etc/setline/setline.json ]; then
   cp -f /usr/share/setline/setline.json.default /etc/setline/setline.json
 fi
-if [ ! -f /etc/setline/setline.conf ]; then
-  cp -f /usr/share/setline/setline.conf.default /etc/setline/setline.conf
-fi
 chown setline:beangle /etc/setline/setline.json
 chmod 0664 /etc/setline/setline.json
-chown root:beangle /etc/setline/setline.conf
-chmod 0640 /etc/setline/setline.conf
 chown setline:beangle /etc/setline
 chmod 2775 /etc/setline
 chown -R setline:beangle /var/lib/setline /var/log/setline
 chmod 2775 /var/lib/setline /var/log/setline
-chmod 0755 /var/lib/setline/haproxy /var/lib/setline/nginx /var/lib/setline/apply
-if command -v systemctl >/dev/null 2>&1; then
-  # setline-agent 已改为手工执行：不再安装 service/timer。
-for unit in setline-agent.timer setline-agent.service setline-agent-interval.service setline-agent@remote.service setline-agent@interval.service setline-render.timer setline-apply.timer; do
-  systemctl stop "$unit" 2>/dev/null || true
-  systemctl disable "$unit" 2>/dev/null || true
-done
-for link in /etc/systemd/system/timers.target.wants/setline-agent.timer /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer /etc/systemd/system/multi-user.target.wants/setline-agent@remote.service /etc/systemd/system/multi-user.target.wants/setline-agent@interval.service /etc/systemd/system/multi-user.target.wants/setline-agent.service /etc/systemd/system/multi-user.target.wants/setline-agent-interval.service; do
-  rm -f "$link"
-done
-systemctl daemon-reload 2>/dev/null || true
-fi
 POSTINST
 
 cat >DEBIAN/prerm <<'PRERM'
@@ -177,19 +153,6 @@ set -e
 if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
   systemctl stop setline 2>/dev/null || true
   systemctl disable setline 2>/dev/null || true
-  systemctl disable --now setline-agent.timer 2>/dev/null || true
-  # 当前 static service、模板实例与旧版 unit 都要清理。
-  for unit in setline-agent@remote.service setline-agent@interval.service setline-agent.service setline-agent-interval.service; do
-    systemctl stop "$unit" 2>/dev/null || true
-    systemctl disable "$unit" 2>/dev/null || true
-  done
-  # 卸载时清掉 timer 的 enable 链接，否则会留下指向已删除脚本的悬空 unit，
-  # timer 继续按周期失败。setline-render/setline-apply 和 setline-apply@*.timer
-  # 是旧版单元，从这里升级上来的机器可能还留着 enable 链接，一并清掉。
-  for unit in /etc/systemd/system/timers.target.wants/setline-agent.timer /etc/systemd/system/timers.target.wants/setline-render.timer /etc/systemd/system/timers.target.wants/setline-apply.timer /etc/systemd/system/timers.target.wants/setline-apply@*.timer /etc/systemd/system/multi-user.target.wants/setline-agent@remote.service /etc/systemd/system/multi-user.target.wants/setline-agent@interval.service /etc/systemd/system/multi-user.target.wants/setline-agent.service /etc/systemd/system/multi-user.target.wants/setline-agent-interval.service; do
-    [ -e "$unit" ] || continue
-    rm -f "$unit"
-  done
 fi
 PRERM
 

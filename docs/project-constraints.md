@@ -40,14 +40,13 @@ browser-facing client IP, scheme, host, or port, an upstream proxy such as
 HAProxy must add `Forwarded` or `X-Forwarded-*` before traffic reaches setline.
 Direct browser-to-setline requests are not annotated by setline.
 
-Positioning: `setline` is never the first hop. It either renders fragments for
-an edge proxy, or serves as that edge proxy's subordinate. The subordinate shape
-has two prerequisites: the data-plane `listen` binds loopback only, and the
-front proxy denies `/_setline` (at least `/_setline/routes`). Reads are admitted
-by source address, and a relayed request arrives from loopback, so without that
-`deny` any client of the front proxy can read the route table. Binding `listen`
-to `*` publishes the data plane past the front proxy and voids every assumption
-above.
+Positioning: `setline` is never the first hop. It serves as the front proxy's
+subordinate, and that shape has two prerequisites: the data-plane `listen` binds
+loopback only, and the front proxy denies `/_setline` (at least
+`/_setline/routes`). Reads are admitted by source address, and a relayed request
+arrives from loopback, so without that `deny` any client of the front proxy can
+read the route table. Binding `listen` to `*` publishes the data plane past the
+front proxy and voids every assumption above.
 
 This file is the authoritative statement of that boundary. A short version of
 it also belongs in `README.md`, `docs/configuration.md`,
@@ -85,42 +84,10 @@ These are intentionally out of scope unless the project goal changes:
   preference: the daemon is the network-facing data plane. It accepts arbitrary
   client HTTP, parses request heads, and tunnels WebSocket frames, so running it
   as root would turn any bug on that path into a root compromise.
-- The daemon enforces that itself: starting the proxy or the render agent with
-  effective uid 0 prints a refusal and exits with code 2. `setline-apply`
-  is not gated, and neither are the exits it invokes as root
-  (`setline-agent --agent-type`, `--sync-map`) or `-c` and `--help`.
-- Privileged work belongs to the short-lived manual `setline-agent-run`,
-  the explicit manual sync helper, and the root helper `setline-apply`. They only
-  orchestrate: manual sync drops to the `setline` user with `runuser` for the
-  remote manifest check and staging download, installs that local staging as
-  root, executes `setline-agent render` unprivileged, and invokes
-  `setline-apply`. There is no timer: `setline-agent-run` is the manual
-  one-shot entry, and `setline-apply` validates fragments, runs
-  `systemctl reload`, rolls the fragment directory back, and talks to a proxy
-  admin socket.
-- Remote responses are parsed only by the unprivileged `setline` user. The root
-  `setline-agent pull --install` reads `<agent.output>/remote-stage`, re-verifies its
-  SHA-256 values against the local manifest, and installs the files; it must not
-  open a remote URL or parse peer route data.
-- The shipped `setline.service` enforces the split with `User=setline` and
-  `Group=beangle`. Do not remove those lines, and do not add a replacement unit
-  or a manual command that starts `setline` as root.
-- `setline-agent render` needs write access only to its fragment directory
-  (`/var/lib/setline/<proxy>/`), never to `/etc/haproxy` or `/etc/nginx`; the
-  resident `setline` writes only `setline.json` when its runtime API changes routes.
-- Needing a port below 1024 is not a reason to run as root. Use
-  `AmbientCapabilities=CAP_NET_BIND_SERVICE` on the unit instead.
-- If a feature seems to need root, implement it in `setline-apply` (or in a
-  helper that a short-lived root unit runs) rather than raising the daemon's
-  privileges.
-- Shipped binaries are linked with full RELRO: `dub.json` passes `-z now` as
-  `lflags`, so the GOT is resolved at load time and made read-only and a
-  GOT-overwrite bug on the request path cannot be turned into a write primitive.
-  The Debian and Arch builds come out as PIE as well; the Fedora-built rpms do
-  not, because LDC on Fedora links non-PIE by default (`-pie` alone fails against
-  gcc's `crtbegin.o`). That gap is known and is not a deployment blocker - it
-  only widens the ASLR coverage of the daemon, and closing it needs a different
-  link path, not a flag.
+- The daemon enforces that itself: starting the proxy with effective uid 0
+  prints a refusal and exits with code 2. `-c` and `--help` are not gated.
+- setline has no privileged helper and no root entry point. Remote proxy
+  configuration (including certificates and bundles) and any privileged front
 
 ## Implementation Constraints
 
@@ -181,18 +148,17 @@ The admin API can update the runtime route table:
 - replace routes for a single host
 
 Runtime route changes write the top-level `routes` field back to the startup
-config file by default. They never change listener, peer-reader, timeout,
-health-check, or connection-limit settings.
+config file by default. They never change listener, timeout, health-check, or
+connection-limit settings.
 
 All route-changing requests must come from the local machine and must specify
 the target host. There is no credential anywhere in setline: writes are gated by
 the local check, because a route change redirects traffic, and they are served by
 `adminListen` only, which defaults to loopback - so the strongest guarantee is
-the bind, not the check. Reads are gated by source address (localhost, or an
-address listed in `peerReaders`) and are split across the two listeners: `GET
-/_setline/routes` rides both `listen` and `adminListen`, because it is the
-endpoint consumed from other hosts, by the agent that renders `[agent] peers` into
-a proxy config; the status page and `status.json` stay on `adminListen` alone.
+the bind, not the check. Reads are gated by source address (localhost only) and
+are split across the two listeners: `GET /_setline/routes` rides both `listen`
+and `adminListen`; the status page and `status.json` stay on `adminListen`
+alone.
 
 "Local" requires two things: a loopback TCP peer address (`127.0.0.1` / `::1` /
 `::ffff:127.0.0.1`) and a loopback request host (`Host` or `X-Forwarded-Host`
@@ -216,27 +182,22 @@ documented:
   so a request forwarded by a local proxy arrives from loopback and is allowed -
   the proxy's own deny is the only thing standing between its clients and the
   route table.
-- The upshot of the split: the peer-protocol read (`GET /_setline/routes`) rides
-  the data plane, so its reachability is the proxy's reachability plus the
-  `peerReaders` list; everything else - status, `status.json`, writes - lives
-  only on `adminListen`, which defaults to `127.0.0.1:8081`. Route changes are
-  therefore a local-only operation by default, and the loopback bind - not the
-  `Host` heuristic - is what actually enforces it. Keeping the data-plane
-  surface to the one endpoint the peer protocol needs is deliberate: the status
-  views carry listener addresses, timeouts, counters and the whole route table,
-  and have no cross-machine consumer.
+- The upshot of the split: the route-table read (`GET /_setline/routes`) rides
+  the data plane, so its reachability is the proxy's reachability; everything
+  else - status, `status.json`, writes - lives only on `adminListen`, which
+  defaults to `127.0.0.1:8081`. Route changes are therefore a local-only
+  operation by default, and the loopback bind - not the `Host` heuristic - is
+  what actually enforces it. Keeping the data-plane surface to the one read
+  endpoint is deliberate: the status views carry listener addresses, timeouts,
+  counters and the whole route table, and have no cross-machine consumer.
 - The gate does not distinguish local users, processes, or network namespaces.
   Any process that can open a TCP connection to the listener can change routes,
   so setline must not share a host or netns with untrusted workloads. Route
-  changes redirect traffic, which in agent mode also means arbitrary
-  `host:port` targets in the rendered proxy fragments.
+  changes redirect traffic.
 
-Reads have no credential: localhost, or an address listed in `peerReaders`. That
-list takes address literals only - host names would tie a security decision to
-DNS, CIDR would need bitwise matching - and a reader behind NAT or a layer-4
-proxy has to list that proxy, which admits everyone behind it. Admin request
-bodies are capped by a 4 MiB defensive limit (`413` beyond that); the data plane
-never buffers a body, only this control-plane path does.
+Reads have no credential: localhost only. Admin request bodies are capped by a
+4 MiB defensive limit (`413` beyond that); the data plane never buffers a body,
+only this control-plane path does.
 
 The new routes are written to disk before the in-memory route table is swapped.
 If persistence fails, the existing runtime routes remain active.
@@ -246,48 +207,9 @@ ports keep their current health counters and online/offline state; newly
 introduced ports start healthy; ports that are no longer referenced by any
 route are removed from the health table.
 
-## Remote Proxy Rendering
+## Remote Proxy Configuration
 
-`[agent] peers` is the discovery form of the agent-side renderer. Each peer is a
-remote setline instance read through `GET /_setline/routes`; its local ports are
-rewritten to `<peer url host>:<port>`. `setline.conf [routes]` contributes
-predefined local backends (`127.0.0.1:<port>`) whether or not peers are configured,
-and routes sharing a host and path prefix are merged into one backend group so
-several machines serving the same prefix become multiple servers of one upstream.
-The result is rendered as a HAProxy or
-Nginx fragment, written atomically under the `[agent] output` root directory
-(`<root>/{haproxy,nginx}/setline.{cfg,conf}`), and never merged into the
-proxy's own main config file: the fragment is included (Nginx) or concatenated
-(HAProxy, which has no `include`) by deployment tooling. The process renders
-exactly one round and exits; there is no timer, no in-process scheduler and no
-`sync` config. An operator runs `setline-agent-run` when a refresh is needed;
-it does the conditional manifest check, runs `setline-agent render` as the
-`setline` user, then applies the result as root through `setline-apply`.
-The resident
-`setline.service` keeps listening and proxying at the same time.
-
-With no `peers`, the same renderer reads `setline.conf [routes]`
-(single-host deployment). The resident `setline` reads only `setline.json`; duplicate
-the routes there only when the data plane also needs them.
-
-The fragment carries only rules and backends and never a listener, because the
-listen address, TLS and the rest of the proxy config are the deployment's own
-decisions. Wiring recipes: `docs/haproxy-integration.md`,
-`docs/nginx-integration.md`.
-
-A registry-bundle source (`agent.remote`, plus its `agent.workDir` scratch
-directory) existed for a while and was dropped: it fed the same renderer from a
-manifest and versioned `.tar.gz` that an external registry system had to build,
-doubling the surface while `[agent] peers` already produced the same fragments
-from running instances. Only `peers` and `setline.conf [routes]` remain.
-
-This rendering mode may describe remote machine IPs and ports because it is
-generating HAProxy/Nginx configuration, not selecting setline backends. It must
-stay separate from `routes`, which remain local-port-only for the setline proxy.
-
-The renderer does not own service discovery, liveness, deployment ordering, or
-firewall policy. Those decisions stay in the deployment system and in the
-target proxy's own health checks.
+Remote proxy configuration is out of scope for setline. It is handled by
 
 ## Technology Selection
 
@@ -324,9 +246,8 @@ The proxy must keep working for common development-server traffic:
 
 Before changing proxy behavior, validate at least:
 
-- `dub build`
-- `dub build --config=agent`
-- `dub test --config=unittest`
+- `dub build --config=application --compiler=ldc2`
+- `dub test --compiler=ldc2`
 - concurrent frontend resource requests
 - concurrent `304` conditional requests
 - WebSocket echo through the proxy

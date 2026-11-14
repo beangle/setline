@@ -5,12 +5,12 @@ These APIs update the in-memory route table and write the `routes` field back
 to the JSON config file. Other config fields are preserved.
 
 Every endpoint lives under `/_setline/`, split across two listeners. The data
-plane (`listen`) carries exactly one of them - `GET /_setline/routes`, the peer
-protocol - so a machine that only knows the service port can read the route
-table. Everything else is on `adminListen` (`127.0.0.1:8081` by default): the
-status views and every write (`PUT` / `DELETE`). The data plane answers anything
-else under `/_setline` with `404`, including `status.json`. Examples below use
-the admin listener.
+plane (`listen`) carries exactly one of them - `GET /_setline/routes` - so a
+local caller that only knows the service port can read the route table. Everything
+else is on `adminListen` (`127.0.0.1:8081` by default): the status views and
+every write (`PUT` / `DELETE`). The data plane answers anything else under
+`/_setline` with `404`, including `status.json`. Examples below use the admin
+listener.
 
 All write APIs require:
 
@@ -24,13 +24,8 @@ counts). A route change redirects traffic, so this side is never exposed beyond
 the machine, and it needs no credential.
 
 Read APIs are gated by **source address only**: a localhost caller is always
-allowed, a co-located tool (basctl) therefore stores nothing, and a caller from
-another host is allowed when its address is listed in `peerReaders`. There are no
-credentials anywhere in setline: no token header, no Basic Auth. The peer
-protocol is machine-to-machine with a single, fixed reader - another setline
-rendering a fragment from a `[agent] peers` url - so the reader is identified by
-where it connects from rather than by a secret that would have to be synced to
-both machines and travels in cleartext.
+allowed, a co-located tool (basctl) therefore stores nothing. There are no
+credentials anywhere in setline: no token header, no Basic Auth.
 
 Do not use `Forwarded` or `X-Forwarded-For` to satisfy the localhost
 requirement. The server checks the TCP peer address.
@@ -40,21 +35,12 @@ requirement. The server checks the TCP peer address.
 | Operation | Listener | Allowed source | Credential |
 |---|---|---|---|
 | `GET /_setline/routes` | `listen`, `adminListen` | local | none |
-| `GET /_setline/routes` | `listen`, `adminListen` | address in `peerReaders` | none |
-| status page / `status.json` | `adminListen` only | local, or `peerReaders` | none |
+| status page / `status.json` | `adminListen` only | local | none |
 | `PUT` / `DELETE` routes | `adminListen` only | local (loopback peer + loopback host) | none |
 
 Reads are not gated by the request host: a local caller may well address setline
-by its public name, so `Host` is only part of the write gate.
-
-`peerReaders` takes address literals (`10.0.1.7`, `fe80::1`) and nothing else:
-no host names (resolving them at config parse time would tie a security decision
-to DNS, and a name rarely maps back to the TCP peer address) and no CIDR (that
-turns a one-line address into a rule that needs explaining). Loopback is always
-allowed, so listing it is rejected as a no-op. Because the check is on the
-connection's peer address, a reader that reaches setline through NAT or a layer-4
-proxy must list the proxy's address, which admits everything behind it - use
-direct addressing for that hop.
+by its public name, so `Host` is only part of the write gate. Remote reads are
+not supported.
 
 Keep rejecting the admin path at the proxy (`http-request deny if { path_beg
 /_setline }`, `location ^~ /_setline { return 404; }`, or a rule matching just
@@ -79,11 +65,11 @@ Example (from localhost no credential is needed):
 curl http://127.0.0.1:8081/_setline/routes
 ```
 
-From another host, list the caller in `peerReaders` on the setline being read;
-the caller sends no credential:
+The same endpoint is served on the data-plane `listen`, for a caller that only
+knows the service port:
 
 ```bash
-curl http://setline.internal:8080/_setline/routes
+curl -H 'Host: local1.example.com' http://127.0.0.1:8080/_setline/routes
 ```
 
 Response:
@@ -230,8 +216,7 @@ Response is the new route list:
 - `200 OK`: request accepted.
 - `400 Bad Request`: invalid JSON, invalid host, invalid route, missing route,
   or unsupported field.
-- `403 Forbidden`: read from an address that is neither loopback nor listed in
-  `peerReaders`.
+- `403 Forbidden`: read from an address that is not loopback.
 - `403 Forbidden`: a route change whose peer or `Host` is not loopback.
 - `404 Not Found`: unknown admin endpoint.
 
@@ -245,9 +230,9 @@ The status views live on the admin listener (`adminListen`, `127.0.0.1:8081` by
 default) only. They carry listener addresses, timeouts, `maxConnections`,
 health-check tuning, counters and the whole route table, and no other machine
 needs them, so the data plane does not serve them: a `GET /_setline/status.json`
-sent to `listen` gets `404`, as does anything else under `/_setline` except the
-peer-protocol `GET /_setline/routes`. Same read gate on both doors (localhost or
-a `peerReaders` address), but not the same reach.
+sent to `listen` gets `404`, as does anything else under `/_setline` except
+`GET /_setline/routes`. Same localhost-only read gate on both doors, but not the
+same reach.
 
 Returns listener info, active/max connections, timeouts, health-check tuning, the
 route table with per-port health, and cumulative counters. The admin listen
@@ -311,7 +296,7 @@ After a route update, port health state is refreshed:
 
 Runtime route updates are persisted by default. `setline` rewrites only the
 top-level `routes` field in the config file that was used at startup. Listener,
-peer-reader, timeout, health-check, and connection-limit settings are preserved.
+timeout, health-check, and connection-limit settings are preserved.
 
 The file is rewritten in place with two-space indentation and object keys sorted,
 so the result stays hand-editable and repeated updates produce no diff noise.
